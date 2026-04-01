@@ -1,0 +1,15 @@
+# Compatibility wrapper. Canonical environment file now lives at `config/environment.yml`.
+# Keep this file temporarily to avoid breaking existing local habits.
+name: Orbit
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - jupyterlab
+  - pandas
+  - pydantic>=2
+  - typer
+  - rich
+  - pip:
+      - -e .

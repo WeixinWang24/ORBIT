@@ -1,0 +1,13 @@
+name: Orbit
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - jupyterlab
+  - pandas
+  - pydantic>=2
+  - typer
+  - rich
+  - pip:
+      - -e .
