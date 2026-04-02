@@ -11,6 +11,13 @@ class ToolRegistry:
         tools = [ReadFileTool(workspace_root), WriteFileTool(workspace_root)]
         self._tools = {tool.name: tool for tool in tools}
 
+    def register(self, tool: Tool) -> None:
+        self._tools[tool.name] = tool
+
+    def register_many(self, tools: list[Tool]) -> None:
+        for tool in tools:
+            self.register(tool)
+
     def get(self, name: str) -> Tool:
         return self._tools[name]
 

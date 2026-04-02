@@ -21,6 +21,7 @@ from .enums import (
 from .session import (
     ConversationMessage,
     ConversationSession,
+    GovernedToolState,
     MessageRole,
     SessionStatus,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "ContextArtifact",
     "ConversationMessage",
     "ConversationSession",
+    "GovernedToolState",
     "ExecutionEvent",
     "MessageRole",
     "OrbitBaseModel",

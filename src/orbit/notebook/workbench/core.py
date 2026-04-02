@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 
 from orbit.notebook.display.dataframes import approvals_dataframe, events_dataframe, session_messages_dataframe, session_turn_summary_dataframe, sessions_dataframe, steps_dataframe
-from orbit.runtime import OrbitCoordinator
+from orbit.runtime.historical import OrbitCoordinator
 from orbit.store.base import OrbitStore
 
 

@@ -5,16 +5,30 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from orbit.models import ConversationMessage, ConversationSession, MessageRole
+from orbit.models import ContextArtifact, ConversationMessage, ConversationSession, ExecutionEvent, GovernedToolState, MessageRole
+from orbit.models.core import new_id
 from orbit.runtime.core.contracts import RunDescriptor, WorkspaceDescriptor
+from orbit.runtime.core.events import RuntimeEventType
+from orbit.runtime.execution.continuation_context import build_rejection_continuation_context
+from orbit.runtime.governance.tool_approval_policy import PolicyDecision, PolicyEvaluationInput, evaluate_tool_approval_policy
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
+from orbit.runtime.mcp.governance import resolve_filesystem_mcp_target_path
 from orbit.store.base import OrbitStore
 from orbit.tools.base import ToolResult
 from orbit.tools.registry import ToolRegistry
 
 
 class SessionManager:
-    """Manage linear conversation sessions for ORBIT."""
+    """Manage linear conversation sessions for ORBIT.
+
+    This manager currently supports:
+    - ordinary multi-turn text continuation
+    - immediate execution for non-approval tool requests
+    - session-scoped approval wait/resume for approval-gated tool requests
+
+    The approval path is intentionally lightweight and session-local in this
+    phase rather than a full reuse of run-oriented approval persistence.
+    """
 
     def __init__(self, *, store: OrbitStore, backend, workspace_root: str):
         self.store = store
@@ -44,6 +58,47 @@ class SessionManager:
         self.store.save_session(session)
         return message
 
+    def append_context_artifact_for_session(self, *, session_id: str, artifact_type: str, content: str, source: str) -> ContextArtifact | None:
+        session = self.get_session(session_id)
+        if session is None:
+            raise ValueError(f"session not found: {session_id}")
+        conversation_id = getattr(session, "conversation_id", None)
+        if not conversation_id:
+            return None
+        artifact = ContextArtifact(
+            run_id=conversation_id,
+            artifact_type=artifact_type,
+            content=content,
+            source=source,
+        )
+        self.store.save_context_artifact(artifact)
+        return artifact
+
+    def append_run_descriptor_for_session(self, *, session_id: str, descriptor: RunDescriptor) -> ContextArtifact | None:
+        session = self.get_session(session_id)
+        if session is None:
+            raise ValueError(f"session not found: {session_id}")
+        session.metadata["active_run_descriptor"] = descriptor.model_dump(mode="json")
+        session.updated_at = datetime.now(timezone.utc)
+        self.store.save_session(session)
+        return self.append_context_artifact_for_session(
+            session_id=session_id,
+            artifact_type="run_descriptor",
+            content=descriptor.model_dump_json(indent=2),
+            source="runtime_contract",
+        )
+
+    def emit_session_event(self, *, session_id: str, event_type: RuntimeEventType, payload: dict) -> ExecutionEvent | None:
+        session = self.get_session(session_id)
+        if session is None:
+            raise ValueError(f"session not found: {session_id}")
+        conversation_id = getattr(session, "conversation_id", None)
+        if not conversation_id:
+            return None
+        event = ExecutionEvent(run_id=conversation_id, event_type=event_type, payload=payload)
+        self.store.save_event(event)
+        return event
+
     def execute_tool_request(self, *, tool_request: ToolRequest) -> ToolResult:
         """Execute one normalized tool request against the local registry."""
         tool = self.tool_registry.get(tool_request.tool_name)
@@ -55,9 +110,14 @@ class SessionManager:
             content = f"Tool result from {tool_request.tool_name}:\n{tool_result.content}"
         else:
             content = f"Tool result from {tool_request.tool_name} (error):\n{tool_result.content}"
+        self.emit_session_event(
+            session_id=session_id,
+            event_type=RuntimeEventType.TOOL_INVOCATION_COMPLETED,
+            payload={"tool_name": tool_request.tool_name, "ok": tool_result.ok, "side_effect_class": tool_request.side_effect_class},
+        )
         return self.append_message(
             session_id=session_id,
-            role=MessageRole.USER,
+            role=MessageRole.TOOL,
             content=content,
             metadata={
                 "message_kind": "tool_result",
@@ -68,41 +128,608 @@ class SessionManager:
             },
         )
 
-    def run_session_turn(self, *, session_id: str, user_input: str) -> ExecutionPlan:
+    def run_session_turn(self, *, session_id: str, user_input: str, descriptor: RunDescriptor | None = None) -> ExecutionPlan:
         """Execute one session turn with the first governed tool closure path."""
         session = self.get_session(session_id)
         if session is None:
             raise ValueError(f"session not found: {session_id}")
+        if session.metadata.get("terminated"):
+            raise ValueError(f"session terminated: {session_id}")
+        pending = self._get_pending_approval(session)
+        if pending is not None:
+            raise ValueError(f"session has pending approval: {pending['approval_request_id']}")
+        if descriptor is not None:
+            self.append_run_descriptor_for_session(session_id=session_id, descriptor=descriptor)
+            refreshed = self.get_session(session_id)
+            if refreshed is None:
+                raise ValueError(f"session not found after recording run descriptor: {session_id}")
+            session = refreshed
         self.append_message(session_id=session_id, role=MessageRole.USER, content=user_input)
+        self.append_context_artifact_for_session(
+            session_id=session_id,
+            artifact_type="session_user_input",
+            content=user_input,
+            source="user_input",
+        )
+        self.emit_session_event(
+            session_id=session_id,
+            event_type=RuntimeEventType.RUN_STARTED,
+            payload={
+                "session_id": session_id,
+                "user_input": user_input,
+                "mode": "session_turn",
+                "has_run_descriptor": descriptor is not None,
+            },
+        )
         messages = self.list_messages(session_id)
         plan = self._plan_from_messages(session=session, messages=messages)
 
-        if plan.tool_request is None:
-            if plan.final_text:
-                self.append_message(session_id=session_id, role=MessageRole.ASSISTANT, content=plan.final_text, metadata={"source_backend": plan.source_backend, "plan_label": plan.plan_label})
-            return plan
+        return self._finalize_session_plan(session=session, plan=plan, messages=messages)
 
-        if plan.tool_request.requires_approval:
-            return plan
+    def list_open_session_approvals(self) -> list[dict]:
+        """Return session-scoped pending approvals for the current lightweight path."""
+        approvals: list[dict] = []
+        for session in self.store.list_sessions():
+            pending = self._get_pending_approval(session)
+            if pending is not None:
+                approvals.append(
+                    {
+                        "session_id": session.session_id,
+                        "conversation_id": session.conversation_id,
+                        **pending,
+                    }
+                )
+        return approvals
 
-        tool_result = self.execute_tool_request(tool_request=plan.tool_request)
-        self.append_tool_result_message(session_id=session_id, tool_request=plan.tool_request, tool_result=tool_result)
-        updated_messages = self.list_messages(session_id)
+    def resolve_session_approval(self, *, session_id: str, approval_request_id: str, decision: str, note: str | None = None) -> ExecutionPlan:
+        """Resolve one session-scoped approval and continue or reject the tool path."""
+        session = self.get_session(session_id)
+        if session is None:
+            raise ValueError(f"session not found: {session_id}")
+        pending = self._get_pending_approval(session)
+        if pending is None:
+            raise ValueError(f"session has no pending approval: {session_id}")
+        if pending["approval_request_id"] != approval_request_id:
+            raise ValueError(f"approval request does not match pending session approval: {approval_request_id}")
+
+        tool_request = ToolRequest.model_validate(pending["tool_request"])
+        self._clear_pending_approval(session)
+
+        if decision == "approve":
+            self.emit_session_event(
+                session_id=session_id,
+                event_type=RuntimeEventType.APPROVAL_GRANTED,
+                payload={"approval_request_id": approval_request_id, "tool_name": tool_request.tool_name},
+            )
+            self.append_message(
+                session_id=session_id,
+                role=MessageRole.ASSISTANT,
+                content=f"Approval granted for {tool_request.tool_name}. Continuing with governed tool execution.",
+                metadata={
+                    "message_kind": "approval_decision",
+                    "approval_request_id": approval_request_id,
+                    "decision": "approved",
+                    "note": note,
+                    "tool_name": tool_request.tool_name,
+                },
+            )
+            self._transition_governed_tool_state(session, "approved", note=note)
+            return self._execute_non_approval_tool_closure(session=session, initial_plan=ExecutionPlan(source_backend=pending['source_backend'], plan_label=f"{pending['plan_label']}-approved", tool_request=tool_request, should_finish_after_tool=False))
+
+        if decision == "reject":
+            rejection_text = f"Approval rejected for {tool_request.tool_name}. The requested tool was not executed."
+            if note:
+                rejection_text += f" Note: {note}"
+            self.emit_session_event(
+                session_id=session_id,
+                event_type=RuntimeEventType.APPROVAL_REJECTED,
+                payload={"approval_request_id": approval_request_id, "tool_name": tool_request.tool_name},
+            )
+            self.append_message(
+                session_id=session_id,
+                role=MessageRole.ASSISTANT,
+                content=rejection_text,
+                metadata={
+                    "message_kind": "approval_decision",
+                    "approval_request_id": approval_request_id,
+                    "decision": "rejected",
+                    "note": note,
+                    "tool_name": tool_request.tool_name,
+                    "tool_executed": False,
+                },
+            )
+            self._transition_governed_tool_state(session, "rejected", note=note)
+            self._mark_permission_authority_rejection(session=session, tool_name=tool_request.tool_name)
+            updated_messages = self.list_messages(session_id)
+            continuation_context = build_rejection_continuation_context(updated_messages)
+            continuation_messages = list(updated_messages)
+            if continuation_context is not None and continuation_context.bridge_message is not None:
+                continuation_messages.append(continuation_context.bridge_message)
+            continuation_plan = self._plan_from_messages(session=session, messages=continuation_messages)
+            return self._finalize_session_plan(
+                session=session,
+                plan=continuation_plan,
+                messages=updated_messages,
+                continued_after_tool_rejection=True,
+                rejected_tool_name=tool_request.tool_name,
+                used_continuation_bridge=continuation_context is not None and continuation_context.bridge_message is not None,
+            )
+
+        raise ValueError(f"unsupported approval decision: {decision}")
+
+    def _execute_non_approval_tool_closure(self, *, session: ConversationSession, initial_plan: ExecutionPlan) -> ExecutionPlan:
+        """Execute one non-approval tool request and continue once for a final answer."""
+        if initial_plan.tool_request is None:
+            raise ValueError("initial_plan must include a tool request")
+        tool_result = self.execute_tool_request(tool_request=initial_plan.tool_request)
+        if session.governed_tool_state is not None and session.governed_tool_state.tool_name == initial_plan.tool_request.tool_name:
+            self._transition_governed_tool_state(
+                session,
+                "executed",
+                note="tool executed successfully" if tool_result.ok else "tool execution returned a non-ok result",
+            )
+        else:
+            self._set_governed_tool_state(
+                session,
+                GovernedToolState(
+                    tool_name=initial_plan.tool_request.tool_name,
+                    state="executed",
+                    side_effect_class=initial_plan.tool_request.side_effect_class,
+                    input_payload=initial_plan.tool_request.input_payload,
+                    note="tool executed successfully" if tool_result.ok else "tool execution returned a non-ok result",
+                ),
+            )
+        self.append_tool_result_message(session_id=session.session_id, tool_request=initial_plan.tool_request, tool_result=tool_result)
+        updated_messages = self.list_messages(session.session_id)
         final_plan = self._plan_from_messages(session=session, messages=updated_messages)
         if final_plan.final_text:
             self.append_message(
-                session_id=session_id,
+                session_id=session.session_id,
                 role=MessageRole.ASSISTANT,
                 content=final_plan.final_text,
                 metadata={
                     "source_backend": final_plan.source_backend,
                     "plan_label": final_plan.plan_label,
                     "continued_after_tool": True,
-                    "tool_name": plan.tool_request.tool_name,
+                    "tool_name": initial_plan.tool_request.tool_name,
                     "tool_ok": tool_result.ok,
                 },
             )
         return final_plan
+
+    def _finalize_session_plan(
+        self,
+        *,
+        session: ConversationSession,
+        plan: ExecutionPlan,
+        messages: list[ConversationMessage],
+        continued_after_tool_rejection: bool = False,
+        rejected_tool_name: str | None = None,
+        used_continuation_bridge: bool = False,
+    ) -> ExecutionPlan:
+        """Apply lightweight runtime guardrails before returning a session plan.
+
+        Current guardrail:
+        - if a tool was already rejected in this session and the provider tries to
+          immediately reissue the same tool, do not reopen the same approval loop
+          in the same continuation path
+        """
+        if plan.tool_request is not None and rejected_tool_name is not None:
+            governance = self._get_tool_governance_metadata(plan.tool_request.tool_name)
+            policy_group = governance["policy_group"]
+            if plan.tool_request.tool_name == rejected_tool_name and policy_group != "permission_authority":
+                guard_text = (
+                    f"The tool {rejected_tool_name} was already rejected in this continuation path and will not be requested again automatically. "
+                    "Continue without reissuing that tool unless the human explicitly asks again in a later turn."
+                )
+                guarded_plan = ExecutionPlan(
+                    source_backend=plan.source_backend,
+                    plan_label=f"{plan.plan_label}-guarded-rejected-tool-reissue",
+                    final_text=guard_text,
+                    should_finish_after_tool=True,
+                )
+                if session.governed_tool_state is not None and session.governed_tool_state.tool_name == rejected_tool_name:
+                    self._transition_governed_tool_state(session, "blocked_reissue", note="runtime guardrail blocked rejected tool reissue")
+                else:
+                    self._set_governed_tool_state(
+                        session,
+                        GovernedToolState(
+                            tool_name=rejected_tool_name,
+                            state="blocked_reissue",
+                            side_effect_class=plan.tool_request.side_effect_class if plan.tool_request else "safe",
+                            input_payload=plan.tool_request.input_payload if plan.tool_request else {},
+                            note="runtime guardrail blocked rejected tool reissue",
+                        ),
+                    )
+                self.append_context_artifact_for_session(
+                    session_id=session.session_id,
+                    artifact_type="session_guardrail_block",
+                    content=f"guardrail_kind=rejected_tool_reissue\ntool_name={rejected_tool_name}\nplan_label={plan.plan_label}",
+                    source="governance",
+                )
+                self.emit_session_event(
+                    session_id=session.session_id,
+                    event_type=RuntimeEventType.RUN_FAILED,
+                    payload={"kind": "guardrail_block", "guardrail_kind": "rejected_tool_reissue", "tool_name": rejected_tool_name},
+                )
+                self.append_message(
+                    session_id=session.session_id,
+                    role=MessageRole.ASSISTANT,
+                    content=guard_text,
+                    metadata={
+                        "message_kind": "guardrail_block",
+                        "guardrail_kind": "rejected_tool_reissue",
+                        "tool_name": rejected_tool_name,
+                        "source_backend": plan.source_backend,
+                        "continued_after_tool_rejection": continued_after_tool_rejection,
+                        "used_continuation_bridge": used_continuation_bridge,
+                    },
+                )
+                return guarded_plan
+
+        if plan.tool_request is None and continued_after_tool_rejection and plan.final_text:
+            self.append_message(
+                session_id=session.session_id,
+                role=MessageRole.ASSISTANT,
+                content=plan.final_text,
+                metadata={
+                    "source_backend": plan.source_backend,
+                    "plan_label": plan.plan_label,
+                    "continued_after_tool_rejection": True,
+                    "tool_name": rejected_tool_name,
+                    "used_continuation_bridge": used_continuation_bridge,
+                },
+            )
+        elif plan.tool_request is None and plan.final_text:
+            self.append_message(
+                session_id=session.session_id,
+                role=MessageRole.ASSISTANT,
+                content=plan.final_text,
+                metadata={"source_backend": plan.source_backend, "plan_label": plan.plan_label},
+            )
+        elif plan.tool_request is not None:
+            decision = self._evaluate_policy_for_plan(
+                session=session,
+                plan=plan,
+                rejected_tool_name=rejected_tool_name,
+            )
+            return self._apply_policy_decision(session=session, plan=plan, decision=decision)
+        return plan
+
+    def _evaluate_policy_for_plan(
+        self,
+        *,
+        session: ConversationSession,
+        plan: ExecutionPlan,
+        rejected_tool_name: str | None,
+    ) -> PolicyDecision:
+        if plan.tool_request is None:
+            raise ValueError("policy evaluation requires a tool request")
+
+        tool_request = plan.tool_request
+        governance = self._get_tool_governance_metadata(tool_request.tool_name)
+        policy_group = governance["policy_group"]
+        appearance_count_after_rejection = self._appearance_count_after_rejection(
+            session=session,
+            tool_name=tool_request.tool_name,
+            rejected_tool_name=rejected_tool_name,
+        )
+        environment_status = self._resolve_environment_status_for_tool_request(tool_request)
+        ctx = PolicyEvaluationInput(
+            policy_group=policy_group,
+            approval_required=tool_request.requires_approval,
+            appearance_count_after_rejection=appearance_count_after_rejection,
+            has_structured_reauthorization=self._has_structured_reauthorization(session=session, tool_name=tool_request.tool_name),
+            environment_status=environment_status,
+            tool_name=tool_request.tool_name,
+        )
+        return evaluate_tool_approval_policy(ctx)
+
+    def _apply_policy_decision(self, *, session: ConversationSession, plan: ExecutionPlan, decision: PolicyDecision) -> ExecutionPlan:
+        if plan.tool_request is None:
+            raise ValueError("policy application requires a tool request")
+
+        tool_request = plan.tool_request
+        if decision.outcome == "allow":
+            return self._execute_non_approval_tool_closure(session=session, initial_plan=plan)
+        if decision.outcome == "require_approval":
+            return self._open_session_approval(session=session, tool_request=tool_request, plan=plan)
+
+        if decision.outcome == "loud_caution":
+            self.append_context_artifact_for_session(
+                session_id=session.session_id,
+                artifact_type="session_policy_caution",
+                content=f"tool_name={tool_request.tool_name}\npolicy_group={decision.policy_group}\nreason={decision.reason}",
+                source="governance",
+            )
+            self.emit_session_event(
+                session_id=session.session_id,
+                event_type=RuntimeEventType.RUN_FAILED,
+                payload={"kind": "policy_caution", "tool_name": tool_request.tool_name, "policy_group": decision.policy_group, "reason": decision.reason},
+            )
+            self.append_message(
+                session_id=session.session_id,
+                role=MessageRole.ASSISTANT,
+                content=decision.explanation,
+                metadata={
+                    "message_kind": "policy_caution",
+                    "policy_group": decision.policy_group,
+                    "tool_name": tool_request.tool_name,
+                    "reason": decision.reason,
+                },
+            )
+            return ExecutionPlan(source_backend=plan.source_backend, plan_label=f"{plan.plan_label}-policy-caution", final_text=decision.explanation, should_finish_after_tool=True)
+
+        if decision.outcome == "terminate_session":
+            session.metadata["terminated"] = True
+            session.metadata["termination_reason"] = decision.reason
+            session.updated_at = datetime.now(timezone.utc)
+            self.store.save_session(session)
+            self.append_context_artifact_for_session(
+                session_id=session.session_id,
+                artifact_type="session_policy_termination",
+                content=f"tool_name={tool_request.tool_name}\npolicy_group={decision.policy_group}\nreason={decision.reason}",
+                source="governance",
+            )
+            self.emit_session_event(
+                session_id=session.session_id,
+                event_type=RuntimeEventType.RUN_FAILED,
+                payload={"kind": "policy_termination", "tool_name": tool_request.tool_name, "policy_group": decision.policy_group, "reason": decision.reason},
+            )
+            self.append_message(
+                session_id=session.session_id,
+                role=MessageRole.ASSISTANT,
+                content=decision.explanation,
+                metadata={
+                    "message_kind": "policy_termination",
+                    "policy_group": decision.policy_group,
+                    "tool_name": tool_request.tool_name,
+                    "reason": decision.reason,
+                },
+            )
+            return ExecutionPlan(source_backend=plan.source_backend, plan_label=f"{plan.plan_label}-terminated", final_text=decision.explanation, should_finish_after_tool=True)
+
+        if decision.outcome in {"deny", "recheck_environment"}:
+            self.append_context_artifact_for_session(
+                session_id=session.session_id,
+                artifact_type="session_policy_decision",
+                content=f"tool_name={tool_request.tool_name}\npolicy_group={decision.policy_group}\nreason={decision.reason}\noutcome={decision.outcome}",
+                source="governance",
+            )
+            self.emit_session_event(
+                session_id=session.session_id,
+                event_type=RuntimeEventType.RUN_FAILED,
+                payload={"kind": "policy_decision", "tool_name": tool_request.tool_name, "policy_group": decision.policy_group, "reason": decision.reason, "outcome": decision.outcome},
+            )
+            self.append_message(
+                session_id=session.session_id,
+                role=MessageRole.ASSISTANT,
+                content=decision.explanation,
+                metadata={
+                    "message_kind": "policy_decision",
+                    "policy_group": decision.policy_group,
+                    "tool_name": tool_request.tool_name,
+                    "reason": decision.reason,
+                    "outcome": decision.outcome,
+                },
+            )
+            return ExecutionPlan(source_backend=plan.source_backend, plan_label=f"{plan.plan_label}-{decision.outcome}", final_text=decision.explanation, should_finish_after_tool=True)
+
+        raise ValueError(f"unsupported policy outcome: {decision.outcome}")
+
+    def _get_tool_governance_metadata(self, tool_name: str) -> dict[str, str]:
+        tool = self.tool_registry.get(tool_name)
+        if hasattr(tool, "governance_metadata"):
+            return tool.governance_metadata()
+        return {
+            "policy_group": getattr(tool, "governance_policy_group", "system_environment"),
+            "environment_check_kind": getattr(tool, "environment_check_kind", "none"),
+        }
+
+    def _resolve_environment_status_for_tool_request(self, tool_request: ToolRequest) -> str:
+        governance = self._get_tool_governance_metadata(tool_request.tool_name)
+        check_kind = governance.get("environment_check_kind", "none")
+        if check_kind == "none":
+            return "ok"
+        if check_kind == "path_exists":
+            path = tool_request.input_payload.get("path")
+            if not path:
+                return "unknown"
+
+            if tool_request.tool_name.startswith("mcp__filesystem__"):
+                tool = self.tool_registry.get(tool_request.tool_name)
+                client = getattr(tool, "client", None)
+                server_args = getattr(getattr(client, "bootstrap", None), "args", []) if client is not None else []
+                target = resolve_filesystem_mcp_target_path(
+                    input_payload=tool_request.input_payload,
+                    server_args=server_args,
+                )
+                allowed_root = Path(server_args[-1]).resolve() if server_args else None
+                if target is None or allowed_root is None:
+                    return "unknown"
+                if not str(target).startswith(str(allowed_root)):
+                    return "denied"
+                return "ok" if target.exists() and target.is_file() else "denied"
+
+            workspace_root = Path(self.workspace_root).resolve()
+            target = (workspace_root / path).resolve()
+            if not str(target).startswith(str(workspace_root)):
+                return "denied"
+            return "ok" if target.exists() and target.is_file() else "denied"
+        return "unknown"
+
+    def _mark_permission_authority_rejection(self, *, session: ConversationSession, tool_name: str) -> None:
+        tracking = session.metadata.setdefault("policy_tracking", {})
+        permission_tracking = tracking.setdefault("permission_authority", {})
+        permission_tracking[tool_name] = {
+            "rejection_active": True,
+            "appearance_count_after_rejection": 0,
+        }
+        session.updated_at = datetime.now(timezone.utc)
+        self.store.save_session(session)
+
+    def _appearance_count_after_rejection(self, *, session: ConversationSession, tool_name: str, rejected_tool_name: str | None) -> int:
+        tracking = session.metadata.setdefault("policy_tracking", {})
+        permission_tracking = tracking.setdefault("permission_authority", {})
+        tool_tracking = permission_tracking.setdefault(
+            tool_name,
+            {
+                "rejection_active": False,
+                "appearance_count_after_rejection": 0,
+            },
+        )
+
+        if tool_tracking.get("rejection_active"):
+            tool_tracking["appearance_count_after_rejection"] = int(tool_tracking.get("appearance_count_after_rejection", 0)) + 1
+            session.updated_at = datetime.now(timezone.utc)
+            self.store.save_session(session)
+
+        return int(tool_tracking.get("appearance_count_after_rejection", 0))
+
+    def reauthorize_tool_path(
+        self,
+        *,
+        session_id: str,
+        tool_name: str,
+        note: str | None = None,
+        source: str = "runtime_entry",
+    ) -> dict:
+        session = self.get_session(session_id)
+        if session is None:
+            raise ValueError(f"session not found: {session_id}")
+        if session.metadata.get("terminated"):
+            raise ValueError(f"cannot reauthorize terminated session: {session_id}")
+
+        tracking = session.metadata.setdefault("policy_tracking", {})
+        permission_tracking = tracking.setdefault("permission_authority", {})
+        tool_tracking = permission_tracking.setdefault(
+            tool_name,
+            {
+                "rejection_active": False,
+                "appearance_count_after_rejection": 0,
+            },
+        )
+        tool_tracking["rejection_active"] = False
+        tool_tracking["appearance_count_after_rejection"] = 0
+
+        structured = session.metadata.setdefault("structured_reauthorization", {})
+        record = {
+            "active": True,
+            "source": source,
+            "note": note,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        structured[tool_name] = record
+        session.updated_at = datetime.now(timezone.utc)
+        self.store.save_session(session)
+
+        message_text = f"Structured reauthorization recorded for {tool_name}. Future requests for this tool may re-enter the governed approval path."
+        if note:
+            message_text += f" Note: {note}"
+        self.append_context_artifact_for_session(
+            session_id=session_id,
+            artifact_type="session_structured_reauthorization",
+            content=f"tool_name={tool_name}\nsource={source}\nnote={note or ''}",
+            source="governance",
+        )
+        self.emit_session_event(
+            session_id=session_id,
+            event_type=RuntimeEventType.APPROVAL_GRANTED,
+            payload={"kind": "structured_reauthorization", "tool_name": tool_name, "source": source},
+        )
+        self.append_message(
+            session_id=session_id,
+            role=MessageRole.ASSISTANT,
+            content=message_text,
+            metadata={
+                "message_kind": "structured_reauthorization",
+                "tool_name": tool_name,
+                "source": source,
+                "note": note,
+            },
+        )
+        return {
+            "session_id": session_id,
+            "tool_name": tool_name,
+            "source": source,
+            "note": note,
+            **record,
+        }
+
+    def _has_structured_reauthorization(self, *, session: ConversationSession, tool_name: str) -> bool:
+        structured = session.metadata.get("structured_reauthorization")
+        if not isinstance(structured, dict):
+            return False
+        tool_record = structured.get(tool_name)
+        return isinstance(tool_record, dict) and bool(tool_record.get("active"))
+
+    def _get_pending_approval(self, session: ConversationSession) -> dict | None:
+        pending = session.metadata.get("pending_approval")
+        return pending if isinstance(pending, dict) else None
+
+    def _set_governed_tool_state(self, session: ConversationSession, state: GovernedToolState | None) -> None:
+        session.governed_tool_state = state
+        session.updated_at = datetime.now(timezone.utc)
+        self.store.save_session(session)
+
+    def _transition_governed_tool_state(self, session: ConversationSession, new_state: str, *, note: str | None = None) -> None:
+        """Advance the current governed-tool state through validated transitions."""
+        current = session.governed_tool_state
+        if current is None:
+            raise ValueError(f"session has no governed tool state to transition: {session.session_id}")
+        self._set_governed_tool_state(session, current.transition(new_state, note=note))
+
+    def _set_pending_approval(self, session: ConversationSession, pending: dict) -> None:
+        session.metadata["pending_approval"] = pending
+        governed_state = GovernedToolState(
+            tool_name=pending["tool_request"].get("tool_name", "unknown"),
+            state="waiting_for_approval",
+            approval_request_id=pending.get("approval_request_id"),
+            side_effect_class=pending["tool_request"].get("side_effect_class", "safe"),
+            input_payload=pending["tool_request"].get("input_payload", {}),
+        )
+        self._set_governed_tool_state(session, governed_state)
+
+    def _clear_pending_approval(self, session: ConversationSession) -> None:
+        session.metadata.pop("pending_approval", None)
+        session.updated_at = datetime.now(timezone.utc)
+        self.store.save_session(session)
+
+    def _open_session_approval(self, *, session: ConversationSession, tool_request: ToolRequest, plan: ExecutionPlan) -> ExecutionPlan:
+        """Persist lightweight session-scoped approval state and append a wait message."""
+        approval_request_id = new_id("approval")
+        pending = {
+            "approval_request_id": approval_request_id,
+            "tool_request": tool_request.model_dump(mode="json"),
+            "source_backend": plan.source_backend,
+            "plan_label": plan.plan_label,
+            "opened_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._set_pending_approval(session, pending)
+        approval_text = (
+            f"Approval required before executing {tool_request.tool_name} "
+            f"(side_effect_class={tool_request.side_effect_class})."
+        )
+        self.append_message(
+            session_id=session.session_id,
+            role=MessageRole.ASSISTANT,
+            content=approval_text,
+            metadata={
+                "message_kind": "approval_request",
+                "approval_request_id": approval_request_id,
+                "tool_name": tool_request.tool_name,
+                "side_effect_class": tool_request.side_effect_class,
+                "source_backend": plan.source_backend,
+                "plan_label": plan.plan_label,
+            },
+        )
+        return ExecutionPlan(
+            source_backend=plan.source_backend,
+            plan_label=f"{plan.plan_label}-waiting-for-approval",
+            tool_request=tool_request,
+            should_finish_after_tool=False,
+            failure_reason=None,
+        )
 
     def _plan_from_messages(self, *, session: ConversationSession, messages: list[ConversationMessage]) -> ExecutionPlan:
         """Use history-aware provider path when available, otherwise fallback."""

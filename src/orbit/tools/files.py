@@ -9,6 +9,8 @@ class ReadFileTool(Tool):
     name = "read_file"
     side_effect_class = "safe"
     requires_approval = False
+    governance_policy_group = "system_environment"
+    environment_check_kind = "path_exists"
 
     def __init__(self, workspace_root: Path):
         self.workspace_root = workspace_root.resolve()
@@ -26,6 +28,8 @@ class WriteFileTool(Tool):
     name = "write_file"
     side_effect_class = "write"
     requires_approval = True
+    governance_policy_group = "permission_authority"
+    environment_check_kind = "none"
 
     def __init__(self, workspace_root: Path):
         self.workspace_root = workspace_root.resolve()

@@ -1,7 +1,15 @@
-"""Runtime exports for ORBIT."""
+"""Runtime exports for ORBIT.
+
+Mainline runtime surface:
+- `SessionManager` is the active session agent loop host module.
+
+Historical/development scaffold surface:
+- `OrbitCoordinator` has been moved under `orbit.runtime.historical` for
+  teaching and development-history reference.
+"""
 
 from orbit.runtime.auth import *
-from orbit.runtime.core import OrbitCoordinator, RunDescriptor, RuntimeEventType
+from orbit.runtime.core import RunDescriptor, RuntimeEventType, SessionManager
 from orbit.runtime.execution import (
     DummyEngine,
     DummyExecutionBackend,
@@ -26,7 +34,7 @@ __all__ = [
     "OpenAIFirstRawResponse",
     "OpenAIFirstRequest",
     "OpenAIRawOutputItem",
-    "OrbitCoordinator",
+    "SessionManager",
     "ProviderFailure",
     "ProviderNormalizedResult",
     "RunDescriptor",
