@@ -186,6 +186,12 @@ This makes it an ideal first MCP-hosted mutation family member.
 - adapt MCP `replace_in_file` through the existing MCP adapter path
 - ensure runtime-local grounding gate applies identically to native and MCP variants
 
+Current implementation progress:
+- the filesystem MCP server now exposes canonical `replace_in_file`
+- ORBIT MCP governance now classifies `replace_in_file` as a permission-authority mutation tool
+- runtime-local grounding gating now applies to both native `native__replace_in_file` and MCP-hosted `replace_in_file`
+- MCP semantic failure is now normalized into ORBIT's layered mutation failure model instead of being treated as unconditional success
+
 ### Phase M3 — contract and behavior alignment
 - verify native and MCP variants return aligned structured mutation result shapes
 - align inspection projection across native and MCP variants

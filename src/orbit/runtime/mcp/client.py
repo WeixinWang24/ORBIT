@@ -96,10 +96,12 @@ class StdioMcpClient:
                     output_text = "\n".join(text_parts).strip()
                     is_error = bool(getattr(result, "isError", False))
                     raw_result = result.model_dump(mode="json") if hasattr(result, "model_dump") else {"content": output_text, "isError": is_error}
+                    structured = raw_result.get("structuredContent") if isinstance(raw_result, dict) and isinstance(raw_result.get("structuredContent"), dict) else {}
+                    failure_layer = structured.get("failure_layer") if isinstance(structured, dict) else None
                     return ToolResult(
-                        ok=not is_error,
+                        ok=(not is_error) and failure_layer is None,
                         content=output_text,
-                        data={"raw_result": raw_result},
+                        data={"failure_layer": failure_layer, "raw_result": raw_result},
                     )
 
     def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> ToolResult:

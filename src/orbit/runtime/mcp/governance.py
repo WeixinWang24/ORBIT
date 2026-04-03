@@ -34,6 +34,7 @@ _FILESYSTEM_SYSTEM_ENVIRONMENT_TOOLS = {
 
 _FILESYSTEM_PERMISSION_AUTHORITY_TOOLS = {
     "write_file",
+    "replace_in_file",
     "edit_file",
     "create_directory",
     "move_file",

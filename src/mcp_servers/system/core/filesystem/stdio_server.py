@@ -320,6 +320,27 @@ def _search_files_result(path: str, query: str, max_results: int | None = None) 
     }
 
 
+def _replace_in_file_result(path: str, old_text: str, new_text: str) -> dict[str, Any]:
+    target = _resolve_safe_file_path(path)
+    content = target.read_text(encoding="utf-8")
+    if old_text not in content:
+        return {
+            "mutation_kind": "replace_in_file",
+            "failure_layer": "tool_semantic",
+            "path": path,
+            "replacement_count": 0,
+        }
+    updated = content.replace(old_text, new_text, 1)
+    target.write_text(updated, encoding="utf-8")
+    return {
+        "mutation_kind": "replace_in_file",
+        "path": path,
+        "replacement_count": 1,
+        "before_excerpt": old_text,
+        "after_excerpt": new_text,
+    }
+
+
 @server.list_tools()
 async def list_tools() -> list[types.Tool]:
     return [
@@ -421,6 +442,20 @@ async def list_tools() -> list[types.Tool]:
                 "additionalProperties": False,
             },
         ),
+        types.Tool(
+            name="replace_in_file",
+            description="Replace one exact text occurrence inside a workspace-relative file and return structured mutation output.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Workspace-relative file path."},
+                    "old_text": {"type": "string", "description": "Exact text to replace once."},
+                    "new_text": {"type": "string", "description": "Replacement text."},
+                },
+                "required": ["path", "old_text", "new_text"],
+                "additionalProperties": False,
+            },
+        ),
     ]
 
 
@@ -439,6 +474,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return _directory_tree_result(path, arguments.get("maxDepth"))
     if name == "search_files":
         return _search_files_result(path, arguments.get("query"), arguments.get("maxResults"))
+    if name == "replace_in_file":
+        return _replace_in_file_result(path, arguments.get("old_text"), arguments.get("new_text"))
     raise ValueError(f"unknown tool: {name}")
 
 
