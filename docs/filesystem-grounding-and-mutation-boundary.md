@@ -81,9 +81,10 @@ ORBIT now applies the readiness layer to real execution for:
 - `native__replace_in_file`
 - `native__replace_all_in_file`
 - `native__replace_block_in_file`
+- `native__apply_exact_hunk`
 
 Current invariant:
-- approval remains necessary for grounded mutation tools such as `native__write_file`, `native__replace_in_file`, `native__replace_all_in_file`, and `native__replace_block_in_file`
+- approval remains necessary for grounded mutation tools such as `native__write_file`, `native__replace_in_file`, `native__replace_all_in_file`, `native__replace_block_in_file`, and `native__apply_exact_hunk`
 - approval does not bypass grounding checks
 - insufficient or stale grounding produces an explicit visible tool failure
 - successful execution still requires both approval and fresh full-read grounding
@@ -102,7 +103,7 @@ Partial grounding does not qualify.
 The shortcut is explicit and inspectable, not silent.
 
 ### Mutation gating
-For `native__write_file`, `native__replace_in_file`, `native__replace_all_in_file`, and `native__replace_block_in_file`, ORBIT now blocks mutation when write readiness is not eligible.
+For `native__write_file`, `native__replace_in_file`, `native__replace_all_in_file`, `native__replace_block_in_file`, and `native__apply_exact_hunk`, ORBIT now blocks mutation when write readiness is not eligible.
 The blocked path is surfaced as a tool-visible failure with grounding-readiness metadata rather than hidden fallback behavior.
 
 ### Failure taxonomy
@@ -122,8 +123,8 @@ This layered failure model is important because grounded mutation safety is not 
 This note describes what ORBIT currently does, not what it has already generalized.
 
 Current boundaries:
-- grounded mutation now covers `native__write_file`, `native__replace_in_file`, the first multi-hit edit-family path `native__replace_all_in_file`, and the first exact block-level patch-style path `native__replace_block_in_file`
-- richer edit/diff-style mutation families are not yet grounded-aware beyond exact block replacement
+- grounded mutation now covers `native__write_file`, `native__replace_in_file`, the first multi-hit edit-family path `native__replace_all_in_file`, the first exact block-level patch-style path `native__replace_block_in_file`, and the first context-anchored exact hunk path `native__apply_exact_hunk`
+- richer edit/diff-style mutation families are not yet grounded-aware beyond exact block replacement and exact single-hunk application
 - hash-based freshness evidence is not yet implemented
 - range-aware grounding identity is not yet implemented
 - ORBIT does not yet auto-recover by forcing a reread when grounding is stale
@@ -135,7 +136,7 @@ Current boundaries:
 Current grounded mutation tools now converge on a small shared result shape in `ToolResult.data`.
 
 Current shared/result-shaping fields include:
-- `mutation_kind` — current values include `write_file`, `replace_in_file`, `replace_all_in_file`, `replace_block_in_file`
+- `mutation_kind` — current values include `write_file`, `replace_in_file`, `replace_all_in_file`, `replace_block_in_file`, `apply_exact_hunk`
 - `path` — the resolved target path reported by the tool
 - `replacement_count` — present where replacement-style mutation semantics apply
 - `write_readiness` — present on grounding-gate failures

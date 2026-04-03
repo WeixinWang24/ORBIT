@@ -127,3 +127,34 @@ class ReplaceBlockInFileTool(Tool):
         updated = content.replace(old_block, new_block, 1)
         target.write_text(updated)
         return ToolResult(ok=True, content=f"replaced block in {target}", data={"mutation_kind": "replace_block_in_file", "path": str(target), "match_count": 1, "replacement_count": 1, "before_excerpt": old_block, "after_excerpt": new_block})
+
+
+class ApplyExactHunkTool(Tool):
+    name = "native__apply_exact_hunk"
+    side_effect_class = "write"
+    requires_approval = True
+    governance_policy_group = "permission_authority"
+    environment_check_kind = "none"
+
+    def __init__(self, workspace_root: Path):
+        self.workspace_root = workspace_root.resolve()
+
+    def invoke(self, *, path: str, before_context: str, old_block: str, after_context: str, new_block: str) -> ToolResult:
+        target = (self.workspace_root / path).resolve()
+        try:
+            target.relative_to(self.workspace_root)
+        except ValueError:
+            return ToolResult(ok=False, content="path escapes workspace")
+        if not target.exists() or not target.is_file():
+            return ToolResult(ok=False, content="file not found")
+        content = target.read_text()
+        old_hunk = before_context + old_block + after_context
+        new_hunk = before_context + new_block + after_context
+        match_count = content.count(old_hunk)
+        if match_count == 0:
+            return ToolResult(ok=False, content="exact hunk not found", data={"mutation_kind": "apply_exact_hunk", "failure_layer": "tool_semantic", "path": str(target), "match_count": 0, "replacement_count": 0, "change_summary": "0 exact hunk matches"})
+        if match_count > 1:
+            return ToolResult(ok=False, content="exact hunk matched multiple regions", data={"mutation_kind": "apply_exact_hunk", "failure_layer": "tool_semantic", "path": str(target), "match_count": match_count, "replacement_count": 0, "change_summary": f"{match_count} exact hunk matches"})
+        updated = content.replace(old_hunk, new_hunk, 1)
+        target.write_text(updated)
+        return ToolResult(ok=True, content=f"applied exact hunk in {target}", data={"mutation_kind": "apply_exact_hunk", "path": str(target), "match_count": 1, "replacement_count": 1, "before_excerpt": old_block, "after_excerpt": new_block, "change_summary": "1 exact hunk applied"})
