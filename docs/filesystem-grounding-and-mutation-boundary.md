@@ -79,9 +79,10 @@ This layer converts grounding classification into mutation eligibility semantics
 ORBIT now applies the readiness layer to real execution for:
 - `native__write_file`
 - `native__replace_in_file`
+- `native__replace_all_in_file`
 
 Current invariant:
-- approval remains necessary for grounded mutation tools such as `native__write_file` and `native__replace_in_file`
+- approval remains necessary for grounded mutation tools such as `native__write_file`, `native__replace_in_file`, and `native__replace_all_in_file`
 - approval does not bypass grounding checks
 - insufficient or stale grounding produces an explicit visible tool failure
 - successful execution still requires both approval and fresh full-read grounding
@@ -100,7 +101,7 @@ Partial grounding does not qualify.
 The shortcut is explicit and inspectable, not silent.
 
 ### Mutation gating
-For `native__write_file` and `native__replace_in_file`, ORBIT now blocks mutation when write readiness is not eligible.
+For `native__write_file`, `native__replace_in_file`, and `native__replace_all_in_file`, ORBIT now blocks mutation when write readiness is not eligible.
 The blocked path is surfaced as a tool-visible failure with grounding-readiness metadata rather than hidden fallback behavior.
 
 ---
@@ -109,7 +110,7 @@ The blocked path is surfaced as a tool-visible failure with grounding-readiness 
 This note describes what ORBIT currently does, not what it has already generalized.
 
 Current boundaries:
-- grounded mutation now covers `native__write_file` and the first minimal edit-family path `native__replace_in_file`
+- grounded mutation now covers `native__write_file`, `native__replace_in_file`, and the first multi-hit edit-family path `native__replace_all_in_file`
 - richer edit/diff-style mutation families are not yet grounded-aware
 - hash-based freshness evidence is not yet implemented
 - range-aware grounding identity is not yet implemented

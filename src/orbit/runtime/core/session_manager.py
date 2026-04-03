@@ -152,7 +152,7 @@ class SessionManager:
         return tool.invoke(**tool_request.input_payload)
 
     def maybe_block_write_for_grounding(self, *, session: ConversationSession | None, tool_request: ToolRequest) -> ToolResult | None:
-        if session is None or tool_request.tool_name not in {"native__write_file", "native__replace_in_file"}:
+        if session is None or tool_request.tool_name not in {"native__write_file", "native__replace_in_file", "native__replace_all_in_file"}:
             return None
         path = tool_request.input_payload.get("path")
         if not isinstance(path, str) or not path:

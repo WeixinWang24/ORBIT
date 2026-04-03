@@ -70,4 +70,31 @@ class ReplaceInFileTool(Tool):
             return ToolResult(ok=False, content="old_text not found", data={"path": str(target)})
         updated = content.replace(old_text, new_text, 1)
         target.write_text(updated)
-        return ToolResult(ok=True, content=f"replaced text in {target}", data={"path": str(target)})
+        return ToolResult(ok=True, content=f"replaced text in {target}", data={"path": str(target), "replacement_count": 1})
+
+
+class ReplaceAllInFileTool(Tool):
+    name = "native__replace_all_in_file"
+    side_effect_class = "write"
+    requires_approval = True
+    governance_policy_group = "permission_authority"
+    environment_check_kind = "none"
+
+    def __init__(self, workspace_root: Path):
+        self.workspace_root = workspace_root.resolve()
+
+    def invoke(self, *, path: str, old_text: str, new_text: str) -> ToolResult:
+        target = (self.workspace_root / path).resolve()
+        try:
+            target.relative_to(self.workspace_root)
+        except ValueError:
+            return ToolResult(ok=False, content="path escapes workspace")
+        if not target.exists() or not target.is_file():
+            return ToolResult(ok=False, content="file not found")
+        content = target.read_text()
+        replacement_count = content.count(old_text)
+        if replacement_count == 0:
+            return ToolResult(ok=False, content="old_text not found", data={"path": str(target), "replacement_count": 0})
+        updated = content.replace(old_text, new_text)
+        target.write_text(updated)
+        return ToolResult(ok=True, content=f"replaced {replacement_count} occurrence(s) in {target}", data={"path": str(target), "replacement_count": replacement_count})
