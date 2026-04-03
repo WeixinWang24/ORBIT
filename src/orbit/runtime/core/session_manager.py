@@ -49,7 +49,7 @@ class SessionManager:
             self.backend.tool_registry = self.tool_registry
 
     def create_session(self, *, backend_name: str, model: str, conversation_id: str | None = None) -> ConversationSession:
-        session = ConversationSession(conversation_id=conversation_id or f"conversation:{backend_name}:{int(datetime.now(timezone.utc).timestamp())}", backend_name=backend_name, model=model)
+        session = ConversationSession(conversation_id=conversation_id or new_id(f"conversation_{backend_name}"), backend_name=backend_name, model=model)
         setattr(session, "_store", self.store)
         self.store.save_session(session)
         return session
@@ -296,6 +296,8 @@ class SessionManager:
             raise ValueError(f"approval request does not match pending session approval: {approval_request_id}")
 
         tool_request = ToolRequest.model_validate(pending["tool_request"])
+        if decision not in {"approve", "reject"}:
+            raise ValueError(f"unsupported approval decision: {decision}")
         self._clear_pending_approval(session)
 
         if decision == "approve":
@@ -415,20 +417,8 @@ class SessionManager:
             session = refreshed
         updated_messages = self.list_messages(session.session_id)
         final_plan = self._plan_from_messages(session=session, messages=updated_messages)
-        if final_plan.final_text:
-            self.append_message(
-                session_id=session.session_id,
-                role=MessageRole.ASSISTANT,
-                content=final_plan.final_text,
-                metadata={
-                    "source_backend": final_plan.source_backend,
-                    "plan_label": final_plan.plan_label,
-                    "continued_after_tool": True,
-                    "tool_name": initial_plan.tool_request.tool_name,
-                    "tool_ok": tool_result.ok,
-                },
-            )
-        return final_plan
+        finalized_plan = self._finalize_session_plan(session=session, plan=final_plan, messages=updated_messages)
+        return finalized_plan
 
     def _finalize_session_plan(
         self,
@@ -450,7 +440,7 @@ class SessionManager:
         if plan.tool_request is not None and rejected_tool_name is not None:
             governance = self._get_tool_governance_metadata(plan.tool_request.tool_name)
             policy_group = governance["policy_group"]
-            if plan.tool_request.tool_name == rejected_tool_name and policy_group != "permission_authority":
+            if plan.tool_request.tool_name == rejected_tool_name:
                 guard_text = (
                     f"The tool {rejected_tool_name} was already rejected in this continuation path and will not be requested again automatically. "
                     "Continue without reissuing that tool unless the human explicitly asks again in a later turn."
@@ -568,10 +558,9 @@ class SessionManager:
         tool_request = plan.tool_request
         governance = self._get_tool_governance_metadata(tool_request.tool_name)
         policy_group = governance["policy_group"]
-        appearance_count_after_rejection = self._appearance_count_after_rejection(
+        appearance_count_after_rejection = self._increment_appearance_count_after_rejection(
             session=session,
             tool_name=tool_request.tool_name,
-            rejected_tool_name=rejected_tool_name,
         )
         environment_status = self._resolve_environment_status_for_tool_request(tool_request)
         ctx = PolicyEvaluationInput(
@@ -753,7 +742,7 @@ class SessionManager:
         session.updated_at = datetime.now(timezone.utc)
         self.store.save_session(session)
 
-    def _appearance_count_after_rejection(self, *, session: ConversationSession, tool_name: str, rejected_tool_name: str | None) -> int:
+    def _get_appearance_count_after_rejection(self, *, session: ConversationSession, tool_name: str) -> int:
         tracking = session.metadata.setdefault("policy_tracking", {})
         permission_tracking = tracking.setdefault("permission_authority", {})
         tool_tracking = permission_tracking.setdefault(
@@ -763,12 +752,22 @@ class SessionManager:
                 "appearance_count_after_rejection": 0,
             },
         )
+        return int(tool_tracking.get("appearance_count_after_rejection", 0))
 
+    def _increment_appearance_count_after_rejection(self, *, session: ConversationSession, tool_name: str) -> int:
+        tracking = session.metadata.setdefault("policy_tracking", {})
+        permission_tracking = tracking.setdefault("permission_authority", {})
+        tool_tracking = permission_tracking.setdefault(
+            tool_name,
+            {
+                "rejection_active": False,
+                "appearance_count_after_rejection": 0,
+            },
+        )
         if tool_tracking.get("rejection_active"):
             tool_tracking["appearance_count_after_rejection"] = int(tool_tracking.get("appearance_count_after_rejection", 0)) + 1
             session.updated_at = datetime.now(timezone.utc)
             self.store.save_session(session)
-
         return int(tool_tracking.get("appearance_count_after_rejection", 0))
 
     def reauthorize_tool_path(

@@ -17,7 +17,9 @@ class ReadFileTool(Tool):
 
     def invoke(self, *, path: str) -> ToolResult:
         target = (self.workspace_root / path).resolve()
-        if not str(target).startswith(str(self.workspace_root)):
+        try:
+            target.relative_to(self.workspace_root)
+        except ValueError:
             return ToolResult(ok=False, content="path escapes workspace")
         if not target.exists() or not target.is_file():
             return ToolResult(ok=False, content="file not found")
@@ -36,7 +38,9 @@ class WriteFileTool(Tool):
 
     def invoke(self, *, path: str, content: str) -> ToolResult:
         target = (self.workspace_root / path).resolve()
-        if not str(target).startswith(str(self.workspace_root)):
+        try:
+            target.relative_to(self.workspace_root)
+        except ValueError:
             return ToolResult(ok=False, content="path escapes workspace")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)

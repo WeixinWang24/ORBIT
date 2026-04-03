@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from orbit.runtime.auth.storage.openai import OpenAIOAuthCredential
@@ -40,6 +41,7 @@ class OpenAIAuthStore:
             + "\n",
             encoding="utf-8",
         )
+        os.chmod(self.file_path, 0o600)
         return self.file_path
 
     def load(self) -> OpenAIOAuthCredential:

@@ -19,7 +19,11 @@ class ToolRegistry:
             self.register(tool)
 
     def get(self, name: str) -> Tool:
-        return self._tools[name]
+        try:
+            return self._tools[name]
+        except KeyError as exc:
+            available = ", ".join(sorted(self._tools.keys()))
+            raise KeyError(f"tool not found: {name}. available tools: {available}") from exc
 
     def list_names(self) -> list[str]:
         return sorted(self._tools.keys())
