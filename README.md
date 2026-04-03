@@ -72,4 +72,7 @@ orbit demo
 - `notebooks/providers/` — provider comparison and live-backend demos
 - `notes/scaffold/` — local scaffold/demo support files
 
-See also: `docs/project-structure.md`.
+See also:
+- `docs/project-structure.md`
+- `docs/architecture/overview.md`
+- `docs/session-manager-mvp-loop-contract.md`
