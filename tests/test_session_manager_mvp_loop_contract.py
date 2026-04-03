@@ -6,6 +6,7 @@ from pathlib import Path
 
 from orbit.models import MessageRole
 from orbit.runtime import DummyExecutionBackend, RuntimeEventType, SessionManager
+from orbit.web_inspector import _html_page
 from orbit.runtime.auth.storage.openai_store import OpenAIAuthStoreError
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
 from orbit.store.sqlite_store import SQLiteStore
@@ -1074,6 +1075,8 @@ class SessionManagerMvpLoopContractTests(unittest.TestCase):
         self.assertEqual(tool_messages[-1].metadata.get("tool_name"), "native__replace_in_file")
         self.assertTrue(tool_messages[-1].metadata.get("tool_ok"))
         self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("replacement_count"), 1)
+        self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("before_excerpt"), "seed")
+        self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("after_excerpt"), "replaced")
         self.assertEqual(target.read_text(), "replaced\n")
 
     def test_native_replace_all_is_blocked_without_prior_grounding_after_approval(self):
@@ -1174,6 +1177,8 @@ class SessionManagerMvpLoopContractTests(unittest.TestCase):
         self.assertEqual(tool_messages[-1].metadata.get("tool_name"), "native__replace_all_in_file")
         self.assertTrue(tool_messages[-1].metadata.get("tool_ok"))
         self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("replacement_count"), 2)
+        self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("before_excerpt"), "seed")
+        self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("after_excerpt"), "replaced")
         self.assertEqual(target.read_text(), "replaced\nreplaced\n")
 
     def test_native_replace_all_reports_tool_semantic_failure_when_old_text_missing(self):
@@ -1314,6 +1319,8 @@ class SessionManagerMvpLoopContractTests(unittest.TestCase):
         self.assertTrue(tool_messages[-1].metadata.get("tool_ok"))
         self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("match_count"), 1)
         self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("replacement_count"), 1)
+        self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("before_excerpt"), "alpha\nbeta\n")
+        self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("after_excerpt"), "alpha\nBETA\n")
         self.assertEqual(target.read_text(), "alpha\nBETA\ngamma\n")
 
     def test_native_replace_block_reports_tool_semantic_failure_when_old_block_missing(self):
@@ -1391,6 +1398,46 @@ class SessionManagerMvpLoopContractTests(unittest.TestCase):
         self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("failure_layer"), "tool_semantic")
         self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("match_count"), 2)
         self.assertEqual(target.read_text(), "alpha\nbeta\nalpha\nbeta\ngamma\n")
+
+    def test_web_inspector_renders_mutation_summary_for_tool_results(self):
+        tool_data = {
+            "mutation_kind": "replace_block_in_file",
+            "path": "/tmp/example.txt",
+            "match_count": 1,
+            "replacement_count": 1,
+            "before_excerpt": "alpha\nbeta\n",
+            "after_excerpt": "alpha\nBETA\n",
+        }
+        class Msg:
+            role = MessageRole.TOOL
+            content = ""
+            metadata = {
+                "message_kind": "tool_result",
+                "tool_name": "native__replace_block_in_file",
+                "tool_ok": True,
+                "tool_data": tool_data,
+            }
+        html = _html_page(
+            sessions=[],
+            current_session=None,
+            transcript=[Msg()],
+            events=[],
+            artifacts=[],
+            metadata={},
+            tool_calls=[{
+                "tool_name": "native__replace_block_in_file",
+                "status": "completed",
+                "requires_approval": True,
+                "side_effect_class": "write",
+                "result_payload": {"data": tool_data},
+            }],
+            active_tab="tool_calls",
+        )
+        self.assertIn("replace_block_in_file", html)
+        self.assertIn("replacement_count=1", html)
+        self.assertIn("match_count=1", html)
+        self.assertIn("<strong>before</strong>", html)
+        self.assertIn("<strong>after</strong>", html)
 
     def test_mcp_path_escape_is_denied_before_tool_execution(self):
         workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))

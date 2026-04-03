@@ -8,6 +8,57 @@ from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+
+def _preview_snippet(value: str, *, limit: int = 80) -> str:
+    preview = value.replace("\n", "\\n")
+    return preview[:limit] + ("…" if len(preview) > limit else "")
+
+
+def _mutation_summary_from_tool_data(tool_data: dict | None) -> str | None:
+    if not isinstance(tool_data, dict):
+        return None
+    mutation_kind = tool_data.get("mutation_kind")
+    if not mutation_kind:
+        return None
+    parts: list[str] = [str(mutation_kind)]
+    path = tool_data.get("path")
+    if path:
+        parts.append(str(path))
+    replacement_count = tool_data.get("replacement_count")
+    if replacement_count is not None:
+        parts.append(f"replacement_count={replacement_count}")
+    match_count = tool_data.get("match_count")
+    if match_count is not None:
+        parts.append(f"match_count={match_count}")
+    failure_layer = tool_data.get("failure_layer")
+    if failure_layer:
+        parts.append(f"failure_layer={failure_layer}")
+    write_readiness = tool_data.get("write_readiness") if isinstance(tool_data.get("write_readiness"), dict) else {}
+    readiness_reason = write_readiness.get("reason")
+    if readiness_reason:
+        parts.append(f"reason={readiness_reason}")
+    return " · ".join(parts)
+
+
+def _mutation_detail_html(tool_data: dict | None) -> str:
+    if not isinstance(tool_data, dict):
+        return ""
+    mutation_kind = tool_data.get("mutation_kind")
+    if not mutation_kind:
+        return ""
+    blocks: list[str] = []
+    before_excerpt = tool_data.get("before_excerpt")
+    after_excerpt = tool_data.get("after_excerpt")
+    if isinstance(before_excerpt, str) and before_excerpt:
+        blocks.append(
+            '<div class="tool-call-reason"><strong>before</strong>: ' + escape(_preview_snippet(before_excerpt)) + '</div>'
+        )
+    if isinstance(after_excerpt, str) and after_excerpt:
+        blocks.append(
+            '<div class="tool-call-reason"><strong>after</strong>: ' + escape(_preview_snippet(after_excerpt)) + '</div>'
+        )
+    return ''.join(blocks)
+
 from orbit.settings import DEFAULT_DB_PATH, DEFAULT_WORKSPACE_ROOT
 from orbit.store.sqlite_store import SQLiteStore
 
@@ -192,8 +243,14 @@ def _render_tool_calls_panel(tool_calls: list[dict]) -> str:
         css = "success" if status == "completed" else "failed" if status == "failed" else ""
         result_payload = tool_call.get("result_payload") if isinstance(tool_call.get("result_payload"), dict) else {}
         failure_reason = None
+        mutation_summary = None
+        mutation_detail_html = ""
         if result_payload:
-            failure_reason = result_payload.get("content") or (result_payload.get("data", {}) if isinstance(result_payload.get("data"), dict) else {}).get("reason")
+            result_data = result_payload.get("data", {}) if isinstance(result_payload.get("data"), dict) else {}
+            failure_reason = result_payload.get("content") or result_data.get("reason")
+            mutation_summary = _mutation_summary_from_tool_data(result_data)
+            mutation_detail_html = _mutation_detail_html(result_data)
+        summary_html = f'<div class="tool-call-reason">{escape(str(mutation_summary))}</div>' if mutation_summary else ""
         reason_html = f'<div class="tool-call-reason">{escape(str(failure_reason))}</div>' if failure_reason and status != "completed" else ""
         badge_class = "success" if status == "completed" else "failed" if status == "failed" else ""
         badge_html = f'<span class="tool-call-status-badge {badge_class}">{escape(status)}</span>' if badge_class else f'<span class="tool-call-status-badge">{escape(status)}</span>'
@@ -201,6 +258,8 @@ def _render_tool_calls_panel(tool_calls: list[dict]) -> str:
             f'<div class="fragment-card tool-call-card {css}">'
             f'<h3 class="fragment-title">{escape(str(tool_call.get("tool_name", "tool")))}{badge_html}</h3>'
             f'<div class="fragment-meta">requires_approval={escape(str(tool_call.get("requires_approval", False)))} · side_effect_class={escape(str(tool_call.get("side_effect_class", "unknown")))}</div>'
+            f'{summary_html}'
+            f'{mutation_detail_html}'
             f'{reason_html}'
             f'<pre>{escape(json.dumps(tool_call, indent=2, ensure_ascii=False))}</pre>'
             f'</div>'
@@ -255,7 +314,17 @@ def _html_page(*, sessions, current_session, transcript, events, artifacts, meta
                 tool_data = message.metadata.get("tool_data") if isinstance(message.metadata, dict) else None
                 raw_result = tool_data.get("raw_result") if isinstance(tool_data, dict) else None
                 structured = raw_result.get("structuredContent") if isinstance(raw_result, dict) else None
-                if isinstance(structured, dict):
+                current_tool_data = tool_data if isinstance(tool_data, dict) else None
+                mutation_summary = _mutation_summary_from_tool_data(current_tool_data)
+                mutation_detail_text = []
+                if isinstance(current_tool_data, dict):
+                    if isinstance(current_tool_data.get("before_excerpt"), str) and current_tool_data.get("before_excerpt"):
+                        mutation_detail_text.append("before=" + _preview_snippet(current_tool_data.get("before_excerpt")))
+                    if isinstance(current_tool_data.get("after_excerpt"), str) and current_tool_data.get("after_excerpt"):
+                        mutation_detail_text.append("after=" + _preview_snippet(current_tool_data.get("after_excerpt")))
+                if mutation_summary:
+                    preview_source = mutation_summary + (("\n" + "\n".join(mutation_detail_text)) if mutation_detail_text else "")
+                elif isinstance(structured, dict):
                     preview_source = json.dumps(structured, ensure_ascii=False)
             elif kind == "approval_request":
                 classes.append("approval-request")

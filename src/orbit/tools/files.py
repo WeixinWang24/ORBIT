@@ -70,7 +70,7 @@ class ReplaceInFileTool(Tool):
             return ToolResult(ok=False, content="old_text not found", data={"mutation_kind": "replace_in_file", "failure_layer": "tool_semantic", "path": str(target)})
         updated = content.replace(old_text, new_text, 1)
         target.write_text(updated)
-        return ToolResult(ok=True, content=f"replaced text in {target}", data={"mutation_kind": "replace_in_file", "path": str(target), "replacement_count": 1})
+        return ToolResult(ok=True, content=f"replaced text in {target}", data={"mutation_kind": "replace_in_file", "path": str(target), "replacement_count": 1, "before_excerpt": old_text, "after_excerpt": new_text})
 
 
 class ReplaceAllInFileTool(Tool):
@@ -97,7 +97,7 @@ class ReplaceAllInFileTool(Tool):
             return ToolResult(ok=False, content="old_text not found", data={"mutation_kind": "replace_all_in_file", "failure_layer": "tool_semantic", "path": str(target), "replacement_count": 0})
         updated = content.replace(old_text, new_text)
         target.write_text(updated)
-        return ToolResult(ok=True, content=f"replaced {replacement_count} occurrence(s) in {target}", data={"mutation_kind": "replace_all_in_file", "path": str(target), "replacement_count": replacement_count})
+        return ToolResult(ok=True, content=f"replaced {replacement_count} occurrence(s) in {target}", data={"mutation_kind": "replace_all_in_file", "path": str(target), "replacement_count": replacement_count, "before_excerpt": old_text, "after_excerpt": new_text})
 
 
 class ReplaceBlockInFileTool(Tool):
@@ -126,4 +126,4 @@ class ReplaceBlockInFileTool(Tool):
             return ToolResult(ok=False, content="old_block matched multiple regions", data={"mutation_kind": "replace_block_in_file", "failure_layer": "tool_semantic", "path": str(target), "match_count": match_count, "replacement_count": 0})
         updated = content.replace(old_block, new_block, 1)
         target.write_text(updated)
-        return ToolResult(ok=True, content=f"replaced block in {target}", data={"mutation_kind": "replace_block_in_file", "path": str(target), "match_count": 1, "replacement_count": 1})
+        return ToolResult(ok=True, content=f"replaced block in {target}", data={"mutation_kind": "replace_block_in_file", "path": str(target), "match_count": 1, "replacement_count": 1, "before_excerpt": old_block, "after_excerpt": new_block})

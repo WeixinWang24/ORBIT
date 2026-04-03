@@ -208,8 +208,9 @@ Current implementation progress:
 - ORBIT now uses this helper to gate `native__write_file` at execution time: approval alone is no longer enough when grounding is missing or stale
 - ORBIT also now applies the same gate to the first minimal edit-family path, `native__replace_in_file`
 - ORBIT also now applies the same gate to the first multi-hit edit-family path, `native__replace_all_in_file`
-- grounded mutation results are also beginning to converge on a shared minimal contract (`mutation_kind`, path, optional replacement counts, exact-match counters, and layered failure markers)
+- grounded mutation results are also beginning to converge on a shared minimal contract (`mutation_kind`, path, optional replacement counts, exact-match counters, layered failure markers, and replace-family excerpts)
 - ORBIT now also has its first exact block-level grounded mutation path: `native__replace_block_in_file`
+- inspector/tool-call rendering now projects mutation summaries plus before/after excerpts for replace-family results
 - this remains intentionally narrow: richer fuzzy/diff-hunk mutation families are still future work
 
 ---
