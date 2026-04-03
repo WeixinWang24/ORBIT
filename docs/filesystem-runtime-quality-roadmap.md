@@ -175,8 +175,9 @@ This would support later work on:
 
 Current implementation progress:
 - ORBIT now records a minimal `filesystem_read_state` metadata entry for successful `read_file` executions
-- the current shape records `source_tool`, `timestamp_epoch`, `is_partial_view`, and `range`
-- truncated `read_file` results now explicitly record `is_partial_view = true`
+- the current shape records `source_tool`, `timestamp_epoch`, `is_partial_view`, `grounding_kind`, `path_kind`, and `range`
+- truncated `read_file` results now explicitly record `is_partial_view = true` and `grounding_kind = partial_read`
+- current grounding participation is intentionally narrow: only `read_file` updates grounding state; `list_directory`, `list_directory_with_sizes`, `get_file_info`, `directory_tree`, and `search_files` do not yet participate
 - this is currently recording-only: it does not yet change visible `read_file` behavior or future governance decisions
 
 ### Phase B2 — first implementation slice
@@ -187,6 +188,12 @@ Current implementation progress:
 ### Phase B3 — explicit freshness shortcut
 - add `unchanged` result kind for strictly safe repeated `read_file` cases
 - ensure transcript/tool-call/inspector visibility stays intact
+
+Current implementation progress:
+- ORBIT now supports a first explicit `filesystem_unchanged` result for repeated same-path `read_file` requests within a session
+- the current trigger is intentionally strict: only a prior `full_read` grounding entry for the same path may produce `status = unchanged`
+- prior `partial_read` grounding does not qualify
+- the shortcut remains explicit and inspectable through normal tool-result surfaces; it is not a silent optimization
 
 ### Phase B4 — write/edit coupling
 - when write/edit paths expand later, consume grounding-quality state explicitly instead of assuming any prior path touch is enough

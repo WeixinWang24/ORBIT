@@ -441,6 +441,8 @@ class InspectorHandler(BaseHTTPRequestHandler):
             metadata["filesystem_read_state_summary"] = {
                 path: {
                     "source_tool": state.get("source_tool"),
+                    "grounding_kind": state.get("grounding_kind"),
+                    "path_kind": state.get("path_kind"),
                     "is_partial_view": state.get("is_partial_view"),
                 }
                 for path, state in metadata.get("filesystem_read_state", {}).items()

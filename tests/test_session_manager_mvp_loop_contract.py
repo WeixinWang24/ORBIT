@@ -119,11 +119,24 @@ class NonApprovalToolThenFinishBackend:
 class McpReadThenFinishBackend:
     backend_name = "mcp-read-then-finish"
 
-    def __init__(self, path: str = "notes/mcp-existing.txt"):
+    def __init__(self, path: str = "notes/mcp-existing.txt", repeat_once: bool = False):
         self.path = path
+        self.repeat_once = repeat_once
 
     def plan_from_messages(self, messages, session=None):
         tool_results = [m for m in messages if m.role == MessageRole.TOOL]
+        if self.repeat_once and len(tool_results) == 1:
+            return ExecutionPlan(
+                source_backend=self.backend_name,
+                plan_label="mcp-safe-tool-repeat-needed",
+                tool_request=ToolRequest(
+                    tool_name="read_file",
+                    input_payload={"path": self.path},
+                    requires_approval=False,
+                    side_effect_class="safe",
+                ),
+                should_finish_after_tool=True,
+            )
         if tool_results:
             return ExecutionPlan(
                 source_backend=self.backend_name,
@@ -510,6 +523,8 @@ class SessionManagerMvpLoopContractTests(unittest.TestCase):
         read_state = refreshed.metadata.get("filesystem_read_state", {})
         self.assertIn("notes/mcp-existing.txt", read_state)
         self.assertFalse(read_state["notes/mcp-existing.txt"].get("is_partial_view"))
+        self.assertEqual(read_state["notes/mcp-existing.txt"].get("grounding_kind"), "full_read")
+        self.assertEqual(read_state["notes/mcp-existing.txt"].get("path_kind"), "file")
 
     def test_mcp_read_file_records_partial_view_when_truncated(self):
         workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
@@ -532,6 +547,58 @@ class SessionManagerMvpLoopContractTests(unittest.TestCase):
         read_state = refreshed.metadata.get("filesystem_read_state", {})
         self.assertIn("notes/truncated.txt", read_state)
         self.assertTrue(read_state["notes/truncated.txt"].get("is_partial_view"))
+        self.assertEqual(read_state["notes/truncated.txt"].get("grounding_kind"), "partial_read")
+        self.assertEqual(read_state["notes/truncated.txt"].get("path_kind"), "file")
+
+    def test_mcp_repeated_full_read_returns_explicit_unchanged_result(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        notes_dir = workspace_root / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        (notes_dir / "mcp-existing.txt").write_text("hello from mcp contract path\n", encoding="utf-8")
+
+        sm = self.make_session_manager(
+            McpReadThenFinishBackend(repeat_once=True),
+            enable_mcp_filesystem=True,
+            workspace_root=workspace_root,
+        )
+        session = sm.create_session(backend_name="mcp-read-then-finish", model="test-model")
+        plan = sm.run_session_turn(session_id=session.session_id, user_input="please read twice via mcp")
+
+        messages = sm.list_messages(session.session_id)
+        self.assertEqual(plan.plan_label, "post-tool-final")
+        self.assertEqual([m.role for m in messages], [MessageRole.USER, MessageRole.TOOL, MessageRole.TOOL, MessageRole.ASSISTANT])
+        second_tool = messages[2]
+        self.assertEqual(second_tool.metadata.get("message_kind"), "tool_result")
+        self.assertEqual(second_tool.metadata.get("tool_name"), "read_file")
+        structured = second_tool.metadata.get("tool_data", {}).get("raw_result", {}).get("structuredContent", {})
+        self.assertEqual(second_tool.metadata.get("tool_data", {}).get("result_kind"), "filesystem_unchanged")
+        self.assertEqual(structured.get("path"), "notes/mcp-existing.txt")
+        self.assertEqual(structured.get("status"), "unchanged")
+        self.assertEqual(structured.get("grounding_kind"), "full_read")
+
+    def test_mcp_repeated_partial_read_does_not_return_unchanged_result(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        notes_dir = workspace_root / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        long_content = "x" * (70 * 1024)
+        (notes_dir / "truncated.txt").write_text(long_content, encoding="utf-8")
+
+        sm = self.make_session_manager(
+            McpReadThenFinishBackend(path="notes/truncated.txt", repeat_once=True),
+            enable_mcp_filesystem=True,
+            workspace_root=workspace_root,
+        )
+        session = sm.create_session(backend_name="mcp-read-then-finish", model="test-model")
+        plan = sm.run_session_turn(session_id=session.session_id, user_input="please read twice via mcp")
+
+        messages = sm.list_messages(session.session_id)
+        self.assertEqual(plan.plan_label, "post-tool-final")
+        self.assertEqual([m.role for m in messages], [MessageRole.USER, MessageRole.TOOL, MessageRole.TOOL, MessageRole.ASSISTANT])
+        second_tool = messages[2]
+        structured = second_tool.metadata.get("tool_data", {}).get("raw_result", {}).get("structuredContent", {})
+        self.assertNotEqual(second_tool.metadata.get("tool_data", {}).get("result_kind"), "filesystem_unchanged")
+        self.assertEqual(structured.get("path"), "notes/truncated.txt")
+        self.assertTrue(structured.get("truncated"))
 
     def test_mcp_path_escape_is_denied_before_tool_execution(self):
         workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
@@ -687,6 +754,9 @@ class SessionManagerMvpLoopContractTests(unittest.TestCase):
         )
         self.assertEqual(len(invocations), 1)
         self.assertEqual(invocations[0].tool_name, "get_file_info")
+        refreshed = sm.get_session(session.session_id)
+        self.assertIsNotNone(refreshed)
+        self.assertNotIn("notes/info-target.txt", refreshed.metadata.get("filesystem_read_state", {}))
         self.assertEqual(getattr(invocations[0].status, "value", str(invocations[0].status)), "completed")
 
     def test_mcp_directory_tree_turn_is_closure_complete_inside_run_session_turn(self):
@@ -766,6 +836,9 @@ class SessionManagerMvpLoopContractTests(unittest.TestCase):
         self.assertIn("notes/search-root/a.txt", match_paths)
         self.assertIn("notes/search-root/b.txt", match_paths)
         self.assertIn("notes/search-root/subdir/c.txt", match_paths)
+        refreshed = sm.get_session(session.session_id)
+        self.assertIsNotNone(refreshed)
+        self.assertEqual(refreshed.metadata.get("filesystem_read_state", {}), {})
         self.assertEqual(
             [getattr(event.event_type, "value", str(event.event_type)) for event in events],
             [RuntimeEventType.RUN_STARTED.value, RuntimeEventType.TOOL_INVOCATION_COMPLETED.value],

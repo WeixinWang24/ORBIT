@@ -139,13 +139,50 @@ class SessionManager:
             session.updated_at = datetime.now(timezone.utc)
             self.store.save_session(session)
 
-    def execute_tool_request(self, *, tool_request: ToolRequest) -> ToolResult:
+    def execute_tool_request(self, *, session: ConversationSession | None = None, tool_request: ToolRequest) -> ToolResult:
         """Execute one normalized tool request against the local registry."""
+        unchanged_result = self.maybe_make_filesystem_unchanged_result(session=session, tool_request=tool_request)
+        if unchanged_result is not None:
+            return unchanged_result
         tool = self.tool_registry.get(tool_request.tool_name)
         return tool.invoke(**tool_request.input_payload)
 
+    def maybe_make_filesystem_unchanged_result(self, *, session: ConversationSession | None, tool_request: ToolRequest) -> ToolResult | None:
+        if session is None or tool_request.tool_name != "read_file":
+            return None
+        path = tool_request.input_payload.get("path")
+        if not isinstance(path, str) or not path:
+            return None
+        read_state = session.metadata.get("filesystem_read_state", {})
+        if not isinstance(read_state, dict):
+            return None
+        prior = read_state.get(path)
+        if not isinstance(prior, dict):
+            return None
+        if prior.get("grounding_kind") != "full_read":
+            return None
+        structured = {
+            "path": path,
+            "status": "unchanged",
+            "grounding_kind": "full_read",
+            "range": None,
+        }
+        return ToolResult(
+            ok=True,
+            content=f"File {path} unchanged since prior full read in this session.",
+            data={
+                "result_kind": "filesystem_unchanged",
+                "raw_result": {"structuredContent": structured},
+            },
+        )
+
+    def filesystem_grounding_kind_for_tool(self, tool_name: str, *, is_partial_view: bool) -> str | None:
+        if tool_name == "read_file":
+            return "partial_read" if is_partial_view else "full_read"
+        return None
+
     def record_filesystem_read_state(self, *, session: ConversationSession, tool_request: ToolRequest, tool_result: ToolResult) -> None:
-        if not tool_result.ok or tool_request.tool_name != "read_file":
+        if not tool_result.ok:
             return
         path = tool_request.input_payload.get("path")
         if not isinstance(path, str) or not path:
@@ -153,12 +190,19 @@ class SessionManager:
         tool_data = tool_result.data if isinstance(tool_result.data, dict) else {}
         raw_result = tool_data.get("raw_result") if isinstance(tool_data, dict) else {}
         structured = raw_result.get("structuredContent") if isinstance(raw_result, dict) else {}
+        if isinstance(structured, dict) and structured.get("status") == "unchanged":
+            return
         truncated = bool(structured.get("truncated")) if isinstance(structured, dict) else False
+        grounding_kind = self.filesystem_grounding_kind_for_tool(tool_request.tool_name, is_partial_view=truncated)
+        if grounding_kind is None:
+            return
         read_state = session.metadata.setdefault("filesystem_read_state", {})
         read_state[path] = {
             "source_tool": tool_request.tool_name,
             "timestamp_epoch": datetime.now(timezone.utc).timestamp(),
             "is_partial_view": truncated,
+            "grounding_kind": grounding_kind,
+            "path_kind": "file",
             "range": None,
         }
         session.updated_at = datetime.now(timezone.utc)
@@ -409,7 +453,7 @@ class SessionManager:
             side_effect_class=tool_request.side_effect_class,
         )
         self.store.save_tool_invocation(invocation)
-        tool_result = self.execute_tool_request(tool_request=tool_request)
+        tool_result = self.execute_tool_request(session=session, tool_request=tool_request)
         self.record_filesystem_read_state(session=session, tool_request=tool_request, tool_result=tool_result)
         if session.governed_tool_state is not None and session.governed_tool_state.tool_name == initial_plan.tool_request.tool_name:
             self._transition_governed_tool_state(
