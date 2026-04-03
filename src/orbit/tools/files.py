@@ -6,7 +6,7 @@ from .base import Tool, ToolResult
 
 
 class ReadFileTool(Tool):
-    name = "read_file"
+    name = "native__read_file"
     side_effect_class = "safe"
     requires_approval = False
     governance_policy_group = "system_environment"
@@ -25,7 +25,7 @@ class ReadFileTool(Tool):
 
 
 class WriteFileTool(Tool):
-    name = "write_file"
+    name = "native__write_file"
     side_effect_class = "write"
     requires_approval = True
     governance_policy_group = "permission_authority"

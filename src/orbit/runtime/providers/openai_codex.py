@@ -32,11 +32,12 @@ class OpenAICodexConfig:
 class OpenAICodexExecutionBackend(ExecutionBackend):
     backend_name = "openai-codex"
 
-    def __init__(self, config: OpenAICodexConfig | None = None, repo_root: Path | None = None, workspace_root: Path | None = None):
+    def __init__(self, config: OpenAICodexConfig | None = None, repo_root: Path | None = None, workspace_root: Path | None = None, tool_registry: ToolRegistry | None = None):
         self.config = config or OpenAICodexConfig()
         self.repo_root = repo_root or Path.cwd()
         self.workspace_root = workspace_root or self.repo_root
         self.auth_store = OpenAIAuthStore(self.repo_root)
+        self.tool_registry = tool_registry
 
     def plan(self, descriptor: RunDescriptor) -> ExecutionPlan:
         return self.plan_from_messages([ConversationMessage(session_id=descriptor.session_key, role=MessageRole.USER, content=descriptor.user_input, turn_index=1)], session=None)
@@ -72,25 +73,31 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
         return self.build_request_payload_from_messages([ConversationMessage(session_id=descriptor.session_key, role=MessageRole.USER, content=descriptor.user_input, turn_index=1)], session=None)
 
     def build_tool_definitions(self) -> list[dict]:
-        registry = ToolRegistry(self.repo_root)
+        registry = self.tool_registry or ToolRegistry(self.workspace_root)
         definitions: list[dict] = []
         for tool in registry.list_tools():
-            if tool.name == "read_file":
+            if tool.name in {"native__read_file", "read_file"}:
+                description = (
+                    "Read a file via the ORBIT MCP filesystem server."
+                    if tool.name == "read_file"
+                    else "Read a file from the ORBIT workspace."
+                )
                 definitions.append(
                     {
                         "type": "function",
                         "name": tool.name,
-                        "description": "Read a file from the ORBIT workspace.",
+                        "description": description,
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "path": {"type": "string", "description": "Workspace-relative file path."}
                             },
                             "required": ["path"],
+                            "additionalProperties": False,
                         },
                     }
                 )
-            elif tool.name == "write_file":
+            elif tool.name == "native__write_file":
                 definitions.append(
                     {
                         "type": "function",
@@ -103,6 +110,7 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
                                 "content": {"type": "string", "description": "File content to write."},
                             },
                             "required": ["path", "content"],
+                            "additionalProperties": False,
                         },
                     }
                 )
@@ -209,7 +217,7 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
                     input_payload = json.loads(arguments_text)
                 except json.JSONDecodeError:
                     input_payload = {"raw_arguments": arguments_text}
-                registry = ToolRegistry(self.repo_root)
+                registry = self.tool_registry or ToolRegistry(self.workspace_root)
                 tool = registry.get(tool_name)
                 normalized = ProviderNormalizedResult(
                     source_backend=self.backend_name,

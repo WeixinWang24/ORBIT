@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import webbrowser
+from datetime import datetime
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -18,6 +19,10 @@ VIO_INSPIRED_CSS = """
   --text-dim: #7FC8E8;
   --cyan: #00FFC6;
   --pink: #FF2E88;
+  --green: #3CFF9F;
+  --amber: #FFCC66;
+  --red: #FF6B8A;
+  --violet: #B388FF;
   --radius: 14px;
   --shadow-cyan: 0 0 0 1px rgba(0,255,198,.18), 0 0 18px rgba(0,255,198,.08);
 }
@@ -75,7 +80,26 @@ body { overflow: hidden; }
 .main-panel { min-height: 0; overflow: auto; flex: 1; }
 .meta { color: var(--text-dim); font-size: 16px; }
 .message-card { margin-bottom: 12px; padding: 16px; border-radius: 12px; border: 1px solid rgba(0,255,198,.12); background: rgba(18,18,34,.75); }
+.message-card.toolish { border-color: rgba(179,136,255,.38); background: linear-gradient(180deg, rgba(179,136,255,.10), rgba(18,18,34,.78)); box-shadow: 0 0 0 1px rgba(179,136,255,.12); }
+.message-card.toolish.tool-ok { border-color: rgba(60,255,159,.30); background: linear-gradient(180deg, rgba(60,255,159,.08), rgba(18,18,34,.78)); }
+.message-card.toolish.tool-fail { border-color: rgba(255,107,138,.30); background: linear-gradient(180deg, rgba(255,107,138,.08), rgba(18,18,34,.78)); }
+.message-card.toolish.policy { border-color: rgba(255,204,102,.30); background: linear-gradient(180deg, rgba(255,204,102,.08), rgba(18,18,34,.78)); }
+.message-card.toolish.approval-request { border-color: rgba(0,255,198,.30); background: linear-gradient(180deg, rgba(0,255,198,.08), rgba(18,18,34,.78)); }
+.message-card.toolish.approval-decision { border-color: rgba(179,136,255,.32); background: linear-gradient(180deg, rgba(179,136,255,.10), rgba(18,18,34,.78)); }
 .message-role { font-size: 16px; letter-spacing: .10em; text-transform: uppercase; color: var(--pink); margin-bottom: 8px; }
+.message-card.toolish .message-role { color: var(--violet); }
+.message-summary { margin-bottom: 10px; color: var(--text); font-size: 15px; line-height: 1.5; }
+.message-meta-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.message-chip { padding: 6px 10px; border-radius: 999px; font-size: 13px; border: 1px solid rgba(0,255,198,.16); color: var(--text-dim); }
+.message-chip.ok { border-color: rgba(60,255,159,.34); color: var(--green); }
+.message-chip.fail { border-color: rgba(255,107,138,.34); color: var(--red); }
+.message-chip.policy { border-color: rgba(255,204,102,.34); color: var(--amber); }
+.tool-call-card.success .fragment-title { color: var(--green); }
+.tool-call-card.failed .fragment-title { color: var(--red); }
+.tool-call-status-badge { display: inline-flex; align-items: center; margin-left: 8px; padding: 4px 8px; border-radius: 999px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; border: 1px solid rgba(0,255,198,.18); color: var(--text-dim); }
+.tool-call-status-badge.success { border-color: rgba(60,255,159,.34); color: var(--green); }
+.tool-call-status-badge.failed { border-color: rgba(255,107,138,.34); color: var(--red); }
+.tool-call-reason { margin: 0 0 8px; color: var(--text); font-size: 14px; }
 pre {
   margin: 0; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 16px; line-height: 1.7;
@@ -87,6 +111,27 @@ pre {
 .empty { color: var(--text-dim); font-style: italic; }
 .chip { padding: 8px 12px; border-radius: 999px; border: 1px solid rgba(255,46,136,.22); color: #ffd1e6; font-size: 16px; }
 """
+
+
+def _format_local_timestamp(value) -> str:
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        try:
+            dt = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    else:
+        return str(value)
+    if dt.tzinfo is None:
+        return dt.isoformat()
+    return dt.astimezone().isoformat()
+
+
+def _truncate_text(value: str, *, limit: int = 220) -> tuple[str, bool]:
+    if len(value) <= limit:
+        return value, False
+    return value[: limit - 1].rstrip() + "…", True
 
 
 def _render_context_panel(context_data: dict | None) -> str:
@@ -117,7 +162,15 @@ def _render_context_panel(context_data: dict | None) -> str:
     projection_hints = context_data.get("projection_hints") or {}
     effective_instructions = context_data.get("effective_instructions") or ""
     projected_input = context_data.get("projected_input") or []
+    assembly_meta = {
+        "assembly_version": context_data.get("assembly_version"),
+        "workspace_prompt_source": context_data.get("workspace_prompt_source"),
+        "workspace_prompt_sha1": context_data.get("workspace_prompt_sha1"),
+    }
 
+    fragments_html.append(
+        f'<div class="panel-block"><h2 class="section-title">Assembly Metadata</h2><pre>{escape(json.dumps(assembly_meta, indent=2, ensure_ascii=False))}</pre></div>'
+    )
     fragments_html.append(
         f'<div class="panel-block"><h2 class="section-title">Effective Instructions</h2><pre>{escape(str(effective_instructions))}</pre></div>'
     )
@@ -130,15 +183,42 @@ def _render_context_panel(context_data: dict | None) -> str:
     return ''.join(fragments_html)
 
 
-def _render_main_panel(*, active_tab: str, transcript_items: list[str], payload_json: str, context_data: dict | None) -> str:
+def _render_tool_calls_panel(tool_calls: list[dict]) -> str:
+    if not tool_calls:
+        return '<div class="panel-block"><div class="empty">No tool calls recorded for this session.</div></div>'
+    blocks = []
+    for tool_call in tool_calls:
+        status = str(tool_call.get("status", "unknown"))
+        css = "success" if status == "completed" else "failed" if status == "failed" else ""
+        result_payload = tool_call.get("result_payload") if isinstance(tool_call.get("result_payload"), dict) else {}
+        failure_reason = None
+        if result_payload:
+            failure_reason = result_payload.get("content") or (result_payload.get("data", {}) if isinstance(result_payload.get("data"), dict) else {}).get("reason")
+        reason_html = f'<div class="tool-call-reason">{escape(str(failure_reason))}</div>' if failure_reason and status != "completed" else ""
+        badge_class = "success" if status == "completed" else "failed" if status == "failed" else ""
+        badge_html = f'<span class="tool-call-status-badge {badge_class}">{escape(status)}</span>' if badge_class else f'<span class="tool-call-status-badge">{escape(status)}</span>'
+        blocks.append(
+            f'<div class="fragment-card tool-call-card {css}">'
+            f'<h3 class="fragment-title">{escape(str(tool_call.get("tool_name", "tool")))}{badge_html}</h3>'
+            f'<div class="fragment-meta">requires_approval={escape(str(tool_call.get("requires_approval", False)))} · side_effect_class={escape(str(tool_call.get("side_effect_class", "unknown")))}</div>'
+            f'{reason_html}'
+            f'<pre>{escape(json.dumps(tool_call, indent=2, ensure_ascii=False))}</pre>'
+            f'</div>'
+        )
+    return '<div class="panel-block"><h2 class="section-title">Tool Invocations</h2>' + ''.join(blocks) + '</div>'
+
+
+def _render_main_panel(*, active_tab: str, transcript_items: list[str], payload_json: str, context_data: dict | None, tool_calls: list[dict]) -> str:
     if active_tab == "payload":
         return f'<div class="panel-block"><pre>{escape(payload_json)}</pre></div>'
     if active_tab == "context":
         return _render_context_panel(context_data)
+    if active_tab == "tool_calls":
+        return _render_tool_calls_panel(tool_calls)
     return ''.join(transcript_items)
 
 
-def _html_page(*, sessions, current_session, transcript, events, artifacts, metadata, active_tab: str):
+def _html_page(*, sessions, current_session, transcript, events, artifacts, metadata, tool_calls, active_tab: str):
     def esc(x):
         return escape(str(x))
 
@@ -150,19 +230,69 @@ def _html_page(*, sessions, current_session, transcript, events, artifacts, meta
         active = current_session_id is not None and sid == current_session_id
         klass = "session-link active" if active else "session-link"
         session_items.append(
-            f'<a class="{klass}" href="/?session_id={esc(sid)}&tab={esc(active_tab)}"><div>{esc(sid)}</div><div class="meta">{esc(session.updated_at.isoformat())}</div></a>'
+            f'<a class="{klass}" href="/?session_id={esc(sid)}&tab={esc(active_tab)}"><div>{esc(sid)}</div><div class="meta">{esc(_format_local_timestamp(session.updated_at))}</div></a>'
         )
     if not session_items:
         session_items.append('<div class="empty">No sessions found.</div>')
 
     transcript_items = []
+    toolish_kinds = {"tool_result", "policy_decision", "approval_request", "approval_decision", "guardrail_block", "policy_caution", "policy_termination"}
     for message in transcript:
         role = getattr(message.role, "value", str(message.role))
         kind = message.metadata.get("message_kind") if isinstance(message.metadata, dict) else None
         role_label = role if not kind else f"{role} ({kind})"
-        transcript_items.append(
-            f'<div class="message-card"><div class="message-role">{esc(role_label)}</div><pre>{esc(message.content)}</pre></div>'
-        )
+        if kind in toolish_kinds:
+            tool_name = message.metadata.get("tool_name") if isinstance(message.metadata, dict) else None
+            classes = ["message-card", "toolish"]
+            chips = []
+            preview_source = message.content or ""
+            if kind == "tool_result":
+                ok = bool(message.metadata.get("tool_ok")) if isinstance(message.metadata, dict) else False
+                classes.append("tool-ok" if ok else "tool-fail")
+                status_class = "ok" if ok else "fail"
+                status_label = "success" if ok else "failed"
+                chips.append(f'<span class="message-chip {status_class}">{status_label}</span>')
+                tool_data = message.metadata.get("tool_data") if isinstance(message.metadata, dict) else None
+                raw_result = tool_data.get("raw_result") if isinstance(tool_data, dict) else None
+                structured = raw_result.get("structuredContent") if isinstance(raw_result, dict) else None
+                if isinstance(structured, dict):
+                    preview_source = json.dumps(structured, ensure_ascii=False)
+            elif kind == "approval_request":
+                classes.append("approval-request")
+                chips.append('<span class="message-chip">approval request</span>')
+            elif kind == "approval_decision":
+                classes.append("approval-decision")
+                chips.append('<span class="message-chip">approval decision</span>')
+            elif kind.startswith("policy_") or kind == "guardrail_block":
+                classes.append("policy")
+                chips.append('<span class="message-chip policy">policy</span>')
+            summary, was_truncated = _truncate_text(preview_source)
+            if tool_name:
+                chips.append(f'<span class="message-chip">tool={esc(tool_name)}</span>')
+            if kind == "policy_decision" and isinstance(message.metadata, dict):
+                reason = message.metadata.get("reason")
+                outcome = message.metadata.get("outcome")
+                if reason:
+                    chips.append(f'<span class="message-chip policy">reason={esc(reason)}</span>')
+                if outcome:
+                    chips.append(f'<span class="message-chip policy">outcome={esc(outcome)}</span>')
+            if was_truncated:
+                chips.append('<span class="message-chip">truncated</span>')
+            class_attr = " ".join(classes)
+            chips_html = "".join(chips)
+            metadata_json = json.dumps(message.metadata, indent=2, ensure_ascii=False)
+            transcript_items.append(
+                f'<div class="{class_attr}">'
+                f'<div class="message-role">{esc(role_label)}</div>'
+                f'<div class="message-meta-row">{chips_html}</div>'
+                f'<div class="message-summary">{esc(summary)}</div>'
+                f'<pre>{esc(metadata_json)}</pre>'
+                f'</div>'
+            )
+        else:
+            transcript_items.append(
+                f'<div class="message-card"><div class="message-role">{esc(role_label)}</div><pre>{esc(message.content)}</pre></div>'
+            )
     if not transcript_items:
         transcript_items.append('<div class="empty">No transcript yet.</div>')
 
@@ -170,7 +300,7 @@ def _html_page(*, sessions, current_session, transcript, events, artifacts, meta
         [
             {
                 "event_type": getattr(event.event_type, "value", str(event.event_type)),
-                "timestamp": event.timestamp.isoformat(),
+                "timestamp": _format_local_timestamp(event.timestamp),
                 "payload": event.payload,
             }
             for event in events
@@ -204,22 +334,28 @@ def _html_page(*, sessions, current_session, transcript, events, artifacts, meta
     transcript_tab_class = "tab active" if active_tab == "transcript" else "tab"
     payload_tab_class = "tab active" if active_tab == "payload" else "tab"
     context_tab_class = "tab active" if active_tab == "context" else "tab"
+    tool_calls_tab_class = "tab active" if active_tab == "tool_calls" else "tab"
 
     transcript_href = f"/?session_id={esc(title)}&tab=transcript" if current_session_id else "/?tab=transcript"
     payload_href = f"/?session_id={esc(title)}&tab=payload" if current_session_id else "/?tab=payload"
     context_href = f"/?session_id={esc(title)}&tab=context" if current_session_id else "/?tab=context"
+    tool_calls_href = f"/?session_id={esc(title)}&tab=tool_calls" if current_session_id else "/?tab=tool_calls"
 
     main_panel_html = _render_main_panel(
         active_tab=active_tab,
         transcript_items=transcript_items,
         payload_json=payload_json,
         context_data=context_data,
+        tool_calls=tool_calls,
     )
 
     summary_json = json.dumps(
         {
             "workspace_root": str(DEFAULT_WORKSPACE_ROOT),
             "workspace_prompt": str(DEFAULT_WORKSPACE_ROOT / "PROMPT.md"),
+            "assembly_version": (context_data or {}).get("assembly_version"),
+            "workspace_prompt_source": (context_data or {}).get("workspace_prompt_source"),
+            "workspace_prompt_sha1": (context_data or {}).get("workspace_prompt_sha1"),
             "last_context_assembly": metadata.get("last_context_assembly"),
             "last_provider_payload": metadata.get("last_provider_payload"),
             "last_auth_failure": metadata.get("last_auth_failure"),
@@ -256,6 +392,7 @@ def _html_page(*, sessions, current_session, transcript, events, artifacts, meta
         <a class=\"{transcript_tab_class}\" href=\"{transcript_href}\">Transcript</a>
         <a class=\"{payload_tab_class}\" href=\"{payload_href}\">Payload</a>
         <a class=\"{context_tab_class}\" href=\"{context_href}\">Context</a>
+        <a class=\"{tool_calls_tab_class}\" href=\"{tool_calls_href}\">Tool Calls</a>
       </div>
       <div class=\"main-panel\">{main_panel_html}</div>
     </main>
@@ -284,7 +421,7 @@ class InspectorHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         session_id = query.get("session_id", [None])[0]
         active_tab = query.get("tab", ["transcript"])[0]
-        if active_tab not in {"transcript", "payload", "context"}:
+        if active_tab not in {"transcript", "payload", "context", "tool_calls"}:
             active_tab = "transcript"
 
         current_session = None
@@ -296,6 +433,8 @@ class InspectorHandler(BaseHTTPRequestHandler):
         transcript = store.list_messages_for_session(current_session.session_id) if current_session else []
         events = store.list_events_for_run(current_session.conversation_id) if current_session else []
         artifacts = store.list_context_for_run(current_session.conversation_id) if current_session else []
+        tool_invocations = store.list_tool_invocations_for_run(current_session.conversation_id) if current_session else []
+        tool_calls = [tool.model_dump(mode="json") for tool in tool_invocations]
         metadata = current_session.metadata if current_session is not None else {}
 
         html = _html_page(
@@ -305,6 +444,7 @@ class InspectorHandler(BaseHTTPRequestHandler):
             events=events,
             artifacts=artifacts,
             metadata=metadata,
+            tool_calls=tool_calls,
             active_tab=active_tab,
         ).encode("utf-8")
         self.send_response(200)

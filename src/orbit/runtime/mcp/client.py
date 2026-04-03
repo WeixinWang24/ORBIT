@@ -8,7 +8,6 @@ from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from orbit.runtime.mcp.models import McpClientBootstrap, McpToolDescriptor
-from orbit.runtime.mcp.naming import mcp_tool_name
 from orbit.runtime.mcp.resource_models import McpResourceContent, McpResourceDescriptor
 from orbit.tools.base import ToolResult
 
@@ -159,7 +158,7 @@ class StdioMcpClient:
         return anyio.run(self.async_read_resource, uri)
 
     def orbit_tool_name(self, original_tool_name: str) -> str:
-        return mcp_tool_name(self.bootstrap.server_name, original_tool_name)
+        return original_tool_name
 
 
 def build_mcp_client(bootstrap: McpClientBootstrap) -> McpClient:

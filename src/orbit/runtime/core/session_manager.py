@@ -6,14 +6,16 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from orbit.models import ContextArtifact, ConversationMessage, ConversationSession, ExecutionEvent, GovernedToolState, MessageRole
+from orbit.models import ContextArtifact, ConversationMessage, ConversationSession, ExecutionEvent, GovernedToolState, MessageRole, ToolInvocation, ToolInvocationStatus
 from orbit.models.core import new_id
 from orbit.runtime.core.contracts import RunDescriptor, WorkspaceDescriptor
 from orbit.runtime.core.events import RuntimeEventType
 from orbit.runtime.execution.continuation_context import build_rejection_continuation_context
 from orbit.runtime.governance.tool_approval_policy import PolicyDecision, PolicyEvaluationInput, evaluate_tool_approval_policy
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
+from orbit.runtime.mcp.bootstrap import bootstrap_local_filesystem_mcp_server
 from orbit.runtime.mcp.governance import resolve_filesystem_mcp_target_path
+from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
 from orbit.runtime.auth.storage.openai_store import OpenAIAuthStoreError
 from orbit.store.base import OrbitStore
 from orbit.tools.base import ToolResult
@@ -35,11 +37,16 @@ class SessionManager:
     phase rather than a full reuse of run-oriented approval persistence.
     """
 
-    def __init__(self, *, store: OrbitStore, backend, workspace_root: str):
+    def __init__(self, *, store: OrbitStore, backend, workspace_root: str, enable_mcp_filesystem: bool = False):
         self.store = store
         self.backend = backend
         self.workspace_root = workspace_root
         self.tool_registry = ToolRegistry(Path(workspace_root))
+        if enable_mcp_filesystem:
+            bootstrap = bootstrap_local_filesystem_mcp_server(workspace_root=workspace_root)
+            register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
+        if hasattr(self.backend, "tool_registry"):
+            self.backend.tool_registry = self.tool_registry
 
     def create_session(self, *, backend_name: str, model: str, conversation_id: str | None = None) -> ConversationSession:
         session = ConversationSession(conversation_id=conversation_id or f"conversation:{backend_name}:{int(datetime.now(timezone.utc).timestamp())}", backend_name=backend_name, model=model)
@@ -309,7 +316,13 @@ class SessionManager:
                     "tool_name": tool_request.tool_name,
                 },
             )
+            refreshed = self.get_session(session_id)
+            if refreshed is not None:
+                session = refreshed
             self._transition_governed_tool_state(session, "approved", note=note)
+            refreshed = self.get_session(session_id)
+            if refreshed is not None:
+                session = refreshed
             return self._execute_non_approval_tool_closure(session=session, initial_plan=ExecutionPlan(source_backend=pending['source_backend'], plan_label=f"{pending['plan_label']}-approved", tool_request=tool_request, should_finish_after_tool=False))
 
         if decision == "reject":
@@ -363,7 +376,18 @@ class SessionManager:
         """
         if initial_plan.tool_request is None:
             raise ValueError("initial_plan must include a tool request")
-        tool_result = self.execute_tool_request(tool_request=initial_plan.tool_request)
+        tool_request = initial_plan.tool_request
+        invocation = ToolInvocation(
+            run_id=session.conversation_id,
+            step_id=f"session_turn:{session.session_id}",
+            tool_name=tool_request.tool_name,
+            input_payload=tool_request.input_payload,
+            status=ToolInvocationStatus.EXECUTING,
+            started_at=datetime.now(timezone.utc),
+            side_effect_class=tool_request.side_effect_class,
+        )
+        self.store.save_tool_invocation(invocation)
+        tool_result = self.execute_tool_request(tool_request=tool_request)
         if session.governed_tool_state is not None and session.governed_tool_state.tool_name == initial_plan.tool_request.tool_name:
             self._transition_governed_tool_state(
                 session,
@@ -381,7 +405,14 @@ class SessionManager:
                     note="tool executed successfully" if tool_result.ok else "tool execution returned a non-ok result",
                 ),
             )
+        invocation.status = ToolInvocationStatus.COMPLETED if tool_result.ok else ToolInvocationStatus.FAILED
+        invocation.ended_at = datetime.now(timezone.utc)
+        invocation.result_payload = tool_result.model_dump(mode="json")
+        self.store.save_tool_invocation(invocation)
         self.append_tool_result_message(session_id=session.session_id, tool_request=initial_plan.tool_request, tool_result=tool_result)
+        refreshed = self.get_session(session.session_id)
+        if refreshed is not None:
+            session = refreshed
         updated_messages = self.list_messages(session.session_id)
         final_plan = self._plan_from_messages(session=session, messages=updated_messages)
         if final_plan.final_text:
@@ -618,6 +649,27 @@ class SessionManager:
             return ExecutionPlan(source_backend=plan.source_backend, plan_label=f"{plan.plan_label}-terminated", final_text=decision.explanation, should_finish_after_tool=True)
 
         if decision.outcome in {"deny", "recheck_environment"}:
+            invocation = ToolInvocation(
+                run_id=session.conversation_id,
+                step_id=f"session_turn:{session.session_id}",
+                tool_name=tool_request.tool_name,
+                input_payload=tool_request.input_payload,
+                status=ToolInvocationStatus.FAILED,
+                started_at=datetime.now(timezone.utc),
+                ended_at=datetime.now(timezone.utc),
+                side_effect_class=tool_request.side_effect_class,
+                result_payload={
+                    "ok": False,
+                    "content": decision.explanation,
+                    "data": {
+                        "failure_kind": "policy_decision",
+                        "policy_group": decision.policy_group,
+                        "reason": decision.reason,
+                        "outcome": decision.outcome,
+                    },
+                },
+            )
+            self.store.save_tool_invocation(invocation)
             self.append_context_artifact_for_session(
                 session_id=session.session_id,
                 artifact_type="session_policy_decision",
@@ -664,15 +716,20 @@ class SessionManager:
             if not path:
                 return "unknown"
 
-            if tool_request.tool_name.startswith("mcp__filesystem__"):
-                tool = self.tool_registry.get(tool_request.tool_name)
+            tool = self.tool_registry.get(tool_request.tool_name)
+            if getattr(tool, "tool_source", None) == "mcp" and getattr(tool, "original_name", None) == "read_file":
                 client = getattr(tool, "client", None)
-                server_args = getattr(getattr(client, "bootstrap", None), "args", []) if client is not None else []
+                bootstrap = getattr(client, "bootstrap", None) if client is not None else None
+                server_args = getattr(bootstrap, "args", []) if bootstrap is not None else []
+                server_env = getattr(bootstrap, "env", {}) if bootstrap is not None else {}
                 target = resolve_filesystem_mcp_target_path(
                     input_payload=tool_request.input_payload,
                     server_args=server_args,
+                    server_env=server_env,
                 )
-                allowed_root = Path(server_args[-1]).resolve() if server_args else None
+                allowed_root = Path(server_env["ORBIT_WORKSPACE_ROOT"]).resolve() if server_env.get("ORBIT_WORKSPACE_ROOT") else None
+                if allowed_root is None and server_args:
+                    allowed_root = Path(server_args[-1]).resolve()
                 if target is None or allowed_root is None:
                     return "unknown"
                 if not str(target).startswith(str(allowed_root)):

@@ -23,6 +23,9 @@ class McpToolWrapper(Tool):
         self.descriptor = descriptor
         self.client = client
         self.name = descriptor.orbit_tool_name
+        self.tool_source = "mcp"
+        self.server_name = descriptor.server_name
+        self.original_name = descriptor.original_name
         governance = resolve_mcp_tool_governance(
             server_name=descriptor.server_name,
             original_tool_name=descriptor.original_name,

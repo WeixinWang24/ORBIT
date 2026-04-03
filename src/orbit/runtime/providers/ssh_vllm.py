@@ -74,7 +74,7 @@ class SshVllmExecutionBackend(ExecutionBackend):
         registry = ToolRegistry(Path(self.config.workspace_root))
         schema = []
         for tool in registry.list_tools():
-            if tool.name == "read_file":
+            if tool.name == "native__read_file":
                 schema.append({
                     "type": "function",
                     "function": {
@@ -87,7 +87,7 @@ class SshVllmExecutionBackend(ExecutionBackend):
                         },
                     },
                 })
-            elif tool.name == "write_file":
+            elif tool.name == "native__write_file":
                 schema.append({
                     "type": "function",
                     "function": {

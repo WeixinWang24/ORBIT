@@ -20,7 +20,7 @@ app.add_typer(chat_app, name="chat")
 console = Console()
 
 
-def _build_codex_session_manager(*, model: str, enable_tools: bool = False) -> SessionManager:
+def _build_codex_session_manager(*, model: str, enable_tools: bool = False, enable_mcp_filesystem: bool = False) -> SessionManager:
     backend = OpenAICodexExecutionBackend(
         config=OpenAICodexConfig(model=model, enable_tools=enable_tools),
         repo_root=REPO_ROOT,
@@ -30,6 +30,7 @@ def _build_codex_session_manager(*, model: str, enable_tools: bool = False) -> S
         store=create_default_store(),
         backend=backend,
         workspace_root=str(DEFAULT_WORKSPACE_ROOT),
+        enable_mcp_filesystem=enable_mcp_filesystem,
     )
 
 
@@ -150,9 +151,15 @@ def _load_or_create_session(session_manager: SessionManager, *, model: str, sess
 def chat(
     model: str = typer.Option("gpt-5.4", help="Codex model id."),
     session_id: str | None = typer.Option(None, "--session-id", help="Resume an existing session by session id."),
+    enable_tools: bool = typer.Option(False, "--enable-tools", help="Enable local tool definitions for governed tool-calling tests."),
+    enable_mcp_filesystem: bool = typer.Option(False, "--enable-mcp-filesystem", help="Enable the local filesystem MCP server and register its tools."),
 ) -> None:
-    """Run a minimal SessionManager-mainline text-only chat REPL."""
-    session_manager = _build_codex_session_manager(model=model, enable_tools=False)
+    """Run a minimal SessionManager-mainline chat REPL."""
+    session_manager = _build_codex_session_manager(
+        model=model,
+        enable_tools=enable_tools,
+        enable_mcp_filesystem=enable_mcp_filesystem,
+    )
     session = _load_or_create_session(session_manager, model=model, session_id=session_id)
 
     current_session = session

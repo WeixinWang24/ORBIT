@@ -74,7 +74,14 @@ def resolve_mcp_tool_governance(*, server_name: str, original_tool_name: str) ->
     return dict(DEFAULT_MCP_GOVERNANCE)
 
 
-def filesystem_server_allowed_root(server_args: list[str]) -> Path | None:
+def filesystem_server_allowed_root(server_args: list[str], server_env: dict[str, str] | None = None) -> Path | None:
+    env = server_env or {}
+    env_root = env.get("ORBIT_WORKSPACE_ROOT")
+    if isinstance(env_root, str) and env_root.strip():
+        try:
+            return Path(env_root).resolve()
+        except Exception:
+            return None
     if not server_args:
         return None
     candidate = server_args[-1]
@@ -91,45 +98,14 @@ def normalize_filesystem_mcp_payload(*, original_tool_name: str, arguments: dict
     if tool not in _FILESYSTEM_SYSTEM_ENVIRONMENT_TOOLS | _FILESYSTEM_PERMISSION_AUTHORITY_TOOLS:
         return dict(arguments)
 
-    normalized = dict(arguments)
-    allowed_root = filesystem_server_allowed_root(server_args)
-    if allowed_root is None:
-        return normalized
-
-    path_value = normalized.get("path")
-    if isinstance(path_value, str) and path_value:
-        path_obj = Path(path_value)
-        if not path_obj.is_absolute():
-            normalized["path"] = str((allowed_root / path_obj).resolve())
-
-    source_value = normalized.get("source")
-    if isinstance(source_value, str) and source_value:
-        source_obj = Path(source_value)
-        if not source_obj.is_absolute():
-            normalized["source"] = str((allowed_root / source_obj).resolve())
-
-    destination_value = normalized.get("destination")
-    if isinstance(destination_value, str) and destination_value:
-        destination_obj = Path(destination_value)
-        if not destination_obj.is_absolute():
-            normalized["destination"] = str((allowed_root / destination_obj).resolve())
-
-    paths_value = normalized.get("paths")
-    if isinstance(paths_value, list):
-        normalized_paths: list[Any] = []
-        for item in paths_value:
-            if isinstance(item, str) and item:
-                item_obj = Path(item)
-                normalized_paths.append(str((allowed_root / item_obj).resolve()) if not item_obj.is_absolute() else str(item_obj.resolve()))
-            else:
-                normalized_paths.append(item)
-        normalized["paths"] = normalized_paths
-
-    return normalized
+    # ORBIT core filesystem MCP server keeps the same workspace-relative
+    # canonical path discipline as native tools. Do not rewrite relative
+    # paths into absolute ones here.
+    return dict(arguments)
 
 
-def resolve_filesystem_mcp_target_path(*, input_payload: dict[str, Any], server_args: list[str]) -> Path | None:
-    allowed_root = filesystem_server_allowed_root(server_args)
+def resolve_filesystem_mcp_target_path(*, input_payload: dict[str, Any], server_args: list[str], server_env: dict[str, str] | None = None) -> Path | None:
+    allowed_root = filesystem_server_allowed_root(server_args, server_env)
     if allowed_root is None:
         return None
     path_value = input_payload.get("path")

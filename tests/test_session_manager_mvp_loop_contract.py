@@ -53,7 +53,7 @@ class ApprovalThenFinishBackend:
             source_backend="approval-then-finish",
             plan_label="approval-needed",
             tool_request=ToolRequest(
-                tool_name="write_file",
+                tool_name="native__write_file",
                 input_payload={
                     "path": "notes/contract-test.txt",
                     "content": "created by contract test\n",
@@ -80,7 +80,7 @@ class ApprovalRejectContinuationBackend:
             source_backend="approval-reject-continuation",
             plan_label="approval-needed",
             tool_request=ToolRequest(
-                tool_name="write_file",
+                tool_name="native__write_file",
                 input_payload={
                     "path": "notes/reject-contract-test.txt",
                     "content": "should not be written\n",
@@ -107,8 +107,49 @@ class NonApprovalToolThenFinishBackend:
             source_backend="non-approval-tool-then-finish",
             plan_label="safe-tool-needed",
             tool_request=ToolRequest(
-                tool_name="read_file",
+                tool_name="native__read_file",
                 input_payload={"path": "notes/existing.txt"},
+                requires_approval=False,
+                side_effect_class="safe",
+            ),
+            should_finish_after_tool=True,
+        )
+
+
+class McpReadThenFinishBackend:
+    backend_name = "mcp-read-then-finish"
+
+    def plan_from_messages(self, messages, session=None):
+        tool_results = [m for m in messages if m.role == MessageRole.TOOL]
+        if tool_results:
+            return ExecutionPlan(
+                source_backend=self.backend_name,
+                plan_label="post-tool-final",
+                final_text="MCP safe read path completed in the same turn.",
+            )
+        return ExecutionPlan(
+            source_backend=self.backend_name,
+            plan_label="mcp-safe-tool-needed",
+            tool_request=ToolRequest(
+                tool_name="read_file",
+                input_payload={"path": "notes/mcp-existing.txt"},
+                requires_approval=False,
+                side_effect_class="safe",
+            ),
+            should_finish_after_tool=True,
+        )
+
+
+class McpPathEscapeBackend:
+    backend_name = "mcp-path-escape"
+
+    def plan_from_messages(self, messages, session=None):
+        return ExecutionPlan(
+            source_backend=self.backend_name,
+            plan_label="mcp-path-escape-needed",
+            tool_request=ToolRequest(
+                tool_name="read_file",
+                input_payload={"path": "../outside.txt"},
                 requires_approval=False,
                 side_effect_class="safe",
             ),
@@ -146,10 +187,16 @@ class AuthFailureBackend:
 
 
 class SessionManagerMvpLoopContractTests(unittest.TestCase):
-    def make_session_manager(self, backend) -> SessionManager:
+    def make_session_manager(self, backend, *, enable_mcp_filesystem: bool = False, workspace_root: Path | None = None) -> SessionManager:
         root = Path(tempfile.mkdtemp(prefix="orbit-mvp-loop-"))
         store = SQLiteStore(root / "orbit.db")
-        return SessionManager(store=store, backend=backend, workspace_root=str(root))
+        resolved_workspace = workspace_root or root
+        return SessionManager(
+            store=store,
+            backend=backend,
+            workspace_root=str(resolved_workspace),
+            enable_mcp_filesystem=enable_mcp_filesystem,
+        )
 
     def test_plain_text_turn_is_closure_complete(self):
         sm = self.make_session_manager(FinalOnlyBackend())
@@ -296,6 +343,80 @@ class SessionManagerMvpLoopContractTests(unittest.TestCase):
                 RuntimeEventType.TOOL_INVOCATION_COMPLETED.value,
             ],
         )
+
+    def test_mcp_non_approval_tool_turn_is_closure_complete_inside_run_session_turn(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        notes_dir = workspace_root / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        (notes_dir / "mcp-existing.txt").write_text("hello from mcp contract path\n", encoding="utf-8")
+
+        sm = self.make_session_manager(
+            McpReadThenFinishBackend(),
+            enable_mcp_filesystem=True,
+            workspace_root=workspace_root,
+        )
+        session = sm.create_session(backend_name="mcp-read-then-finish", model="test-model")
+
+        plan = sm.run_session_turn(session_id=session.session_id, user_input="please read via mcp")
+        refreshed = sm.get_session(session.session_id)
+        messages = sm.list_messages(session.session_id)
+        events = sm.store.list_events_for_run(session.conversation_id)
+        invocations = sm.store.list_tool_invocations_for_run(session.conversation_id)
+
+        self.assertEqual(plan.plan_label, "post-tool-final")
+        self.assertEqual(plan.final_text, "MCP safe read path completed in the same turn.")
+        self.assertIsNone(sm.get_session(session.session_id).metadata.get("pending_approval"))
+        self.assertIsNotNone(refreshed)
+        self.assertIsNotNone(refreshed.governed_tool_state)
+        self.assertEqual(refreshed.governed_tool_state.state, "executed")
+        self.assertEqual([m.role for m in messages], [MessageRole.USER, MessageRole.TOOL, MessageRole.ASSISTANT])
+        self.assertEqual(messages[1].metadata.get("message_kind"), "tool_result")
+        self.assertEqual(messages[1].metadata.get("tool_name"), "read_file")
+        self.assertTrue(messages[1].metadata.get("tool_ok"))
+        self.assertEqual(messages[-1].content, "MCP safe read path completed in the same turn.")
+        self.assertEqual(
+            [getattr(event.event_type, "value", str(event.event_type)) for event in events],
+            [
+                RuntimeEventType.RUN_STARTED.value,
+                RuntimeEventType.TOOL_INVOCATION_COMPLETED.value,
+            ],
+        )
+        self.assertEqual(len(invocations), 1)
+        self.assertEqual(invocations[0].tool_name, "read_file")
+        self.assertEqual(getattr(invocations[0].status, "value", str(invocations[0].status)), "completed")
+
+    def test_mcp_path_escape_is_denied_before_tool_execution(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        sm = self.make_session_manager(
+            McpPathEscapeBackend(),
+            enable_mcp_filesystem=True,
+            workspace_root=workspace_root,
+        )
+        session = sm.create_session(backend_name="mcp-path-escape", model="test-model")
+
+        plan = sm.run_session_turn(session_id=session.session_id, user_input="try path escape via mcp")
+        messages = sm.list_messages(session.session_id)
+        events = sm.store.list_events_for_run(session.conversation_id)
+        invocations = sm.store.list_tool_invocations_for_run(session.conversation_id)
+
+        self.assertEqual(plan.plan_label, "mcp-path-escape-needed-deny")
+        self.assertEqual(plan.final_text, "Current environment conditions do not allow read_file.")
+        self.assertEqual([m.role for m in messages], [MessageRole.USER, MessageRole.ASSISTANT])
+        self.assertEqual(messages[1].metadata.get("message_kind"), "policy_decision")
+        self.assertEqual(messages[1].metadata.get("tool_name"), "read_file")
+        self.assertEqual(messages[1].metadata.get("outcome"), "deny")
+        self.assertEqual(
+            [getattr(event.event_type, "value", str(event.event_type)) for event in events],
+            [
+                RuntimeEventType.RUN_STARTED.value,
+                RuntimeEventType.RUN_FAILED.value,
+            ],
+        )
+        self.assertEqual(len(invocations), 1)
+        self.assertEqual(invocations[0].tool_name, "read_file")
+        self.assertEqual(getattr(invocations[0].status, "value", str(invocations[0].status)), "failed")
+        self.assertEqual(invocations[0].result_payload.get("data", {}).get("failure_kind"), "policy_decision")
+        self.assertEqual(invocations[0].result_payload.get("data", {}).get("outcome"), "deny")
 
     def test_provider_failure_turn_becomes_transcript_visible_runtime_failure(self):
         sm = self.make_session_manager(ProviderFailureBackend())

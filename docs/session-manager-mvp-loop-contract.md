@@ -108,6 +108,24 @@ Currently validated event sequences include:
 - approval wait: `run_started -> approval_requested`
 - approval approve-resume: `run_started -> approval_requested -> approval_granted -> tool_invocation_completed`
 - approval reject-resume: `run_started -> approval_requested -> approval_rejected`
+- policy-denied / environment-denied tool path: `run_started -> run_failed`
+
+## MCP filesystem minimal re-entry note
+
+The first Python-first MCP filesystem re-entry slice is now validated on the active SessionManager mainline.
+
+Key current rules:
+- native tools are explicitly source-tagged (`native__read_file`, `native__write_file`)
+- MCP-exposed tools keep canonical/original names (for example `read_file`)
+- the local filesystem MCP server keeps the same workspace-relative canonical path discipline as native tools
+- provider payload exposure and execution truth now share one ToolRegistry instead of rebuilding parallel registries inside the provider adapter
+- policy-denied MCP tool requests now persist failed `ToolInvocation` records so tool-call inspection surfaces can show denied/failed attempts as first-class runtime truth
+
+Current validated MCP filesystem v0 behaviors include:
+- direct MCP `read_file` invocation success
+- SessionManager-bounded same-turn MCP safe-read closure success
+- path-escape denial at the policy/environment boundary before tool execution
+- transcript / events / tool-invocation persistence / inspector-facing snapshots all agreeing on the same runtime truth for the validated slice
 
 ## Current scope note
 
