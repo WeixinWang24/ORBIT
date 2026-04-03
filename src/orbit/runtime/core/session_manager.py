@@ -21,10 +21,13 @@ from orbit.tools.registry import ToolRegistry
 class SessionManager:
     """Manage linear conversation sessions for ORBIT.
 
-    This manager currently supports:
-    - ordinary multi-turn text continuation
-    - immediate execution for non-approval tool requests
-    - session-scoped approval wait/resume for approval-gated tool requests
+    Current MVP single-turn contract:
+    - ``run_session_turn(...)`` is the canonical first-turn executor
+    - plain-text turns complete inside ``run_session_turn(...)``
+    - non-approval tool turns also complete inside ``run_session_turn(...)``
+      through one bounded governed tool closure
+    - approval-gated tool turns stop at a persisted waiting boundary and must
+      resume through ``resolve_session_approval(...)``
 
     The approval path is intentionally lightweight and session-local in this
     phase rather than a full reuse of run-oriented approval persistence.
@@ -129,7 +132,15 @@ class SessionManager:
         )
 
     def run_session_turn(self, *, session_id: str, user_input: str, descriptor: RunDescriptor | None = None) -> ExecutionPlan:
-        """Execute one session turn with the first governed tool closure path."""
+        """Execute one canonical session turn and return its bounded result.
+
+        Current MVP closure contract:
+        - plain-text turns append the assistant reply and return a final-text plan
+        - non-approval tool turns execute their governed tool closure internally
+          and return the post-tool continuation/final plan
+        - approval-gated tool turns persist waiting state and return a waiting plan;
+          resumption continues through ``resolve_session_approval(...)``
+        """
         session = self.get_session(session_id)
         if session is None:
             raise ValueError(f"session not found: {session_id}")
@@ -182,7 +193,14 @@ class SessionManager:
         return approvals
 
     def resolve_session_approval(self, *, session_id: str, approval_request_id: str, decision: str, note: str | None = None) -> ExecutionPlan:
-        """Resolve one session-scoped approval and continue or reject the tool path."""
+        """Resolve one waiting approval and return the resumed bounded turn result.
+
+        Current MVP resumed-turn contract:
+        - ``approve`` continues through governed tool execution and then returns
+          the post-tool bounded result
+        - ``reject`` continues truthfully without tool execution and returns the
+          bounded post-rejection continuation result
+        """
         session = self.get_session(session_id)
         if session is None:
             raise ValueError(f"session not found: {session_id}")
@@ -258,7 +276,13 @@ class SessionManager:
         raise ValueError(f"unsupported approval decision: {decision}")
 
     def _execute_non_approval_tool_closure(self, *, session: ConversationSession, initial_plan: ExecutionPlan) -> ExecutionPlan:
-        """Execute one non-approval tool request and continue once for a final answer."""
+        """Execute one non-approval tool request as an in-turn closure step.
+
+        This helper is part of the canonical ``run_session_turn(...)`` path,
+        not an external second-stage continuation contract. It executes one
+        allowed tool request, appends the transcript-visible tool result, then
+        replans once and returns the bounded post-tool result for the same turn.
+        """
         if initial_plan.tool_request is None:
             raise ValueError("initial_plan must include a tool request")
         tool_result = self.execute_tool_request(tool_request=initial_plan.tool_request)
@@ -696,7 +720,13 @@ class SessionManager:
         self.store.save_session(session)
 
     def _open_session_approval(self, *, session: ConversationSession, tool_request: ToolRequest, plan: ExecutionPlan) -> ExecutionPlan:
-        """Persist lightweight session-scoped approval state and append a wait message."""
+        """Persist the canonical waiting boundary for an approval-gated turn.
+
+        This method records the session-local pending approval truth, emits the
+        coarse approval-requested runtime event, appends the transcript-visible
+        approval request, and returns the waiting plan that must later resume
+        through ``resolve_session_approval(...)``.
+        """
         approval_request_id = new_id("approval")
         pending = {
             "approval_request_id": approval_request_id,
@@ -706,6 +736,17 @@ class SessionManager:
             "opened_at": datetime.now(timezone.utc).isoformat(),
         }
         self._set_pending_approval(session, pending)
+        self.emit_session_event(
+            session_id=session.session_id,
+            event_type=RuntimeEventType.APPROVAL_REQUESTED,
+            payload={
+                "approval_request_id": approval_request_id,
+                "tool_name": tool_request.tool_name,
+                "side_effect_class": tool_request.side_effect_class,
+                "source_backend": plan.source_backend,
+                "plan_label": plan.plan_label,
+            },
+        )
         approval_text = (
             f"Approval required before executing {tool_request.tool_name} "
             f"(side_effect_class={tool_request.side_effect_class})."

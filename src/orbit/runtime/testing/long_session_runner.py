@@ -93,26 +93,21 @@ class LongSessionScenarioRunner:
         self.session_manager = session_manager
 
     def _run_turn_to_closure(self, *, session_id: str, user_input: str, approval_decision: str | None = None):
-        """Run one turn until it reaches a closure-complete outcome.
+        """Run one turn until it reaches the canonical session-manager boundary.
 
-        Current v2 scope:
-        - if the first plan already returns final text, stop there
-        - if it returns a non-approval tool request, execute the tool through the
-          existing session manager helper and continue once
-        - if it returns an approval-gated request and a scenario-level decision
-          is supplied, resolve that approval and continue the turn
+        Current MVP contract:
+        - ``run_session_turn(...)`` is already closure-complete for plain-text and
+          non-approval tool turns
+        - approval-gated turns return a waiting plan; if a scenario-level decision
+          is supplied here, this helper resolves that approval and completes the
+          resumed turn through ``resolve_session_approval(...)``
         """
         plan = self.session_manager.run_session_turn(
             session_id=session_id,
             user_input=user_input,
         )
-        if plan.tool_request is None:
+        if plan.tool_request is None or not plan.tool_request.requires_approval:
             return plan
-        if not plan.tool_request.requires_approval:
-            session = self.session_manager.get_session(session_id)
-            if session is None:
-                raise ValueError(f"session not found during long-session turn closure: {session_id}")
-            return self.session_manager._execute_non_approval_tool_closure(session=session, initial_plan=plan)
         if approval_decision is None:
             return plan
         approvals = self.session_manager.list_open_session_approvals()

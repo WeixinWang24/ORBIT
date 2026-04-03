@@ -25,6 +25,7 @@ class OpenAICodexConfig:
     model: str = "gpt-5.4"
     api_base: str = OPENAI_CODEX_BASE_URL
     timeout_seconds: int = 60
+    enable_tools: bool = True
 
 
 class OpenAICodexExecutionBackend(ExecutionBackend):
@@ -112,12 +113,13 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
             "input": messages_to_codex_input(messages),
             "text": {"verbosity": "medium"},
             "include": ["reasoning.encrypted_content"],
-            "tool_choice": "auto",
-            "parallel_tool_calls": True,
         }
-        tools = self.build_tool_definitions()
-        if tools:
-            payload["tools"] = tools
+        if self.config.enable_tools:
+            payload["tool_choice"] = "auto"
+            payload["parallel_tool_calls"] = True
+            tools = self.build_tool_definitions()
+            if tools:
+                payload["tools"] = tools
         if session is not None:
             payload["prompt_cache_key"] = session.session_id
         return payload

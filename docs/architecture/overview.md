@@ -10,6 +10,8 @@
 - Current default local/bootstrap backend in v0: SQLite
 - V0 memory posture: no full memory subsystem yet; use explicit context artifacts and simple context engineering
 - `RunDescriptor` should become the primary cross-layer execution contract
+- `SessionManager` is the active runtime mainline host for the MVP session agent loop
+- `run_session_turn(...)` is the canonical first-turn bounded executor; `resolve_session_approval(...)` is the canonical resumed-turn bounded executor for approval-gated turns
 - Runtime event model should remain separate from UI message rendering structures
 - Control/state persistence and transcript/history persistence should remain conceptually distinct
 
@@ -33,6 +35,7 @@ It exists to support early runtime bring-up and should later be replaced or wrap
 - maintain store/runtime separation
 - prefer explicit boundaries over magic orchestration
 - keep provider/auth/transport concerns grouped by module so live-backend growth stays readable
+- keep transcript truth, session control state, and runtime-event shell explicitly separated even when one turn is closure-complete
 
 ## Current source grouping
 
