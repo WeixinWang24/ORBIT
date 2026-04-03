@@ -144,6 +144,26 @@ class SessionManager:
         tool = self.tool_registry.get(tool_request.tool_name)
         return tool.invoke(**tool_request.input_payload)
 
+    def record_filesystem_read_state(self, *, session: ConversationSession, tool_request: ToolRequest, tool_result: ToolResult) -> None:
+        if not tool_result.ok or tool_request.tool_name != "read_file":
+            return
+        path = tool_request.input_payload.get("path")
+        if not isinstance(path, str) or not path:
+            return
+        tool_data = tool_result.data if isinstance(tool_result.data, dict) else {}
+        raw_result = tool_data.get("raw_result") if isinstance(tool_data, dict) else {}
+        structured = raw_result.get("structuredContent") if isinstance(raw_result, dict) else {}
+        truncated = bool(structured.get("truncated")) if isinstance(structured, dict) else False
+        read_state = session.metadata.setdefault("filesystem_read_state", {})
+        read_state[path] = {
+            "source_tool": tool_request.tool_name,
+            "timestamp_epoch": datetime.now(timezone.utc).timestamp(),
+            "is_partial_view": truncated,
+            "range": None,
+        }
+        session.updated_at = datetime.now(timezone.utc)
+        self.store.save_session(session)
+
     def append_tool_result_message(self, *, session_id: str, tool_request: ToolRequest, tool_result: ToolResult) -> ConversationMessage:
         """Append a simple transcript-visible tool result message."""
         if tool_result.ok:
@@ -390,6 +410,7 @@ class SessionManager:
         )
         self.store.save_tool_invocation(invocation)
         tool_result = self.execute_tool_request(tool_request=tool_request)
+        self.record_filesystem_read_state(session=session, tool_request=tool_request, tool_result=tool_result)
         if session.governed_tool_state is not None and session.governed_tool_state.tool_name == initial_plan.tool_request.tool_name:
             self._transition_governed_tool_state(
                 session,
@@ -706,7 +727,7 @@ class SessionManager:
                 return "unknown"
 
             tool = self.tool_registry.get(tool_request.tool_name)
-            if getattr(tool, "tool_source", None) == "mcp" and getattr(tool, "original_name", None) == "read_file":
+            if getattr(tool, "tool_source", None) == "mcp" and getattr(tool, "original_name", None) in {"read_file", "list_directory", "list_directory_with_sizes", "directory_tree", "search_files", "get_file_info"}:
                 client = getattr(tool, "client", None)
                 bootstrap = getattr(client, "bootstrap", None) if client is not None else None
                 server_args = getattr(bootstrap, "args", []) if bootstrap is not None else []
@@ -721,8 +742,13 @@ class SessionManager:
                     allowed_root = Path(server_args[-1]).resolve()
                 if target is None or allowed_root is None:
                     return "unknown"
-                if not str(target).startswith(str(allowed_root)):
+                try:
+                    target.relative_to(allowed_root)
+                except ValueError:
                     return "denied"
+                original_name = getattr(tool, "original_name", None)
+                if original_name in {"list_directory", "list_directory_with_sizes", "directory_tree", "search_files"}:
+                    return "ok" if target.exists() and target.is_dir() else "denied"
                 return "ok" if target.exists() and target.is_file() else "denied"
 
             workspace_root = Path(self.workspace_root).resolve()

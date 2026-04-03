@@ -119,6 +119,9 @@ class NonApprovalToolThenFinishBackend:
 class McpReadThenFinishBackend:
     backend_name = "mcp-read-then-finish"
 
+    def __init__(self, path: str = "notes/mcp-existing.txt"):
+        self.path = path
+
     def plan_from_messages(self, messages, session=None):
         tool_results = [m for m in messages if m.role == MessageRole.TOOL]
         if tool_results:
@@ -132,7 +135,7 @@ class McpReadThenFinishBackend:
             plan_label="mcp-safe-tool-needed",
             tool_request=ToolRequest(
                 tool_name="read_file",
-                input_payload={"path": "notes/mcp-existing.txt"},
+                input_payload={"path": self.path},
                 requires_approval=False,
                 side_effect_class="safe",
             ),
@@ -150,6 +153,126 @@ class McpPathEscapeBackend:
             tool_request=ToolRequest(
                 tool_name="read_file",
                 input_payload={"path": "../outside.txt"},
+                requires_approval=False,
+                side_effect_class="safe",
+            ),
+            should_finish_after_tool=True,
+        )
+
+
+class McpListDirectoryThenFinishBackend:
+    backend_name = "mcp-list-directory-then-finish"
+
+    def plan_from_messages(self, messages, session=None):
+        tool_results = [m for m in messages if m.role == MessageRole.TOOL]
+        if tool_results:
+            return ExecutionPlan(
+                source_backend=self.backend_name,
+                plan_label="post-tool-final",
+                final_text="MCP directory listing path completed in the same turn.",
+            )
+        return ExecutionPlan(
+            source_backend=self.backend_name,
+            plan_label="mcp-list-directory-needed",
+            tool_request=ToolRequest(
+                tool_name="list_directory",
+                input_payload={"path": "notes/listing"},
+                requires_approval=False,
+                side_effect_class="safe",
+            ),
+            should_finish_after_tool=True,
+        )
+
+
+class McpListDirectoryWithSizesThenFinishBackend:
+    backend_name = "mcp-list-directory-with-sizes-then-finish"
+
+    def plan_from_messages(self, messages, session=None):
+        tool_results = [m for m in messages if m.role == MessageRole.TOOL]
+        if tool_results:
+            return ExecutionPlan(
+                source_backend=self.backend_name,
+                plan_label="post-tool-final",
+                final_text="MCP directory listing with sizes path completed in the same turn.",
+            )
+        return ExecutionPlan(
+            source_backend=self.backend_name,
+            plan_label="mcp-list-directory-with-sizes-needed",
+            tool_request=ToolRequest(
+                tool_name="list_directory_with_sizes",
+                input_payload={"path": "notes/listing", "sortBy": "size"},
+                requires_approval=False,
+                side_effect_class="safe",
+            ),
+            should_finish_after_tool=True,
+        )
+
+
+class McpGetFileInfoThenFinishBackend:
+    backend_name = "mcp-get-file-info-then-finish"
+
+    def plan_from_messages(self, messages, session=None):
+        tool_results = [m for m in messages if m.role == MessageRole.TOOL]
+        if tool_results:
+            return ExecutionPlan(
+                source_backend=self.backend_name,
+                plan_label="post-tool-final",
+                final_text="MCP file info path completed in the same turn.",
+            )
+        return ExecutionPlan(
+            source_backend=self.backend_name,
+            plan_label="mcp-get-file-info-needed",
+            tool_request=ToolRequest(
+                tool_name="get_file_info",
+                input_payload={"path": "notes/info-target.txt"},
+                requires_approval=False,
+                side_effect_class="safe",
+            ),
+            should_finish_after_tool=True,
+        )
+
+
+class McpDirectoryTreeThenFinishBackend:
+    backend_name = "mcp-directory-tree-then-finish"
+
+    def plan_from_messages(self, messages, session=None):
+        tool_results = [m for m in messages if m.role == MessageRole.TOOL]
+        if tool_results:
+            return ExecutionPlan(
+                source_backend=self.backend_name,
+                plan_label="post-tool-final",
+                final_text="MCP directory tree path completed in the same turn.",
+            )
+        return ExecutionPlan(
+            source_backend=self.backend_name,
+            plan_label="mcp-directory-tree-needed",
+            tool_request=ToolRequest(
+                tool_name="directory_tree",
+                input_payload={"path": "notes/tree-root", "maxDepth": 2},
+                requires_approval=False,
+                side_effect_class="safe",
+            ),
+            should_finish_after_tool=True,
+        )
+
+
+class McpSearchFilesThenFinishBackend:
+    backend_name = "mcp-search-files-then-finish"
+
+    def plan_from_messages(self, messages, session=None):
+        tool_results = [m for m in messages if m.role == MessageRole.TOOL]
+        if tool_results:
+            return ExecutionPlan(
+                source_backend=self.backend_name,
+                plan_label="post-tool-final",
+                final_text="MCP search files path completed in the same turn.",
+            )
+        return ExecutionPlan(
+            source_backend=self.backend_name,
+            plan_label="mcp-search-files-needed",
+            tool_request=ToolRequest(
+                tool_name="search_files",
+                input_payload={"path": "notes/search-root", "query": "TODO", "maxResults": 10},
                 requires_approval=False,
                 side_effect_class="safe",
             ),
@@ -384,6 +507,31 @@ class SessionManagerMvpLoopContractTests(unittest.TestCase):
         self.assertEqual(len(invocations), 1)
         self.assertEqual(invocations[0].tool_name, "read_file")
         self.assertEqual(getattr(invocations[0].status, "value", str(invocations[0].status)), "completed")
+        read_state = refreshed.metadata.get("filesystem_read_state", {})
+        self.assertIn("notes/mcp-existing.txt", read_state)
+        self.assertFalse(read_state["notes/mcp-existing.txt"].get("is_partial_view"))
+
+    def test_mcp_read_file_records_partial_view_when_truncated(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        notes_dir = workspace_root / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        long_content = "x" * (70 * 1024)
+        (notes_dir / "truncated.txt").write_text(long_content, encoding="utf-8")
+
+        sm = self.make_session_manager(
+            McpReadThenFinishBackend(path="notes/truncated.txt"),
+            enable_mcp_filesystem=True,
+            workspace_root=workspace_root,
+        )
+        session = sm.create_session(backend_name="mcp-read-then-finish", model="test-model")
+        plan = sm.run_session_turn(session_id=session.session_id, user_input="please read via mcp")
+
+        refreshed = sm.get_session(session.session_id)
+        self.assertEqual(plan.plan_label, "post-tool-final")
+        self.assertIsNotNone(refreshed)
+        read_state = refreshed.metadata.get("filesystem_read_state", {})
+        self.assertIn("notes/truncated.txt", read_state)
+        self.assertTrue(read_state["notes/truncated.txt"].get("is_partial_view"))
 
     def test_mcp_path_escape_is_denied_before_tool_execution(self):
         workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
@@ -417,6 +565,214 @@ class SessionManagerMvpLoopContractTests(unittest.TestCase):
         self.assertEqual(getattr(invocations[0].status, "value", str(invocations[0].status)), "failed")
         self.assertEqual(invocations[0].result_payload.get("data", {}).get("failure_kind"), "policy_decision")
         self.assertEqual(invocations[0].result_payload.get("data", {}).get("outcome"), "deny")
+
+    def test_mcp_list_directory_turn_is_closure_complete_inside_run_session_turn(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        listing_dir = workspace_root / "notes" / "listing"
+        listing_dir.mkdir(parents=True, exist_ok=True)
+        (listing_dir / "a.txt").write_text("a\n", encoding="utf-8")
+        (listing_dir / "b.txt").write_text("b\n", encoding="utf-8")
+        (listing_dir / "subdir").mkdir(exist_ok=True)
+
+        sm = self.make_session_manager(
+            McpListDirectoryThenFinishBackend(),
+            enable_mcp_filesystem=True,
+            workspace_root=workspace_root,
+        )
+        session = sm.create_session(backend_name="mcp-list-directory-then-finish", model="test-model")
+
+        plan = sm.run_session_turn(session_id=session.session_id, user_input="please list directory via mcp")
+        messages = sm.list_messages(session.session_id)
+        events = sm.store.list_events_for_run(session.conversation_id)
+        invocations = sm.store.list_tool_invocations_for_run(session.conversation_id)
+
+        self.assertEqual(plan.plan_label, "post-tool-final")
+        self.assertEqual(plan.final_text, "MCP directory listing path completed in the same turn.")
+        self.assertEqual([m.role for m in messages], [MessageRole.USER, MessageRole.TOOL, MessageRole.ASSISTANT])
+        self.assertEqual(messages[1].metadata.get("message_kind"), "tool_result")
+        self.assertEqual(messages[1].metadata.get("tool_name"), "list_directory")
+        self.assertTrue(messages[1].metadata.get("tool_ok"))
+        raw = messages[1].metadata.get("tool_data", {}).get("raw_result", {})
+        structured = raw.get("structuredContent", {})
+        self.assertEqual(structured.get("path"), "notes/listing")
+        entry_names = [entry.get("name") for entry in structured.get("entries", [])]
+        self.assertIn("a.txt", entry_names)
+        self.assertIn("b.txt", entry_names)
+        self.assertIn("subdir", entry_names)
+        self.assertEqual(
+            [getattr(event.event_type, "value", str(event.event_type)) for event in events],
+            [RuntimeEventType.RUN_STARTED.value, RuntimeEventType.TOOL_INVOCATION_COMPLETED.value],
+        )
+        self.assertEqual(len(invocations), 1)
+        self.assertEqual(invocations[0].tool_name, "list_directory")
+        self.assertEqual(getattr(invocations[0].status, "value", str(invocations[0].status)), "completed")
+
+    def test_mcp_list_directory_with_sizes_turn_is_closure_complete_inside_run_session_turn(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        listing_dir = workspace_root / "notes" / "listing"
+        listing_dir.mkdir(parents=True, exist_ok=True)
+        (listing_dir / "small.txt").write_text("a\n", encoding="utf-8")
+        (listing_dir / "large.txt").write_text("abcdef\n", encoding="utf-8")
+        (listing_dir / "subdir").mkdir(exist_ok=True)
+
+        sm = self.make_session_manager(
+            McpListDirectoryWithSizesThenFinishBackend(),
+            enable_mcp_filesystem=True,
+            workspace_root=workspace_root,
+        )
+        session = sm.create_session(backend_name="mcp-list-directory-with-sizes-then-finish", model="test-model")
+
+        plan = sm.run_session_turn(session_id=session.session_id, user_input="please list directory with sizes via mcp")
+        messages = sm.list_messages(session.session_id)
+        events = sm.store.list_events_for_run(session.conversation_id)
+        invocations = sm.store.list_tool_invocations_for_run(session.conversation_id)
+
+        self.assertEqual(plan.plan_label, "post-tool-final")
+        self.assertEqual(plan.final_text, "MCP directory listing with sizes path completed in the same turn.")
+        self.assertEqual([m.role for m in messages], [MessageRole.USER, MessageRole.TOOL, MessageRole.ASSISTANT])
+        self.assertEqual(messages[1].metadata.get("message_kind"), "tool_result")
+        self.assertEqual(messages[1].metadata.get("tool_name"), "list_directory_with_sizes")
+        self.assertTrue(messages[1].metadata.get("tool_ok"))
+        raw = messages[1].metadata.get("tool_data", {}).get("raw_result", {})
+        structured = raw.get("structuredContent", {})
+        self.assertEqual(structured.get("path"), "notes/listing")
+        self.assertEqual(structured.get("sort_by"), "size")
+        self.assertIn("summary", structured)
+        self.assertEqual(structured.get("summary", {}).get("file_count"), 2)
+        entry_names = [entry.get("name") for entry in structured.get("entries", [])]
+        self.assertIn("small.txt", entry_names)
+        self.assertIn("large.txt", entry_names)
+        self.assertIn("subdir", entry_names)
+        self.assertEqual(
+            [getattr(event.event_type, "value", str(event.event_type)) for event in events],
+            [RuntimeEventType.RUN_STARTED.value, RuntimeEventType.TOOL_INVOCATION_COMPLETED.value],
+        )
+        self.assertEqual(len(invocations), 1)
+        self.assertEqual(invocations[0].tool_name, "list_directory_with_sizes")
+        self.assertEqual(getattr(invocations[0].status, "value", str(invocations[0].status)), "completed")
+
+    def test_mcp_get_file_info_turn_is_closure_complete_inside_run_session_turn(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        notes_dir = workspace_root / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        (notes_dir / "info-target.txt").write_text("hello info\n", encoding="utf-8")
+
+        sm = self.make_session_manager(
+            McpGetFileInfoThenFinishBackend(),
+            enable_mcp_filesystem=True,
+            workspace_root=workspace_root,
+        )
+        session = sm.create_session(backend_name="mcp-get-file-info-then-finish", model="test-model")
+
+        plan = sm.run_session_turn(session_id=session.session_id, user_input="please get file info via mcp")
+        messages = sm.list_messages(session.session_id)
+        events = sm.store.list_events_for_run(session.conversation_id)
+        invocations = sm.store.list_tool_invocations_for_run(session.conversation_id)
+
+        self.assertEqual(plan.plan_label, "post-tool-final")
+        self.assertEqual(plan.final_text, "MCP file info path completed in the same turn.")
+        self.assertEqual([m.role for m in messages], [MessageRole.USER, MessageRole.TOOL, MessageRole.ASSISTANT])
+        self.assertEqual(messages[1].metadata.get("message_kind"), "tool_result")
+        self.assertEqual(messages[1].metadata.get("tool_name"), "get_file_info")
+        self.assertTrue(messages[1].metadata.get("tool_ok"))
+        raw = messages[1].metadata.get("tool_data", {}).get("raw_result", {})
+        structured = raw.get("structuredContent", {})
+        self.assertEqual(structured.get("path"), "notes/info-target.txt")
+        self.assertEqual(structured.get("kind"), "file")
+        self.assertIsInstance(structured.get("size_bytes"), int)
+        self.assertIsNotNone(structured.get("permissions_octal"))
+        self.assertEqual(
+            [getattr(event.event_type, "value", str(event.event_type)) for event in events],
+            [RuntimeEventType.RUN_STARTED.value, RuntimeEventType.TOOL_INVOCATION_COMPLETED.value],
+        )
+        self.assertEqual(len(invocations), 1)
+        self.assertEqual(invocations[0].tool_name, "get_file_info")
+        self.assertEqual(getattr(invocations[0].status, "value", str(invocations[0].status)), "completed")
+
+    def test_mcp_directory_tree_turn_is_closure_complete_inside_run_session_turn(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        root_dir = workspace_root / "notes" / "tree-root"
+        (root_dir / "subdir").mkdir(parents=True, exist_ok=True)
+        (root_dir / "subdir" / "nested.txt").write_text("nested\n", encoding="utf-8")
+        (root_dir / "top.txt").write_text("top\n", encoding="utf-8")
+
+        sm = self.make_session_manager(
+            McpDirectoryTreeThenFinishBackend(),
+            enable_mcp_filesystem=True,
+            workspace_root=workspace_root,
+        )
+        session = sm.create_session(backend_name="mcp-directory-tree-then-finish", model="test-model")
+
+        plan = sm.run_session_turn(session_id=session.session_id, user_input="please get directory tree via mcp")
+        messages = sm.list_messages(session.session_id)
+        events = sm.store.list_events_for_run(session.conversation_id)
+        invocations = sm.store.list_tool_invocations_for_run(session.conversation_id)
+
+        self.assertEqual(plan.plan_label, "post-tool-final")
+        self.assertEqual(plan.final_text, "MCP directory tree path completed in the same turn.")
+        self.assertEqual([m.role for m in messages], [MessageRole.USER, MessageRole.TOOL, MessageRole.ASSISTANT])
+        self.assertEqual(messages[1].metadata.get("message_kind"), "tool_result")
+        self.assertEqual(messages[1].metadata.get("tool_name"), "directory_tree")
+        self.assertTrue(messages[1].metadata.get("tool_ok"))
+        raw = messages[1].metadata.get("tool_data", {}).get("raw_result", {})
+        structured = raw.get("structuredContent", {})
+        self.assertEqual(structured.get("path"), "notes/tree-root")
+        self.assertEqual(structured.get("max_depth"), 2)
+        self.assertIn("tree", structured)
+        top_names = [entry.get("name") for entry in structured.get("tree", [])]
+        self.assertIn("subdir", top_names)
+        self.assertIn("top.txt", top_names)
+        self.assertEqual(
+            [getattr(event.event_type, "value", str(event.event_type)) for event in events],
+            [RuntimeEventType.RUN_STARTED.value, RuntimeEventType.TOOL_INVOCATION_COMPLETED.value],
+        )
+        self.assertEqual(len(invocations), 1)
+        self.assertEqual(invocations[0].tool_name, "directory_tree")
+        self.assertEqual(getattr(invocations[0].status, "value", str(invocations[0].status)), "completed")
+
+    def test_mcp_search_files_turn_is_closure_complete_inside_run_session_turn(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        root_dir = workspace_root / "notes" / "search-root"
+        root_dir.mkdir(parents=True, exist_ok=True)
+        (root_dir / "a.txt").write_text("TODO: one\nhello\n", encoding="utf-8")
+        (root_dir / "b.txt").write_text("nothing\nTODO: two\n", encoding="utf-8")
+        (root_dir / "subdir").mkdir(exist_ok=True)
+        (root_dir / "subdir" / "c.txt").write_text("TODO: three\n", encoding="utf-8")
+
+        sm = self.make_session_manager(
+            McpSearchFilesThenFinishBackend(),
+            enable_mcp_filesystem=True,
+            workspace_root=workspace_root,
+        )
+        session = sm.create_session(backend_name="mcp-search-files-then-finish", model="test-model")
+
+        plan = sm.run_session_turn(session_id=session.session_id, user_input="please search files via mcp")
+        messages = sm.list_messages(session.session_id)
+        events = sm.store.list_events_for_run(session.conversation_id)
+        invocations = sm.store.list_tool_invocations_for_run(session.conversation_id)
+
+        self.assertEqual(plan.plan_label, "post-tool-final")
+        self.assertEqual(plan.final_text, "MCP search files path completed in the same turn.")
+        self.assertEqual([m.role for m in messages], [MessageRole.USER, MessageRole.TOOL, MessageRole.ASSISTANT])
+        self.assertEqual(messages[1].metadata.get("message_kind"), "tool_result")
+        self.assertEqual(messages[1].metadata.get("tool_name"), "search_files")
+        self.assertTrue(messages[1].metadata.get("tool_ok"))
+        raw = messages[1].metadata.get("tool_data", {}).get("raw_result", {})
+        structured = raw.get("structuredContent", {})
+        self.assertEqual(structured.get("path"), "notes/search-root")
+        self.assertEqual(structured.get("query"), "TODO")
+        self.assertEqual(structured.get("match_count"), 3)
+        match_paths = [entry.get("path") for entry in structured.get("matches", [])]
+        self.assertIn("notes/search-root/a.txt", match_paths)
+        self.assertIn("notes/search-root/b.txt", match_paths)
+        self.assertIn("notes/search-root/subdir/c.txt", match_paths)
+        self.assertEqual(
+            [getattr(event.event_type, "value", str(event.event_type)) for event in events],
+            [RuntimeEventType.RUN_STARTED.value, RuntimeEventType.TOOL_INVOCATION_COMPLETED.value],
+        )
+        self.assertEqual(len(invocations), 1)
+        self.assertEqual(invocations[0].tool_name, "search_files")
+        self.assertEqual(getattr(invocations[0].status, "value", str(invocations[0].status)), "completed")
 
     def test_provider_failure_turn_becomes_transcript_visible_runtime_failure(self):
         sm = self.make_session_manager(ProviderFailureBackend())

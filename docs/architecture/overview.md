@@ -16,6 +16,8 @@
 - Control/state persistence and transcript/history persistence should remain conceptually distinct
 - MCP-exposed tool names should remain canonical/original where possible; runtime-native tools carry explicit `native__` source tagging
 - Provider payload tool exposure should use the same already-assembled ToolRegistry truth as execution rather than rebuilding parallel registries
+- The current Python-first filesystem MCP capability family now includes `read_file`, `list_directory`, `list_directory_with_sizes`, `get_file_info`, `directory_tree`, and `search_files`
+- Filesystem capability growth is now paired with an explicit runtime-quality roadmap (`docs/filesystem-runtime-quality-roadmap.md`) and an MCP adapter layering design (`docs/mcp-adapter-layering-design.md`)
 
 ## ADR anchors
 

@@ -436,6 +436,16 @@ class InspectorHandler(BaseHTTPRequestHandler):
         tool_invocations = store.list_tool_invocations_for_run(current_session.conversation_id) if current_session else []
         tool_calls = [tool.model_dump(mode="json") for tool in tool_invocations]
         metadata = current_session.metadata if current_session is not None else {}
+        if isinstance(metadata, dict) and isinstance(metadata.get("filesystem_read_state"), dict):
+            metadata = dict(metadata)
+            metadata["filesystem_read_state_summary"] = {
+                path: {
+                    "source_tool": state.get("source_tool"),
+                    "is_partial_view": state.get("is_partial_view"),
+                }
+                for path, state in metadata.get("filesystem_read_state", {}).items()
+                if isinstance(state, dict)
+            }
 
         html = _html_page(
             sessions=sessions,

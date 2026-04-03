@@ -121,11 +121,23 @@ Key current rules:
 - provider payload exposure and execution truth now share one ToolRegistry instead of rebuilding parallel registries inside the provider adapter
 - policy-denied MCP tool requests now persist failed `ToolInvocation` records so tool-call inspection surfaces can show denied/failed attempts as first-class runtime truth
 
-Current validated MCP filesystem v0 behaviors include:
+Current validated MCP filesystem capability-family behaviors include:
 - direct MCP `read_file` invocation success
 - SessionManager-bounded same-turn MCP safe-read closure success
+- SessionManager-bounded same-turn closures for `list_directory`, `list_directory_with_sizes`, `get_file_info`, `directory_tree`, and `search_files`
 - path-escape denial at the policy/environment boundary before tool execution
-- transcript / events / tool-invocation persistence / inspector-facing snapshots all agreeing on the same runtime truth for the validated slice
+- transcript / events / tool-invocation persistence / inspector-facing snapshots all agreeing on the same runtime truth for the validated slices
+
+## Hardening follow-up note
+
+After the initial MVP closure, the mainline has also been hardened in several targeted ways:
+- native filesystem path checks now use real path containment checks rather than string-prefix matching
+- approval resolution now validates approve/reject decisions before clearing pending approval state
+- post-tool continuation plans re-enter the normal finalization/governance path rather than bypassing it
+- local OpenAI OAuth credential files are now written with owner-only permissions
+- conversation ids now use generated ids rather than second-level timestamps
+- SQLite bootstrap storage now enables WAL mode and a busy timeout for safer local concurrent access patterns
+- stdio MCP client calls now use a bounded timeout, and MCP resource reads now require a minimally valid URI scheme
 
 ## Current scope note
 

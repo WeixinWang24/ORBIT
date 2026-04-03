@@ -97,6 +97,90 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
                         },
                     }
                 )
+            elif tool.name == "list_directory":
+                definitions.append(
+                    {
+                        "type": "function",
+                        "name": tool.name,
+                        "description": "List files and directories inside a workspace-relative directory via the ORBIT MCP filesystem server.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "description": "Workspace-relative directory path."}
+                            },
+                            "required": ["path"],
+                            "additionalProperties": False,
+                        },
+                    }
+                )
+            elif tool.name == "list_directory_with_sizes":
+                definitions.append(
+                    {
+                        "type": "function",
+                        "name": tool.name,
+                        "description": "List files and directories inside a workspace-relative directory with file sizes and summary information via the ORBIT MCP filesystem server.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "description": "Workspace-relative directory path."},
+                                "sortBy": {"type": "string", "enum": ["name", "size"], "description": "Sort entries by name or size."},
+                            },
+                            "required": ["path"],
+                            "additionalProperties": False,
+                        },
+                    }
+                )
+            elif tool.name == "get_file_info":
+                definitions.append(
+                    {
+                        "type": "function",
+                        "name": tool.name,
+                        "description": "Get structured metadata for a workspace-relative file or directory via the ORBIT MCP filesystem server.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "description": "Workspace-relative file or directory path."},
+                            },
+                            "required": ["path"],
+                            "additionalProperties": False,
+                        },
+                    }
+                )
+            elif tool.name == "directory_tree":
+                definitions.append(
+                    {
+                        "type": "function",
+                        "name": tool.name,
+                        "description": "Get a bounded recursive directory tree for a workspace-relative directory via the ORBIT MCP filesystem server.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "description": "Workspace-relative directory path."},
+                                "maxDepth": {"type": "integer", "description": "Maximum directory recursion depth."},
+                            },
+                            "required": ["path"],
+                            "additionalProperties": False,
+                        },
+                    }
+                )
+            elif tool.name == "search_files":
+                definitions.append(
+                    {
+                        "type": "function",
+                        "name": tool.name,
+                        "description": "Search UTF-8 text files under a workspace-relative directory and return bounded structured match summaries via the ORBIT MCP filesystem server.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "description": "Workspace-relative directory path."},
+                                "query": {"type": "string", "description": "Text to search for inside files."},
+                                "maxResults": {"type": "integer", "description": "Maximum number of matches to return."},
+                            },
+                            "required": ["path", "query"],
+                            "additionalProperties": False,
+                        },
+                    }
+                )
             elif tool.name == "native__write_file":
                 definitions.append(
                     {

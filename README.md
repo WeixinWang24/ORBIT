@@ -57,7 +57,7 @@ orbit demo
   - `auth/` — OAuth/auth-material helpers and local auth stores
   - `transports/` — HTTP, SSE, and SSH tunnel helpers
 - `src/mcp_servers/` — cross-runtime MCP server assets
-  - `system/core/filesystem/` — first local Python MCP filesystem server (`read_file` v0)
+  - `system/core/filesystem/` — Python-first local filesystem MCP capability family (`read_file`, `list_directory`, `list_directory_with_sizes`, `get_file_info`, `directory_tree`, `search_files`)
 - `src/orbit/store/` — persistence boundary plus SQLite/PostgreSQL implementations
 - `src/orbit/notebook/` — DataFrame projections and notebook workbench/provider demo helpers
 - `src/orbit/tools/` — governed native tool abstractions plus MCP wrappers/registry
@@ -76,3 +76,5 @@ See also:
 - `docs/project-structure.md`
 - `docs/architecture/overview.md`
 - `docs/session-manager-mvp-loop-contract.md`
+- `docs/filesystem-runtime-quality-roadmap.md`
+- `docs/mcp-adapter-layering-design.md`
