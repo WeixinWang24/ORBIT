@@ -192,6 +192,8 @@ Current implementation progress:
 Current implementation progress:
 - ORBIT now supports a first explicit `filesystem_unchanged` result for repeated same-path `read_file` requests within a session
 - the current trigger is intentionally strict: only a prior `full_read` grounding entry for the same path may produce `status = unchanged`
+- the current freshness basis is lightweight but explicit: unchanged requires matching `observed_modified_at_epoch` and `observed_size_bytes` from the prior full read
+- file changes now correctly force fallback to a real read instead of producing `filesystem_unchanged`
 - prior `partial_read` grounding does not qualify
 - the shortcut remains explicit and inspectable through normal tool-result surfaces; it is not a silent optimization
 

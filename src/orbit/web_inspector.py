@@ -444,6 +444,8 @@ class InspectorHandler(BaseHTTPRequestHandler):
                     "grounding_kind": state.get("grounding_kind"),
                     "path_kind": state.get("path_kind"),
                     "is_partial_view": state.get("is_partial_view"),
+                    "observed_modified_at_epoch": state.get("observed_modified_at_epoch"),
+                    "observed_size_bytes": state.get("observed_size_bytes"),
                 }
                 for path, state in metadata.get("filesystem_read_state", {}).items()
                 if isinstance(state, dict)

@@ -575,6 +575,9 @@ class SessionManagerMvpLoopContractTests(unittest.TestCase):
         self.assertEqual(structured.get("path"), "notes/mcp-existing.txt")
         self.assertEqual(structured.get("status"), "unchanged")
         self.assertEqual(structured.get("grounding_kind"), "full_read")
+        freshness_basis = structured.get("freshness_basis", {})
+        self.assertIsInstance(freshness_basis.get("modified_at_epoch"), (int, float))
+        self.assertEqual(freshness_basis.get("size_bytes"), len("hello from mcp contract path\n".encode("utf-8")))
 
     def test_mcp_repeated_partial_read_does_not_return_unchanged_result(self):
         workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
@@ -599,6 +602,70 @@ class SessionManagerMvpLoopContractTests(unittest.TestCase):
         self.assertNotEqual(second_tool.metadata.get("tool_data", {}).get("result_kind"), "filesystem_unchanged")
         self.assertEqual(structured.get("path"), "notes/truncated.txt")
         self.assertTrue(structured.get("truncated"))
+
+    def test_mcp_repeated_full_read_does_not_return_unchanged_after_file_change(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        notes_dir = workspace_root / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        target = notes_dir / "mcp-existing.txt"
+        target.write_text("hello from mcp contract path\n", encoding="utf-8")
+
+        class McpReadThenMutateThenRepeatBackend:
+            backend_name = "mcp-read-then-mutate-then-repeat"
+
+            def __init__(self, target_path: Path):
+                self.target_path = target_path
+
+            def plan_from_messages(self, messages, session=None):
+                tool_results = [m for m in messages if m.role == MessageRole.TOOL]
+                if len(tool_results) == 1:
+                    self.target_path.write_text("changed after first read\nwith more bytes\n", encoding="utf-8")
+                    return ExecutionPlan(
+                        source_backend=self.backend_name,
+                        plan_label="mcp-safe-tool-repeat-needed",
+                        tool_request=ToolRequest(
+                            tool_name="read_file",
+                            input_payload={"path": "notes/mcp-existing.txt"},
+                            requires_approval=False,
+                            side_effect_class="safe",
+                        ),
+                        should_finish_after_tool=True,
+                    )
+                if tool_results:
+                    return ExecutionPlan(
+                        source_backend=self.backend_name,
+                        plan_label="post-tool-final",
+                        final_text="MCP safe read path completed in the same turn.",
+                    )
+                return ExecutionPlan(
+                    source_backend=self.backend_name,
+                    plan_label="mcp-safe-tool-needed",
+                    tool_request=ToolRequest(
+                        tool_name="read_file",
+                        input_payload={"path": "notes/mcp-existing.txt"},
+                        requires_approval=False,
+                        side_effect_class="safe",
+                    ),
+                    should_finish_after_tool=True,
+                )
+
+        sm = self.make_session_manager(
+            McpReadThenMutateThenRepeatBackend(target),
+            enable_mcp_filesystem=True,
+            workspace_root=workspace_root,
+        )
+        session = sm.create_session(backend_name="mcp-read-then-mutate-then-repeat", model="test-model")
+        plan = sm.run_session_turn(session_id=session.session_id, user_input="please read twice via mcp")
+
+        self.assertEqual(plan.plan_label, "post-tool-final")
+        messages = sm.list_messages(session.session_id)
+        tool_messages = [m for m in messages if m.role == MessageRole.TOOL]
+        self.assertEqual(len(tool_messages), 2)
+        second_tool = tool_messages[-1]
+        structured = second_tool.metadata.get("tool_data", {}).get("raw_result", {}).get("structuredContent", {})
+        self.assertNotEqual(second_tool.metadata.get("tool_data", {}).get("result_kind"), "filesystem_unchanged")
+        self.assertEqual(structured.get("path"), "notes/mcp-existing.txt")
+        self.assertEqual(structured.get("content"), "changed after first read\nwith more bytes\n")
 
     def test_mcp_path_escape_is_denied_before_tool_execution(self):
         workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))

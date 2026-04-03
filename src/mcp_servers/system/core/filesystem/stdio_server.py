@@ -120,6 +120,7 @@ def _read_file_result(path: str) -> dict[str, Any]:
     target = _resolve_safe_file_path(path)
     max_read_bytes = _max_read_bytes()
     raw = target.read_bytes()
+    stat = target.stat()
     truncated = len(raw) > max_read_bytes
     payload = raw[:max_read_bytes]
     try:
@@ -131,6 +132,8 @@ def _read_file_result(path: str) -> dict[str, Any]:
         "content": content,
         "truncated": truncated,
         "bytes_read": len(payload),
+        "size_bytes": stat.st_size,
+        "modified_at_epoch": stat.st_mtime,
     }
 
 

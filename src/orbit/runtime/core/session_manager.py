@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from pathlib import Path
 
 from orbit.models import ContextArtifact, ConversationMessage, ConversationSession, ExecutionEvent, GovernedToolState, MessageRole, ToolInvocation, ToolInvocationStatus
 from orbit.models.core import new_id
@@ -161,10 +162,32 @@ class SessionManager:
             return None
         if prior.get("grounding_kind") != "full_read":
             return None
+        target = (Path(self.workspace_root) / path).resolve()
+        workspace_root = Path(self.workspace_root).resolve()
+        try:
+            target.relative_to(workspace_root)
+        except ValueError:
+            return None
+        if not target.exists() or not target.is_file():
+            return None
+        try:
+            stat = target.stat()
+        except OSError:
+            return None
+        observed_modified_at = prior.get("observed_modified_at_epoch")
+        observed_size_bytes = prior.get("observed_size_bytes")
+        if observed_modified_at is None or observed_size_bytes is None:
+            return None
+        if stat.st_mtime != observed_modified_at or stat.st_size != observed_size_bytes:
+            return None
         structured = {
             "path": path,
             "status": "unchanged",
             "grounding_kind": "full_read",
+            "freshness_basis": {
+                "modified_at_epoch": observed_modified_at,
+                "size_bytes": observed_size_bytes,
+            },
             "range": None,
         }
         return ToolResult(
@@ -197,12 +220,16 @@ class SessionManager:
         if grounding_kind is None:
             return
         read_state = session.metadata.setdefault("filesystem_read_state", {})
+        observed_modified_at = structured.get("modified_at_epoch") if isinstance(structured, dict) else None
+        observed_size_bytes = structured.get("size_bytes") if isinstance(structured, dict) else None
         read_state[path] = {
             "source_tool": tool_request.tool_name,
             "timestamp_epoch": datetime.now(timezone.utc).timestamp(),
             "is_partial_view": truncated,
             "grounding_kind": grounding_kind,
             "path_kind": "file",
+            "observed_modified_at_epoch": observed_modified_at,
+            "observed_size_bytes": observed_size_bytes,
             "range": None,
         }
         session.updated_at = datetime.now(timezone.utc)
