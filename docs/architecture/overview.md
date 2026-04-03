@@ -3,7 +3,7 @@
 ## Current decisions
 
 - Language/runtime direction: Python-first
-- V0 interaction surface: Jupyter Notebook
+- V0 interaction surfaces: Jupyter Notebook plus local web inspector
 - V1 interaction direction: migrate/adapt Vio Dashboard frontend
 - Default development environment: Conda environment `Orbit`
 - Long-term primary persistence direction: PostgreSQL
@@ -14,6 +14,8 @@
 - `run_session_turn(...)` is the canonical first-turn bounded executor; `resolve_session_approval(...)` is the canonical resumed-turn bounded executor for approval-gated turns
 - Runtime event model should remain separate from UI message rendering structures
 - Control/state persistence and transcript/history persistence should remain conceptually distinct
+- MCP-exposed tool names should remain canonical/original where possible; runtime-native tools carry explicit `native__` source tagging
+- Provider payload tool exposure should use the same already-assembled ToolRegistry truth as execution rather than rebuilding parallel registries
 
 ## ADR anchors
 

@@ -4,13 +4,14 @@ ORBIT is a Python-first, governance-oriented personal agent workbench.
 
 ## Current scope
 
-This repository currently contains a Phase 0/1 skeleton for:
+This repository currently contains a Phase 0/1 workbench for:
 - typed core domain objects
-- explicit runtime coordination
-- structured event logging
+- an active SessionManager-centered runtime mainline
+- structured runtime events plus transcript/session persistence
 - temporary bootstrap persistence with PostgreSQL as the architectural direction
-- narrow initial tool boundaries
-- notebook-friendly projection helpers
+- governed native tool calling
+- a first Python-first MCP filesystem re-entry slice
+- notebook-friendly and local web-inspector observation surfaces
 
 ## Philosophy
 
@@ -49,13 +50,18 @@ orbit demo
 
 - `apps/` — runnable application entrypoints and compatibility launch surfaces
 - `config/` — environment and configuration artifacts
-- `src/orbit/runtime/` — core runtime contracts, coordinator, event vocabulary, plans, normalization
+- `src/orbit/runtime/` — active runtime contracts, session loop, providers, governance, MCP bootstrap/integration
+  - `core/` — SessionManager mainline and runtime contracts/events
   - `providers/` — provider-specific execution backends (`openai_platform`, `openai_codex`, `ssh_vllm`)
+  - `mcp/` — MCP client/bootstrap/governance/registry-loading integration
   - `auth/` — OAuth/auth-material helpers and local auth stores
   - `transports/` — HTTP, SSE, and SSH tunnel helpers
+- `src/mcp_servers/` — cross-runtime MCP server assets
+  - `system/core/filesystem/` — first local Python MCP filesystem server (`read_file` v0)
 - `src/orbit/store/` — persistence boundary plus SQLite/PostgreSQL implementations
 - `src/orbit/notebook/` — DataFrame projections and notebook workbench/provider demo helpers
-- `src/orbit/tools/` — tool abstractions and registry
+- `src/orbit/tools/` — governed native tool abstractions plus MCP wrappers/registry
+- `src/orbit/web_inspector.py` — local inspector for transcript, payload, context, events, and tool calls
 - `notebooks/` — notebook-first demonstrations of runtime capabilities
 - `docs/` — grouped repository-facing documentation
   - `architecture/` — architecture notes
