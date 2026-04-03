@@ -82,6 +82,7 @@ ORBIT now applies the readiness layer to real execution for:
 - `native__replace_all_in_file`
 - `native__replace_block_in_file`
 - `native__apply_exact_hunk`
+- MCP-hosted `replace_in_file`
 
 Current invariant:
 - approval remains necessary for grounded mutation tools such as `native__write_file`, `native__replace_in_file`, `native__replace_all_in_file`, `native__replace_block_in_file`, and `native__apply_exact_hunk`
@@ -123,8 +124,8 @@ This layered failure model is important because grounded mutation safety is not 
 This note describes what ORBIT currently does, not what it has already generalized.
 
 Current boundaries:
-- grounded mutation now covers `native__write_file`, `native__replace_in_file`, the first multi-hit edit-family path `native__replace_all_in_file`, the first exact block-level patch-style path `native__replace_block_in_file`, and the first context-anchored exact hunk path `native__apply_exact_hunk`
-- richer edit/diff-style mutation families are not yet grounded-aware beyond exact block replacement and exact single-hunk application
+- grounded mutation now covers `native__write_file`, `native__replace_in_file`, the first multi-hit edit-family path `native__replace_all_in_file`, the first exact block-level patch-style path `native__replace_block_in_file`, the first context-anchored exact hunk path `native__apply_exact_hunk`, and the first migrated MCP-hosted mutation capability `replace_in_file`
+- richer edit/diff-style mutation families are not yet grounded-aware beyond exact block replacement, exact single-hunk application, and the first migrated MCP `replace_in_file` capability
 - hash-based freshness evidence is not yet implemented
 - range-aware grounding identity is not yet implemented
 - ORBIT does not yet auto-recover by forcing a reread when grounding is stale
