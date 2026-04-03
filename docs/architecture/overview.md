@@ -19,6 +19,7 @@
 - The current Python-first filesystem MCP capability family now includes `read_file`, `list_directory`, `list_directory_with_sizes`, `get_file_info`, `directory_tree`, and `search_files`
 - Filesystem capability growth is now paired with an explicit runtime-quality roadmap (`docs/filesystem-runtime-quality-roadmap.md`) and an MCP adapter layering design (`docs/mcp-adapter-layering-design.md`)
 - Filesystem mutation safety is now formalized in `docs/filesystem-grounding-and-mutation-boundary.md`, which defines the grounding -> readiness -> mutation boundary invariant and the rule that approval alone is not sufficient for mutation
+- Mutation capability placement/migration is now sketched in `docs/mcp-mutation-family-migration-design.md`, which separates MCP-hosted shared mutation capability semantics from runtime-local grounding/governance insertion
 
 ## ADR anchors
 
