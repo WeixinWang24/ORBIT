@@ -206,7 +206,8 @@ Current implementation progress:
 - ORBIT also now exposes a first mutation-facing readiness helper that maps grounding state into write eligibility/reason for a path
 - current write-readiness reasons are: `no_prior_grounding`, `partial_read_grounding_insufficient`, `stale_full_read_grounding`, and `full_read_fresh_grounding_available`
 - ORBIT now uses this helper to gate `native__write_file` at execution time: approval alone is no longer enough when grounding is missing or stale
-- this remains intentionally narrow: the current gated integration applies to `native__write_file` only, not to future edit/diff mutation families yet
+- ORBIT also now applies the same gate to the first minimal edit-family path, `native__replace_in_file`
+- this remains intentionally narrow: richer edit/diff mutation families are still future work
 
 ---
 

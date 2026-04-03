@@ -3,12 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from .base import Tool
-from .files import ReadFileTool, WriteFileTool
+from .files import ReadFileTool, ReplaceInFileTool, WriteFileTool
 
 
 class ToolRegistry:
     def __init__(self, workspace_root: Path):
-        tools = [ReadFileTool(workspace_root), WriteFileTool(workspace_root)]
+        tools = [ReadFileTool(workspace_root), WriteFileTool(workspace_root), ReplaceInFileTool(workspace_root)]
         self._tools = {tool.name: tool for tool in tools}
 
     def register(self, tool: Tool) -> None:
