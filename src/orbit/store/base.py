@@ -113,6 +113,10 @@ class OrbitStore(ABC):
         """Return a tool invocation by id, or None if it does not exist."""
 
     @abstractmethod
+    def list_tool_invocations_for_run(self, run_id: str) -> list[ToolInvocation]:
+        """Return tool invocations associated with a run in stable order."""
+
+    @abstractmethod
     def get_latest_step_for_run(self, run_id: str) -> RunStep | None:
         """Return the latest step for a run based on stable execution ordering."""
 

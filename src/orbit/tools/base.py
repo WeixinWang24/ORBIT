@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from orbit.models.core import OrbitBaseModel
 
-@dataclass
-class ToolResult:
+
+class ToolResult(OrbitBaseModel):
     ok: bool
     content: str
     data: dict[str, Any] | None = None

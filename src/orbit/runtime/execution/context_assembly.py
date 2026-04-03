@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from pydantic import Field
 
 from orbit.models import ConversationMessage
 from orbit.models.core import OrbitBaseModel
+
+PROMPT_ASSEMBLY_VERSION = "prompt_assembly_plan_v1"
 
 
 class ContextFragment(OrbitBaseModel):
@@ -34,9 +37,13 @@ class PromptAssemblyPlan(OrbitBaseModel):
         return "\n\n".join(parts)
 
     def to_snapshot_dict(self) -> dict:
+        workspace_fragment = next((fragment for fragment in self.instruction_fragments if fragment.fragment_name == "project_workspace"), None)
         return {
+            "assembly_version": PROMPT_ASSEMBLY_VERSION,
             "backend": self.source_backend,
             "model": self.model,
+            "workspace_prompt_source": workspace_fragment.metadata.get("source_file") if workspace_fragment else None,
+            "workspace_prompt_sha1": workspace_fragment.metadata.get("content_sha1") if workspace_fragment else None,
             "instruction_fragments": [fragment.model_dump(mode="json") for fragment in self.instruction_fragments],
             "history_context_fragments": [fragment.model_dump(mode="json") for fragment in self.history_context_fragments],
             "auxiliary_context_fragments": [fragment.model_dump(mode="json") for fragment in self.auxiliary_context_fragments],
@@ -69,7 +76,10 @@ def _load_workspace_prompt(workspace_root: str | None) -> ContextFragment | None
         visibility_scope="runtime",
         content=content,
         priority=90,
-        metadata={"source_file": str(candidate)},
+        metadata={
+            "source_file": str(candidate),
+            "content_sha1": hashlib.sha1(content.encode("utf-8")).hexdigest(),
+        },
     )
 
 

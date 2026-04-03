@@ -129,6 +129,10 @@ class SQLiteStore(OrbitStore):
         row = self.conn.execute("SELECT data FROM tool_invocations WHERE tool_invocation_id = ?", (tool_invocation_id,)).fetchone()
         return ToolInvocation.model_validate_json(row["data"]) if row else None
 
+    def list_tool_invocations_for_run(self, run_id: str) -> list[ToolInvocation]:
+        rows = self.conn.execute("SELECT data FROM tool_invocations WHERE run_id = ? ORDER BY rowid ASC", (run_id,)).fetchall()
+        return [ToolInvocation.model_validate_json(row["data"]) for row in rows]
+
     def get_latest_step_for_run(self, run_id: str) -> RunStep | None:
         row = self.conn.execute("SELECT data FROM run_steps WHERE run_id = ? ORDER BY step_index DESC LIMIT 1", (run_id,)).fetchone()
         return RunStep.model_validate_json(row["data"]) if row else None
