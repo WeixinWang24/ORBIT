@@ -14,7 +14,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STATE_DIR = REPO_ROOT / ".orbit"
 DEFAULT_DB_PATH = DEFAULT_STATE_DIR / "orbit.db"
-DEFAULT_WORKSPACE_ROOT = REPO_ROOT
+DEFAULT_WORKSPACE_ROOT = REPO_ROOT / "workspace"
 
 # PostgreSQL is the intended primary persistence direction for ORBIT. These
 # defaults support local development without forcing configuration machinery

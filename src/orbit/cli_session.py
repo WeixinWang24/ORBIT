@@ -11,7 +11,7 @@ from rich.table import Table
 from orbit.runtime import SessionManager
 from orbit.runtime.auth.storage.openai_store import OpenAIAuthStoreError
 from orbit.runtime.providers.openai_codex import OpenAICodexConfig, OpenAICodexExecutionBackend
-from orbit.settings import DEFAULT_WORKSPACE_ROOT
+from orbit.settings import DEFAULT_WORKSPACE_ROOT, REPO_ROOT
 from orbit.store import create_default_store
 
 app = typer.Typer(help="ORBIT SessionManager-mainline session chat CLI")
@@ -23,7 +23,8 @@ console = Console()
 def _build_codex_session_manager(*, model: str, enable_tools: bool = False) -> SessionManager:
     backend = OpenAICodexExecutionBackend(
         config=OpenAICodexConfig(model=model, enable_tools=enable_tools),
-        repo_root=DEFAULT_WORKSPACE_ROOT,
+        repo_root=REPO_ROOT,
+        workspace_root=DEFAULT_WORKSPACE_ROOT,
     )
     return SessionManager(
         store=create_default_store(),
@@ -111,6 +112,29 @@ def _create_session(session_manager: SessionManager, *, model: str):
     return session
 
 
+def _print_help() -> None:
+    console.print("[dim]Session scope commands:[/dim] /show /state /events /clear /detach")
+    console.print("[dim]Runtime scope commands:[/dim] /sessions /attach <session_id> /new /clear-all /help /exit")
+
+
+def _clear_session(session_manager: SessionManager, session_id: str) -> None:
+    delete_fn = getattr(session_manager.store, "delete_session", None)
+    if not callable(delete_fn):
+        console.print(Panel("Current store does not support session deletion.", title="Clear Error", border_style="red", expand=False))
+        return
+    delete_fn(session_id)
+    console.print(Panel.fit(f"Deleted session: {session_id}", title="Session Cleared"))
+
+
+def _clear_all_sessions(session_manager: SessionManager) -> None:
+    delete_all_fn = getattr(session_manager.store, "delete_all_sessions", None)
+    if not callable(delete_all_fn):
+        console.print(Panel("Current store does not support clearing all sessions.", title="Clear Error", border_style="red", expand=False))
+        return
+    delete_all_fn()
+    console.print(Panel.fit("Deleted all stored sessions.", title="All Sessions Cleared"))
+
+
 def _load_or_create_session(session_manager: SessionManager, *, model: str, session_id: str | None):
     if session_id:
         session = session_manager.get_session(session_id)
@@ -132,7 +156,7 @@ def chat(
     session = _load_or_create_session(session_manager, model=model, session_id=session_id)
 
     current_session = session
-    console.print("[dim]Commands: /show /state /events /sessions /attach <session_id> /detach /new /exit[/dim]")
+    _print_help()
     while True:
         prompt_label = current_session.session_id if current_session is not None else "orbit-session"
         try:
@@ -147,6 +171,9 @@ def chat(
         if command == "/exit":
             console.print("[dim]Bye.[/dim]")
             raise typer.Exit()
+        if command == "/help":
+            _print_help()
+            continue
         if command == "/sessions":
             _print_sessions(session_manager, current_session_id=current_session.session_id if current_session else None)
             continue
@@ -168,6 +195,20 @@ def chat(
             continue
         if command == "/new":
             current_session = _create_session(session_manager, model=model)
+            continue
+        if command == "/clear":
+            if current_session is None:
+                console.print("[dim]/clear is a session-scope command. Attach a session first, or use /clear-all from runtime scope.[/dim]")
+                continue
+            target = current_session.session_id
+            current_session = None
+            _clear_session(session_manager, target)
+            continue
+        if command == "/clear-all":
+            if current_session is not None:
+                console.print("[dim]/clear-all is a runtime-scope destructive command. Use /detach first, then run /clear-all.[/dim]")
+                continue
+            _clear_all_sessions(session_manager)
             continue
         if command == "/show":
             if current_session is None:

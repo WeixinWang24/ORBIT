@@ -62,6 +62,9 @@ It currently has two valid bounded outcomes:
 
 ORBIT's active session management posture is now transcript-canonical session management.
 
+A related rule now also applies: model-world is not runtime-world.
+Provider-model self-description about schemas, roles, or tool behavior is not authoritative runtime truth; session/runtime boundaries must be determined from actual runtime contracts, payload projection, persisted state, events, and observation artifacts.
+
 This means:
 - transcript/history is the primary visible truth of what happened in a session
 - session-local control state exists to make current runtime control conditions explicit, not to replace transcript truth
@@ -72,6 +75,8 @@ This means:
 ### Transcript truth
 
 The session transcript is the fine-grained visible truth.
+
+For prompt/context assembly, transcript may later be transformed into a derived history context element, but the canonical transcript itself remains the source-of-truth visible conversation record.
 
 It must preserve whether:
 - a tool was only requested
@@ -90,6 +95,12 @@ This is the explicit session-scoped control state for the MVP loop.
 ### Runtime event shell
 
 Runtime events are the coarse observational shell around the transcript/session truth.
+
+### Snapshot observation rule
+
+Context assembly snapshots and provider payload snapshots are derived observation artifacts for turn inspection.
+They are not canonical transcript/history truth and they do not replace canonical runtime control state.
+The runtime should treat them as SessionManager-owned debugging/inspection records rather than letting provider/backend layers directly define stable session truth through snapshot side channels.
 
 Currently validated event sequences include:
 - plain text: `run_started`

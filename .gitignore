@@ -3,6 +3,9 @@ __pycache__/
 .venv/
 .idea/
 .orbit/
+workspace/*
+!workspace/.gitkeep
+!workspace/PROMPT.md
 .ipynb_checkpoints/
 .env
 *.env

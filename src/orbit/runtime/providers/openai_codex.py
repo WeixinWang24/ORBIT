@@ -13,6 +13,7 @@ from orbit.runtime.execution.backends import ExecutionBackend
 from orbit.runtime.core.contracts import RunDescriptor
 from orbit.runtime.execution.normalization import ProviderFailure, ProviderNormalizedResult, normalized_result_to_execution_plan
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
+from orbit.runtime.execution.context_assembly import build_text_only_prompt_assembly_plan
 from orbit.runtime.execution.transcript_projection import messages_to_codex_input
 from orbit.runtime.transports.openai_codex_http import OpenAICodexHttpError, OpenAICodexSSEEvent, post_and_read_sse_events
 from orbit.tools.registry import ToolRegistry
@@ -31,9 +32,10 @@ class OpenAICodexConfig:
 class OpenAICodexExecutionBackend(ExecutionBackend):
     backend_name = "openai-codex"
 
-    def __init__(self, config: OpenAICodexConfig | None = None, repo_root: Path | None = None):
+    def __init__(self, config: OpenAICodexConfig | None = None, repo_root: Path | None = None, workspace_root: Path | None = None):
         self.config = config or OpenAICodexConfig()
         self.repo_root = repo_root or Path.cwd()
+        self.workspace_root = workspace_root or self.repo_root
         self.auth_store = OpenAIAuthStore(self.repo_root)
 
     def plan(self, descriptor: RunDescriptor) -> ExecutionPlan:
@@ -45,6 +47,8 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
         url = self.build_request_url()
         headers = self.build_request_headers(auth)
         payload = self.build_request_payload_from_messages(messages, session=session)
+        if session is not None:
+            session.metadata["last_provider_payload"] = payload
         try:
             events = post_and_read_sse_events(url=url, headers=headers, payload=payload, timeout_seconds=self.config.timeout_seconds)
         except OpenAICodexHttpError as exc:
@@ -105,15 +109,24 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
         return definitions
 
     def build_request_payload_from_messages(self, messages: list[ConversationMessage], *, session: ConversationSession | None = None) -> dict:
+        assembly_plan = build_text_only_prompt_assembly_plan(
+            backend_name=self.backend_name,
+            model=self.config.model,
+            messages=messages,
+            workspace_root=str(self.workspace_root),
+        )
+        instructions = assembly_plan.effective_instructions
+        projected_input = messages_to_codex_input(messages)
         payload = {
             "model": self.config.model,
             "store": False,
             "stream": True,
-            "instructions": "You are ORBIT's hosted-provider Codex path. Continue the conversation naturally using the supplied transcript.",
-            "input": messages_to_codex_input(messages),
+            "instructions": instructions,
+            "input": projected_input,
             "text": {"verbosity": "medium"},
             "include": ["reasoning.encrypted_content"],
         }
+        tools = []
         if self.config.enable_tools:
             payload["tool_choice"] = "auto"
             payload["parallel_tool_calls"] = True
@@ -121,6 +134,13 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
             if tools:
                 payload["tools"] = tools
         if session is not None:
+            snapshot = assembly_plan.to_snapshot_dict()
+            snapshot["tooling"] = {
+                "enable_tools": self.config.enable_tools,
+                "tool_count": len(tools),
+            }
+            session.metadata["_pending_context_assembly"] = snapshot
+            session.metadata["_pending_provider_payload"] = payload.copy()
             payload["prompt_cache_key"] = session.session_id
         return payload
 

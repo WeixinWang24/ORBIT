@@ -18,6 +18,7 @@ dependencies = [
 [project.scripts]
 orbit = "orbit.cli:app"
 orbit-session = "orbit.cli_session:app"
+orbit-inspector = "orbit.web_inspector:serve"
 
 [build-system]
 requires = ["hatchling"]

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from orbit.models import MessageRole
 from orbit.runtime import DummyExecutionBackend, RuntimeEventType, SessionManager
+from orbit.runtime.auth.storage.openai_store import OpenAIAuthStoreError
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
 from orbit.store.sqlite_store import SQLiteStore
 
@@ -14,6 +15,22 @@ class FinalOnlyBackend:
     backend_name = "final-only"
 
     def plan_from_messages(self, messages, session=None):
+        if session is not None:
+            session.metadata["_pending_context_assembly"] = {
+                "backend": "final-only",
+                "instructions": "final-only test instructions",
+                "projected_input": [
+                    {"role": getattr(m.role, "value", str(m.role)), "content": m.content}
+                    for m in messages
+                ],
+            }
+            session.metadata["_pending_provider_payload"] = {
+                "backend": "final-only",
+                "messages": [
+                    {"role": getattr(m.role, "value", str(m.role)), "content": m.content}
+                    for m in messages
+                ],
+            }
         return ExecutionPlan(
             source_backend="final-only",
             plan_label="final-only",
@@ -99,6 +116,35 @@ class NonApprovalToolThenFinishBackend:
         )
 
 
+class ProviderFailureBackend:
+    backend_name = "provider-failure"
+
+    def plan_from_messages(self, messages, session=None):
+        return ExecutionPlan(
+            source_backend="provider-failure",
+            plan_label="provider-failure",
+            failure_reason="Upstream provider transport failed.",
+        )
+
+
+class MalformedResponseBackend:
+    backend_name = "malformed-response"
+
+    def plan_from_messages(self, messages, session=None):
+        return ExecutionPlan(
+            source_backend="malformed-response",
+            plan_label="malformed-response",
+            failure_reason="Provider response did not contain extractable final text.",
+        )
+
+
+class AuthFailureBackend:
+    backend_name = "auth-failure"
+
+    def plan_from_messages(self, messages, session=None):
+        raise OpenAIAuthStoreError("OpenAI auth store not found for contract test")
+
+
 class SessionManagerMvpLoopContractTests(unittest.TestCase):
     def make_session_manager(self, backend) -> SessionManager:
         root = Path(tempfile.mkdtemp(prefix="orbit-mvp-loop-"))
@@ -111,12 +157,21 @@ class SessionManagerMvpLoopContractTests(unittest.TestCase):
 
         plan = sm.run_session_turn(session_id=session.session_id, user_input="hello")
         messages = sm.list_messages(session.session_id)
+        artifacts = sm.store.list_context_for_run(session.conversation_id)
 
         self.assertEqual(plan.plan_label, "final-only")
         self.assertIsNone(plan.tool_request)
         self.assertEqual(plan.final_text, "Final answer without tool use.")
         self.assertEqual([m.role for m in messages], [MessageRole.USER, MessageRole.ASSISTANT])
         self.assertEqual(messages[-1].content, "Final answer without tool use.")
+        artifact_types = [artifact.artifact_type for artifact in artifacts]
+        self.assertIn("session_transcript_snapshot", artifact_types)
+        self.assertIn("session_context_assembly", artifact_types)
+        self.assertIn("session_provider_payload", artifact_types)
+        refreshed = sm.get_session(session.session_id)
+        self.assertIsNotNone(refreshed)
+        self.assertIn("last_context_assembly", refreshed.metadata)
+        self.assertIn("last_provider_payload", refreshed.metadata)
 
     def test_approval_turn_persists_waiting_state_and_emits_event(self):
         sm = self.make_session_manager(ApprovalThenFinishBackend())
@@ -241,6 +296,65 @@ class SessionManagerMvpLoopContractTests(unittest.TestCase):
                 RuntimeEventType.TOOL_INVOCATION_COMPLETED.value,
             ],
         )
+
+    def test_provider_failure_turn_becomes_transcript_visible_runtime_failure(self):
+        sm = self.make_session_manager(ProviderFailureBackend())
+        session = sm.create_session(backend_name="provider-failure", model="test-model")
+
+        plan = sm.run_session_turn(session_id=session.session_id, user_input="hello")
+        messages = sm.list_messages(session.session_id)
+        events = sm.store.list_events_for_run(session.conversation_id)
+
+        self.assertEqual(plan.plan_label, "provider-failure")
+        self.assertEqual(plan.failure_reason, "Upstream provider transport failed.")
+        self.assertEqual(messages[-1].role, MessageRole.ASSISTANT)
+        self.assertEqual(messages[-1].metadata.get("message_kind"), "runtime_failure")
+        self.assertEqual(messages[-1].metadata.get("failure_reason"), "Upstream provider transport failed.")
+        self.assertEqual(
+            [getattr(event.event_type, "value", str(event.event_type)) for event in events],
+            [RuntimeEventType.RUN_STARTED.value, RuntimeEventType.RUN_FAILED.value],
+        )
+
+    def test_malformed_response_turn_becomes_transcript_visible_runtime_failure(self):
+        sm = self.make_session_manager(MalformedResponseBackend())
+        session = sm.create_session(backend_name="malformed-response", model="test-model")
+
+        plan = sm.run_session_turn(session_id=session.session_id, user_input="hello")
+        messages = sm.list_messages(session.session_id)
+        events = sm.store.list_events_for_run(session.conversation_id)
+
+        self.assertEqual(plan.plan_label, "malformed-response")
+        self.assertEqual(plan.failure_reason, "Provider response did not contain extractable final text.")
+        self.assertEqual(messages[-1].role, MessageRole.ASSISTANT)
+        self.assertEqual(messages[-1].metadata.get("message_kind"), "runtime_failure")
+        self.assertEqual(messages[-1].metadata.get("failure_reason"), "Provider response did not contain extractable final text.")
+        self.assertEqual(
+            [getattr(event.event_type, "value", str(event.event_type)) for event in events],
+            [RuntimeEventType.RUN_STARTED.value, RuntimeEventType.RUN_FAILED.value],
+        )
+
+    def test_auth_failure_becomes_session_readable_but_transcript_invisible(self):
+        sm = self.make_session_manager(AuthFailureBackend())
+        session = sm.create_session(backend_name="auth-failure", model="test-model")
+
+        plan = sm.run_session_turn(session_id=session.session_id, user_input="hello")
+        refreshed = sm.get_session(session.session_id)
+        messages = sm.list_messages(session.session_id)
+        events = sm.store.list_events_for_run(session.conversation_id)
+        artifacts = sm.store.list_context_for_run(session.conversation_id)
+
+        self.assertEqual(plan.plan_label, "auth-failure")
+        self.assertEqual(plan.failure_reason, "OpenAI auth store not found for contract test")
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[-1].role, MessageRole.USER)
+        self.assertIsNotNone(refreshed)
+        self.assertEqual(refreshed.metadata.get("last_auth_failure", {}).get("message"), "OpenAI auth store not found for contract test")
+        self.assertEqual(
+            [getattr(event.event_type, "value", str(event.event_type)) for event in events],
+            [RuntimeEventType.RUN_STARTED.value, RuntimeEventType.RUN_FAILED.value],
+        )
+        self.assertEqual(artifacts[-1].artifact_type, "session_auth_failure")
+        self.assertIn("OpenAI auth store not found for contract test", artifacts[-1].content)
 
 
 if __name__ == "__main__":

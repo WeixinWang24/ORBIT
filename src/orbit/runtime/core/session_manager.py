@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from orbit.runtime.execution.continuation_context import build_rejection_continu
 from orbit.runtime.governance.tool_approval_policy import PolicyDecision, PolicyEvaluationInput, evaluate_tool_approval_policy
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
 from orbit.runtime.mcp.governance import resolve_filesystem_mcp_target_path
+from orbit.runtime.auth.storage.openai_store import OpenAIAuthStoreError
 from orbit.store.base import OrbitStore
 from orbit.tools.base import ToolResult
 from orbit.tools.registry import ToolRegistry
@@ -41,11 +43,15 @@ class SessionManager:
 
     def create_session(self, *, backend_name: str, model: str, conversation_id: str | None = None) -> ConversationSession:
         session = ConversationSession(conversation_id=conversation_id or f"conversation:{backend_name}:{int(datetime.now(timezone.utc).timestamp())}", backend_name=backend_name, model=model)
+        setattr(session, "_store", self.store)
         self.store.save_session(session)
         return session
 
     def get_session(self, session_id: str) -> ConversationSession | None:
-        return self.store.get_session(session_id)
+        session = self.store.get_session(session_id)
+        if session is not None:
+            setattr(session, "_store", self.store)
+        return session
 
     def list_messages(self, session_id: str) -> list[ConversationMessage]:
         return self.store.list_messages_for_session(session_id)
@@ -101,6 +107,30 @@ class SessionManager:
         event = ExecutionEvent(run_id=conversation_id, event_type=event_type, payload=payload)
         self.store.save_event(event)
         return event
+
+    def _consume_pending_turn_snapshots(self, session: ConversationSession) -> None:
+        metadata = session.metadata if isinstance(session.metadata, dict) else {}
+        context_snapshot = metadata.pop("_pending_context_assembly", None)
+        payload_snapshot = metadata.pop("_pending_provider_payload", None)
+        if context_snapshot is not None:
+            metadata["last_context_assembly"] = context_snapshot
+            self.append_context_artifact_for_session(
+                session_id=session.session_id,
+                artifact_type="session_context_assembly",
+                content=json.dumps(context_snapshot, indent=2, ensure_ascii=False),
+                source="context_assembly",
+            )
+        if payload_snapshot is not None:
+            metadata["last_provider_payload"] = payload_snapshot
+            self.append_context_artifact_for_session(
+                session_id=session.session_id,
+                artifact_type="session_provider_payload",
+                content=json.dumps(payload_snapshot, indent=2, ensure_ascii=False),
+                source="provider_payload",
+            )
+        if context_snapshot is not None or payload_snapshot is not None:
+            session.updated_at = datetime.now(timezone.utc)
+            self.store.save_session(session)
 
     def execute_tool_request(self, *, tool_request: ToolRequest) -> ToolResult:
         """Execute one normalized tool request against the local registry."""
@@ -173,7 +203,55 @@ class SessionManager:
             },
         )
         messages = self.list_messages(session_id)
-        plan = self._plan_from_messages(session=session, messages=messages)
+        self.append_context_artifact_for_session(
+            session_id=session_id,
+            artifact_type="session_transcript_snapshot",
+            content=json.dumps([
+                {
+                    "role": getattr(message.role, "value", str(message.role)),
+                    "content": message.content,
+                    "turn_index": message.turn_index,
+                    "metadata": message.metadata,
+                }
+                for message in messages
+            ], indent=2, ensure_ascii=False),
+            source="runtime",
+        )
+        try:
+            plan = self._plan_from_messages(session=session, messages=messages)
+            self._consume_pending_turn_snapshots(session)
+            refreshed_after_plan = self.get_session(session_id)
+            if refreshed_after_plan is not None:
+                session = refreshed_after_plan
+        except OpenAIAuthStoreError as exc:
+            failure_message = str(exc)
+            self.emit_session_event(
+                session_id=session_id,
+                event_type=RuntimeEventType.RUN_FAILED,
+                payload={
+                    "kind": "auth_failure",
+                    "source_backend": getattr(self.backend, "backend_name", session.backend_name),
+                    "failure_reason": failure_message,
+                },
+            )
+            self.append_context_artifact_for_session(
+                session_id=session_id,
+                artifact_type="session_auth_failure",
+                content=f"backend={getattr(self.backend, 'backend_name', session.backend_name)}\nmessage={failure_message}",
+                source="auth",
+            )
+            session.metadata["last_auth_failure"] = {
+                "backend": getattr(self.backend, "backend_name", session.backend_name),
+                "message": failure_message,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            session.updated_at = datetime.now(timezone.utc)
+            self.store.save_session(session)
+            return ExecutionPlan(
+                source_backend=getattr(self.backend, "backend_name", session.backend_name),
+                plan_label="auth-failure",
+                failure_reason=failure_message,
+            )
 
         return self._finalize_session_plan(session=session, plan=plan, messages=messages)
 
@@ -391,6 +469,32 @@ class SessionManager:
                 )
                 return guarded_plan
 
+        if plan.failure_reason:
+            self.emit_session_event(
+                session_id=session.session_id,
+                event_type=RuntimeEventType.RUN_FAILED,
+                payload={
+                    "kind": "runtime_failure",
+                    "source_backend": plan.source_backend,
+                    "plan_label": plan.plan_label,
+                    "failure_reason": plan.failure_reason,
+                },
+            )
+            self.append_message(
+                session_id=session.session_id,
+                role=MessageRole.ASSISTANT,
+                content=plan.failure_reason,
+                metadata={
+                    "message_kind": "runtime_failure",
+                    "source_backend": plan.source_backend,
+                    "plan_label": plan.plan_label,
+                    "failure_reason": plan.failure_reason,
+                    "continued_after_tool_rejection": continued_after_tool_rejection,
+                    "tool_name": rejected_tool_name,
+                    "used_continuation_bridge": used_continuation_bridge,
+                },
+            )
+            return plan
         if plan.tool_request is None and continued_after_tool_rejection and plan.final_text:
             self.append_message(
                 session_id=session.session_id,

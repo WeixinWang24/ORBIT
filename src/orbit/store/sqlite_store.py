@@ -144,3 +144,24 @@ class SQLiteStore(OrbitStore):
     def get_session(self, session_id: str) -> ConversationSession | None:
         row = self.conn.execute("SELECT data FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
         return ConversationSession.model_validate_json(row["data"]) if row else None
+
+    def delete_session(self, session_id: str) -> None:
+        session = self.get_session(session_id)
+        if session is None:
+            return
+        run_id = session.conversation_id
+        self.conn.execute("DELETE FROM session_messages WHERE session_id = ?", (session_id,))
+        self.conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        self.conn.execute("DELETE FROM events WHERE run_id = ?", (run_id,))
+        self.conn.execute("DELETE FROM context_artifacts WHERE run_id = ?", (run_id,))
+        self.conn.execute("DELETE FROM tool_invocations WHERE run_id = ?", (run_id,))
+        approval_rows = self.conn.execute("SELECT approval_request_id FROM approval_requests WHERE run_id = ?", (run_id,)).fetchall()
+        for row in approval_rows:
+            self.conn.execute("DELETE FROM approval_decisions WHERE approval_request_id = ?", (row["approval_request_id"],))
+        self.conn.execute("DELETE FROM approval_requests WHERE run_id = ?", (run_id,))
+        self.conn.commit()
+
+    def delete_all_sessions(self) -> None:
+        session_ids = [row["session_id"] for row in self.conn.execute("SELECT session_id FROM sessions").fetchall()]
+        for session_id in session_ids:
+            self.delete_session(session_id)
