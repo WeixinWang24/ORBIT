@@ -44,7 +44,7 @@ class WriteFileTool(Tool):
             return ToolResult(ok=False, content="path escapes workspace")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
-        return ToolResult(ok=True, content=f"wrote {target}", data={"path": str(target)})
+        return ToolResult(ok=True, content=f"wrote {target}", data={"mutation_kind": "write_file", "path": str(target)})
 
 
 class ReplaceInFileTool(Tool):
@@ -67,10 +67,10 @@ class ReplaceInFileTool(Tool):
             return ToolResult(ok=False, content="file not found")
         content = target.read_text()
         if old_text not in content:
-            return ToolResult(ok=False, content="old_text not found", data={"path": str(target)})
+            return ToolResult(ok=False, content="old_text not found", data={"mutation_kind": "replace_in_file", "failure_layer": "tool_semantic", "path": str(target)})
         updated = content.replace(old_text, new_text, 1)
         target.write_text(updated)
-        return ToolResult(ok=True, content=f"replaced text in {target}", data={"path": str(target), "replacement_count": 1})
+        return ToolResult(ok=True, content=f"replaced text in {target}", data={"mutation_kind": "replace_in_file", "path": str(target), "replacement_count": 1})
 
 
 class ReplaceAllInFileTool(Tool):
@@ -94,7 +94,36 @@ class ReplaceAllInFileTool(Tool):
         content = target.read_text()
         replacement_count = content.count(old_text)
         if replacement_count == 0:
-            return ToolResult(ok=False, content="old_text not found", data={"path": str(target), "replacement_count": 0})
+            return ToolResult(ok=False, content="old_text not found", data={"mutation_kind": "replace_all_in_file", "failure_layer": "tool_semantic", "path": str(target), "replacement_count": 0})
         updated = content.replace(old_text, new_text)
         target.write_text(updated)
-        return ToolResult(ok=True, content=f"replaced {replacement_count} occurrence(s) in {target}", data={"path": str(target), "replacement_count": replacement_count})
+        return ToolResult(ok=True, content=f"replaced {replacement_count} occurrence(s) in {target}", data={"mutation_kind": "replace_all_in_file", "path": str(target), "replacement_count": replacement_count})
+
+
+class ReplaceBlockInFileTool(Tool):
+    name = "native__replace_block_in_file"
+    side_effect_class = "write"
+    requires_approval = True
+    governance_policy_group = "permission_authority"
+    environment_check_kind = "none"
+
+    def __init__(self, workspace_root: Path):
+        self.workspace_root = workspace_root.resolve()
+
+    def invoke(self, *, path: str, old_block: str, new_block: str) -> ToolResult:
+        target = (self.workspace_root / path).resolve()
+        try:
+            target.relative_to(self.workspace_root)
+        except ValueError:
+            return ToolResult(ok=False, content="path escapes workspace")
+        if not target.exists() or not target.is_file():
+            return ToolResult(ok=False, content="file not found")
+        content = target.read_text()
+        match_count = content.count(old_block)
+        if match_count == 0:
+            return ToolResult(ok=False, content="old_block not found", data={"mutation_kind": "replace_block_in_file", "failure_layer": "tool_semantic", "path": str(target), "match_count": 0, "replacement_count": 0})
+        if match_count > 1:
+            return ToolResult(ok=False, content="old_block matched multiple regions", data={"mutation_kind": "replace_block_in_file", "failure_layer": "tool_semantic", "path": str(target), "match_count": match_count, "replacement_count": 0})
+        updated = content.replace(old_block, new_block, 1)
+        target.write_text(updated)
+        return ToolResult(ok=True, content=f"replaced block in {target}", data={"mutation_kind": "replace_block_in_file", "path": str(target), "match_count": 1, "replacement_count": 1})

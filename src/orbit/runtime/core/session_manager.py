@@ -152,7 +152,7 @@ class SessionManager:
         return tool.invoke(**tool_request.input_payload)
 
     def maybe_block_write_for_grounding(self, *, session: ConversationSession | None, tool_request: ToolRequest) -> ToolResult | None:
-        if session is None or tool_request.tool_name not in {"native__write_file", "native__replace_in_file", "native__replace_all_in_file"}:
+        if session is None or tool_request.tool_name not in {"native__write_file", "native__replace_in_file", "native__replace_all_in_file", "native__replace_block_in_file"}:
             return None
         path = tool_request.input_payload.get("path")
         if not isinstance(path, str) or not path:
@@ -164,11 +164,21 @@ class SessionManager:
             ok=False,
             content=f"Write blocked for {path}: {readiness.get('reason')}",
             data={
+                "mutation_kind": self._mutation_kind_for_tool(tool_request.tool_name),
+                "failure_layer": "grounding_readiness",
                 "failure_kind": "grounding_readiness",
                 "path": path,
                 "write_readiness": readiness,
             },
         )
+
+    def _mutation_kind_for_tool(self, tool_name: str) -> str | None:
+        return {
+            "native__write_file": "write_file",
+            "native__replace_in_file": "replace_in_file",
+            "native__replace_all_in_file": "replace_all_in_file",
+            "native__replace_block_in_file": "replace_block_in_file",
+        }.get(tool_name)
 
     def maybe_make_filesystem_unchanged_result(self, *, session: ConversationSession | None, tool_request: ToolRequest) -> ToolResult | None:
         if session is None or tool_request.tool_name != "read_file":

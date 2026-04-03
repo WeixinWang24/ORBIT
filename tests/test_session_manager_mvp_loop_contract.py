@@ -132,6 +132,39 @@ class ApprovalReplaceAllThenFinishBackend:
         )
 
 
+class ApprovalReplaceBlockThenFinishBackend:
+    backend_name = "approval-replace-block-then-finish"
+
+    def __init__(self, path: str = "notes/replace-block-target.txt", old_block: str = "alpha\nbeta\n", new_block: str = "alpha\nBETA\n"):
+        self.path = path
+        self.old_block = old_block
+        self.new_block = new_block
+
+    def plan_from_messages(self, messages, session=None):
+        tool_results = [m for m in messages if m.role == MessageRole.TOOL]
+        if tool_results:
+            return ExecutionPlan(
+                source_backend=self.backend_name,
+                plan_label="post-tool-final",
+                final_text="Replace-block path completed and finalized.",
+            )
+        return ExecutionPlan(
+            source_backend=self.backend_name,
+            plan_label="approval-needed",
+            tool_request=ToolRequest(
+                tool_name="native__replace_block_in_file",
+                input_payload={
+                    "path": self.path,
+                    "old_block": self.old_block,
+                    "new_block": self.new_block,
+                },
+                requires_approval=True,
+                side_effect_class="write",
+            ),
+            should_finish_after_tool=False,
+        )
+
+
 class ApprovalRejectContinuationBackend:
     backend_name = "approval-reject-continuation"
 
@@ -1177,9 +1210,187 @@ class SessionManagerMvpLoopContractTests(unittest.TestCase):
         self.assertEqual(final_plan.plan_label, "post-tool-final")
         self.assertEqual(tool_messages[-1].metadata.get("tool_name"), "native__replace_all_in_file")
         self.assertFalse(tool_messages[-1].metadata.get("tool_ok"))
+        self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("failure_layer"), "tool_semantic")
         self.assertNotEqual(tool_messages[-1].metadata.get("tool_data", {}).get("failure_kind"), "grounding_readiness")
         self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("replacement_count"), 0)
         self.assertEqual(target.read_text(), "seed\nseed\n")
+
+    def test_native_replace_block_is_blocked_without_prior_grounding_after_approval(self):
+        sm = self.make_session_manager(ApprovalReplaceBlockThenFinishBackend())
+        session = sm.create_session(backend_name="approval-replace-block-then-finish", model="test-model")
+        target = Path(sm.workspace_root) / "notes" / "replace-block-target.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+
+        waiting_plan = sm.run_session_turn(session_id=session.session_id, user_input="please replace block")
+        approvals = sm.list_open_session_approvals()
+        session_approval = next(item for item in approvals if item["session_id"] == session.session_id)
+        final_plan = sm.resolve_session_approval(
+            session_id=session.session_id,
+            approval_request_id=session_approval["approval_request_id"],
+            decision="approve",
+        )
+
+        messages = sm.list_messages(session.session_id)
+        tool_messages = [m for m in messages if m.role == MessageRole.TOOL]
+        self.assertEqual(waiting_plan.plan_label, "approval-needed-waiting-for-approval")
+        self.assertEqual(final_plan.plan_label, "post-tool-final")
+        self.assertEqual(tool_messages[-1].metadata.get("tool_name"), "native__replace_block_in_file")
+        self.assertFalse(tool_messages[-1].metadata.get("tool_ok"))
+        self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("write_readiness", {}).get("reason"), "no_prior_grounding")
+        self.assertEqual(target.read_text(), "alpha\nbeta\ngamma\n")
+
+    def test_native_replace_block_is_blocked_with_stale_grounding_after_approval(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-native-replace-block-workspace-"))
+        notes_dir = workspace_root / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        target = notes_dir / "replace-block-target.txt"
+        target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+
+        read_sm = self.make_session_manager(McpReadThenFinishBackend(path="notes/replace-block-target.txt"), enable_mcp_filesystem=True, workspace_root=workspace_root)
+        read_session = read_sm.create_session(backend_name="mcp-read-then-finish", model="test-model")
+        read_sm.run_session_turn(session_id=read_session.session_id, user_input="please read first")
+        read_refreshed = read_sm.get_session(read_session.session_id)
+        self.assertIsNotNone(read_refreshed)
+        grounding_state = dict(read_refreshed.metadata.get("filesystem_read_state", {}))
+        target.write_text("alpha\nbeta changed\ngamma\n", encoding="utf-8")
+
+        sm = self.make_session_manager(ApprovalReplaceBlockThenFinishBackend(path="notes/replace-block-target.txt"), workspace_root=workspace_root)
+        session = sm.create_session(backend_name="approval-replace-block-then-finish", model="test-model")
+        session.metadata["filesystem_read_state"] = grounding_state
+        sm.store.save_session(session)
+
+        waiting_plan = sm.run_session_turn(session_id=session.session_id, user_input="please replace block")
+        approvals = sm.list_open_session_approvals()
+        session_approval = next(item for item in approvals if item["session_id"] == session.session_id)
+        final_plan = sm.resolve_session_approval(
+            session_id=session.session_id,
+            approval_request_id=session_approval["approval_request_id"],
+            decision="approve",
+        )
+
+        messages = sm.list_messages(session.session_id)
+        tool_messages = [m for m in messages if m.role == MessageRole.TOOL]
+        self.assertEqual(waiting_plan.plan_label, "approval-needed-waiting-for-approval")
+        self.assertEqual(final_plan.plan_label, "post-tool-final")
+        self.assertEqual(tool_messages[-1].metadata.get("tool_name"), "native__replace_block_in_file")
+        self.assertFalse(tool_messages[-1].metadata.get("tool_ok"))
+        self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("write_readiness", {}).get("reason"), "stale_full_read_grounding")
+        self.assertEqual(target.read_text(), "alpha\nbeta changed\ngamma\n")
+
+    def test_native_replace_block_runs_with_fresh_grounding_after_approval(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-native-replace-block-workspace-"))
+        notes_dir = workspace_root / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        target = notes_dir / "replace-block-target.txt"
+        target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+
+        read_sm = self.make_session_manager(McpReadThenFinishBackend(path="notes/replace-block-target.txt"), enable_mcp_filesystem=True, workspace_root=workspace_root)
+        read_session = read_sm.create_session(backend_name="mcp-read-then-finish", model="test-model")
+        read_sm.run_session_turn(session_id=read_session.session_id, user_input="please read first")
+        read_refreshed = read_sm.get_session(read_session.session_id)
+        self.assertIsNotNone(read_refreshed)
+        grounding_state = dict(read_refreshed.metadata.get("filesystem_read_state", {}))
+
+        sm = self.make_session_manager(ApprovalReplaceBlockThenFinishBackend(path="notes/replace-block-target.txt"), workspace_root=workspace_root)
+        session = sm.create_session(backend_name="approval-replace-block-then-finish", model="test-model")
+        session.metadata["filesystem_read_state"] = grounding_state
+        sm.store.save_session(session)
+
+        waiting_plan = sm.run_session_turn(session_id=session.session_id, user_input="please replace block")
+        approvals = sm.list_open_session_approvals()
+        session_approval = next(item for item in approvals if item["session_id"] == session.session_id)
+        final_plan = sm.resolve_session_approval(
+            session_id=session.session_id,
+            approval_request_id=session_approval["approval_request_id"],
+            decision="approve",
+        )
+
+        messages = sm.list_messages(session.session_id)
+        tool_messages = [m for m in messages if m.role == MessageRole.TOOL]
+        self.assertEqual(waiting_plan.plan_label, "approval-needed-waiting-for-approval")
+        self.assertEqual(final_plan.plan_label, "post-tool-final")
+        self.assertEqual(tool_messages[-1].metadata.get("tool_name"), "native__replace_block_in_file")
+        self.assertTrue(tool_messages[-1].metadata.get("tool_ok"))
+        self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("match_count"), 1)
+        self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("replacement_count"), 1)
+        self.assertEqual(target.read_text(), "alpha\nBETA\ngamma\n")
+
+    def test_native_replace_block_reports_tool_semantic_failure_when_old_block_missing(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-native-replace-block-workspace-"))
+        notes_dir = workspace_root / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        target = notes_dir / "replace-block-target.txt"
+        target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+
+        read_sm = self.make_session_manager(McpReadThenFinishBackend(path="notes/replace-block-target.txt"), enable_mcp_filesystem=True, workspace_root=workspace_root)
+        read_session = read_sm.create_session(backend_name="mcp-read-then-finish", model="test-model")
+        read_sm.run_session_turn(session_id=read_session.session_id, user_input="please read first")
+        read_refreshed = read_sm.get_session(read_session.session_id)
+        self.assertIsNotNone(read_refreshed)
+        grounding_state = dict(read_refreshed.metadata.get("filesystem_read_state", {}))
+
+        sm = self.make_session_manager(ApprovalReplaceBlockThenFinishBackend(path="notes/replace-block-target.txt", old_block="missing\nblock\n", new_block="new\nblock\n"), workspace_root=workspace_root)
+        session = sm.create_session(backend_name="approval-replace-block-then-finish", model="test-model")
+        session.metadata["filesystem_read_state"] = grounding_state
+        sm.store.save_session(session)
+
+        waiting_plan = sm.run_session_turn(session_id=session.session_id, user_input="please replace block")
+        approvals = sm.list_open_session_approvals()
+        session_approval = next(item for item in approvals if item["session_id"] == session.session_id)
+        final_plan = sm.resolve_session_approval(
+            session_id=session.session_id,
+            approval_request_id=session_approval["approval_request_id"],
+            decision="approve",
+        )
+
+        messages = sm.list_messages(session.session_id)
+        tool_messages = [m for m in messages if m.role == MessageRole.TOOL]
+        self.assertEqual(waiting_plan.plan_label, "approval-needed-waiting-for-approval")
+        self.assertEqual(final_plan.plan_label, "post-tool-final")
+        self.assertEqual(tool_messages[-1].metadata.get("tool_name"), "native__replace_block_in_file")
+        self.assertFalse(tool_messages[-1].metadata.get("tool_ok"))
+        self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("failure_layer"), "tool_semantic")
+        self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("match_count"), 0)
+        self.assertEqual(target.read_text(), "alpha\nbeta\ngamma\n")
+
+    def test_native_replace_block_reports_tool_semantic_failure_when_old_block_matches_multiple_regions(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-native-replace-block-workspace-"))
+        notes_dir = workspace_root / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        target = notes_dir / "replace-block-target.txt"
+        target.write_text("alpha\nbeta\nalpha\nbeta\ngamma\n", encoding="utf-8")
+
+        read_sm = self.make_session_manager(McpReadThenFinishBackend(path="notes/replace-block-target.txt"), enable_mcp_filesystem=True, workspace_root=workspace_root)
+        read_session = read_sm.create_session(backend_name="mcp-read-then-finish", model="test-model")
+        read_sm.run_session_turn(session_id=read_session.session_id, user_input="please read first")
+        read_refreshed = read_sm.get_session(read_session.session_id)
+        self.assertIsNotNone(read_refreshed)
+        grounding_state = dict(read_refreshed.metadata.get("filesystem_read_state", {}))
+
+        sm = self.make_session_manager(ApprovalReplaceBlockThenFinishBackend(path="notes/replace-block-target.txt"), workspace_root=workspace_root)
+        session = sm.create_session(backend_name="approval-replace-block-then-finish", model="test-model")
+        session.metadata["filesystem_read_state"] = grounding_state
+        sm.store.save_session(session)
+
+        waiting_plan = sm.run_session_turn(session_id=session.session_id, user_input="please replace block")
+        approvals = sm.list_open_session_approvals()
+        session_approval = next(item for item in approvals if item["session_id"] == session.session_id)
+        final_plan = sm.resolve_session_approval(
+            session_id=session.session_id,
+            approval_request_id=session_approval["approval_request_id"],
+            decision="approve",
+        )
+
+        messages = sm.list_messages(session.session_id)
+        tool_messages = [m for m in messages if m.role == MessageRole.TOOL]
+        self.assertEqual(waiting_plan.plan_label, "approval-needed-waiting-for-approval")
+        self.assertEqual(final_plan.plan_label, "post-tool-final")
+        self.assertEqual(tool_messages[-1].metadata.get("tool_name"), "native__replace_block_in_file")
+        self.assertFalse(tool_messages[-1].metadata.get("tool_ok"))
+        self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("failure_layer"), "tool_semantic")
+        self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("match_count"), 2)
+        self.assertEqual(target.read_text(), "alpha\nbeta\nalpha\nbeta\ngamma\n")
 
     def test_mcp_path_escape_is_denied_before_tool_execution(self):
         workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
