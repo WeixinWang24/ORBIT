@@ -145,8 +145,30 @@ class SessionManager:
         unchanged_result = self.maybe_make_filesystem_unchanged_result(session=session, tool_request=tool_request)
         if unchanged_result is not None:
             return unchanged_result
+        write_gate_result = self.maybe_block_write_for_grounding(session=session, tool_request=tool_request)
+        if write_gate_result is not None:
+            return write_gate_result
         tool = self.tool_registry.get(tool_request.tool_name)
         return tool.invoke(**tool_request.input_payload)
+
+    def maybe_block_write_for_grounding(self, *, session: ConversationSession | None, tool_request: ToolRequest) -> ToolResult | None:
+        if session is None or tool_request.tool_name != "native__write_file":
+            return None
+        path = tool_request.input_payload.get("path")
+        if not isinstance(path, str) or not path:
+            return None
+        readiness = self.filesystem_write_readiness_for_path(session=session, path=path)
+        if readiness.get("eligible"):
+            return None
+        return ToolResult(
+            ok=False,
+            content=f"Write blocked for {path}: {readiness.get('reason')}",
+            data={
+                "failure_kind": "grounding_readiness",
+                "path": path,
+                "write_readiness": readiness,
+            },
+        )
 
     def maybe_make_filesystem_unchanged_result(self, *, session: ConversationSession | None, tool_request: ToolRequest) -> ToolResult | None:
         if session is None or tool_request.tool_name != "read_file":
@@ -160,26 +182,11 @@ class SessionManager:
         prior = read_state.get(path)
         if not isinstance(prior, dict):
             return None
-        if prior.get("grounding_kind") != "full_read":
-            return None
-        target = (Path(self.workspace_root) / path).resolve()
-        workspace_root = Path(self.workspace_root).resolve()
-        try:
-            target.relative_to(workspace_root)
-        except ValueError:
-            return None
-        if not target.exists() or not target.is_file():
-            return None
-        try:
-            stat = target.stat()
-        except OSError:
+        grounding_status = self.filesystem_grounding_status_for_path(session=session, path=path)
+        if grounding_status.get("status") != "full_read_fresh":
             return None
         observed_modified_at = prior.get("observed_modified_at_epoch")
         observed_size_bytes = prior.get("observed_size_bytes")
-        if observed_modified_at is None or observed_size_bytes is None:
-            return None
-        if stat.st_mtime != observed_modified_at or stat.st_size != observed_size_bytes:
-            return None
         structured = {
             "path": path,
             "status": "unchanged",
@@ -203,6 +210,63 @@ class SessionManager:
         if tool_name == "read_file":
             return "partial_read" if is_partial_view else "full_read"
         return None
+
+    def filesystem_grounding_status_for_path(self, *, session: ConversationSession, path: str) -> dict[str, Any]:
+        read_state = session.metadata.get("filesystem_read_state", {})
+        if not isinstance(read_state, dict):
+            return {"status": "none", "path": path, "grounding_kind": None, "fresh": False}
+        state = read_state.get(path)
+        if not isinstance(state, dict):
+            return {"status": "none", "path": path, "grounding_kind": None, "fresh": False}
+        grounding_kind = state.get("grounding_kind")
+        if grounding_kind == "partial_read":
+            return {"status": "partial_only", "path": path, "grounding_kind": grounding_kind, "fresh": False}
+        if grounding_kind != "full_read":
+            return {"status": "none", "path": path, "grounding_kind": grounding_kind, "fresh": False}
+        workspace_root = Path(self.workspace_root).resolve()
+        target = (workspace_root / path).resolve()
+        try:
+            target.relative_to(workspace_root)
+        except ValueError:
+            return {"status": "full_read_stale", "path": path, "grounding_kind": grounding_kind, "fresh": False}
+        if not target.exists() or not target.is_file():
+            return {"status": "full_read_stale", "path": path, "grounding_kind": grounding_kind, "fresh": False}
+        try:
+            stat = target.stat()
+        except OSError:
+            return {"status": "full_read_stale", "path": path, "grounding_kind": grounding_kind, "fresh": False}
+        observed_modified_at = state.get("observed_modified_at_epoch")
+        observed_size_bytes = state.get("observed_size_bytes")
+        fresh = observed_modified_at is not None and observed_size_bytes is not None and stat.st_mtime == observed_modified_at and stat.st_size == observed_size_bytes
+        return {
+            "status": "full_read_fresh" if fresh else "full_read_stale",
+            "path": path,
+            "grounding_kind": grounding_kind,
+            "fresh": fresh,
+        }
+
+    def filesystem_write_readiness_for_path(self, *, session: ConversationSession, path: str) -> dict[str, Any]:
+        grounding = self.filesystem_grounding_status_for_path(session=session, path=path)
+        status = grounding.get("status")
+        if status == "full_read_fresh":
+            return {
+                "eligible": True,
+                "path": path,
+                "grounding_status": status,
+                "reason": "full_read_fresh_grounding_available",
+            }
+        if status == "partial_only":
+            reason = "partial_read_grounding_insufficient"
+        elif status == "full_read_stale":
+            reason = "stale_full_read_grounding"
+        else:
+            reason = "no_prior_grounding"
+        return {
+            "eligible": False,
+            "path": path,
+            "grounding_status": status,
+            "reason": reason,
+        }
 
     def record_filesystem_read_state(self, *, session: ConversationSession, tool_request: ToolRequest, tool_result: ToolResult) -> None:
         if not tool_result.ok:

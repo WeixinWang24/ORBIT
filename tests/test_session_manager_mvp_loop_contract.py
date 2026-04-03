@@ -41,6 +41,9 @@ class FinalOnlyBackend:
 class ApprovalThenFinishBackend:
     backend_name = "approval-then-finish"
 
+    def __init__(self, path: str = "notes/contract-test.txt"):
+        self.path = path
+
     def plan_from_messages(self, messages, session=None):
         tool_results = [m for m in messages if m.role == MessageRole.TOOL]
         if tool_results:
@@ -55,7 +58,7 @@ class ApprovalThenFinishBackend:
             tool_request=ToolRequest(
                 tool_name="native__write_file",
                 input_payload={
-                    "path": "notes/contract-test.txt",
+                    "path": self.path,
                     "content": "created by contract test\n",
                 },
                 requires_approval=True,
@@ -666,6 +669,215 @@ class SessionManagerMvpLoopContractTests(unittest.TestCase):
         self.assertNotEqual(second_tool.metadata.get("tool_data", {}).get("result_kind"), "filesystem_unchanged")
         self.assertEqual(structured.get("path"), "notes/mcp-existing.txt")
         self.assertEqual(structured.get("content"), "changed after first read\nwith more bytes\n")
+
+    def test_filesystem_grounding_status_for_path_none_without_prior_read(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        sm = self.make_session_manager(FinalOnlyBackend(), workspace_root=workspace_root)
+        session = sm.create_session(backend_name="final-only", model="test-model")
+
+        status = sm.filesystem_grounding_status_for_path(session=session, path="notes/missing.txt")
+        self.assertEqual(status.get("status"), "none")
+        self.assertFalse(status.get("fresh"))
+
+    def test_filesystem_grounding_status_for_path_partial_only_after_truncated_read(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        notes_dir = workspace_root / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        (notes_dir / "truncated.txt").write_text("x" * (70 * 1024), encoding="utf-8")
+
+        sm = self.make_session_manager(
+            McpReadThenFinishBackend(path="notes/truncated.txt"),
+            enable_mcp_filesystem=True,
+            workspace_root=workspace_root,
+        )
+        session = sm.create_session(backend_name="mcp-read-then-finish", model="test-model")
+        sm.run_session_turn(session_id=session.session_id, user_input="please read via mcp")
+        refreshed = sm.get_session(session.session_id)
+        self.assertIsNotNone(refreshed)
+
+        status = sm.filesystem_grounding_status_for_path(session=refreshed, path="notes/truncated.txt")
+        self.assertEqual(status.get("status"), "partial_only")
+        self.assertEqual(status.get("grounding_kind"), "partial_read")
+        self.assertFalse(status.get("fresh"))
+
+    def test_filesystem_grounding_status_for_path_full_read_fresh_after_read(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        notes_dir = workspace_root / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        (notes_dir / "mcp-existing.txt").write_text("hello from mcp contract path\n", encoding="utf-8")
+
+        sm = self.make_session_manager(
+            McpReadThenFinishBackend(),
+            enable_mcp_filesystem=True,
+            workspace_root=workspace_root,
+        )
+        session = sm.create_session(backend_name="mcp-read-then-finish", model="test-model")
+        sm.run_session_turn(session_id=session.session_id, user_input="please read via mcp")
+        refreshed = sm.get_session(session.session_id)
+        self.assertIsNotNone(refreshed)
+
+        status = sm.filesystem_grounding_status_for_path(session=refreshed, path="notes/mcp-existing.txt")
+        self.assertEqual(status.get("status"), "full_read_fresh")
+        self.assertEqual(status.get("grounding_kind"), "full_read")
+        self.assertTrue(status.get("fresh"))
+
+    def test_filesystem_grounding_status_for_path_full_read_stale_after_change(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        notes_dir = workspace_root / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        target = notes_dir / "mcp-existing.txt"
+        target.write_text("hello from mcp contract path\n", encoding="utf-8")
+
+        sm = self.make_session_manager(
+            McpReadThenFinishBackend(),
+            enable_mcp_filesystem=True,
+            workspace_root=workspace_root,
+        )
+        session = sm.create_session(backend_name="mcp-read-then-finish", model="test-model")
+        sm.run_session_turn(session_id=session.session_id, user_input="please read via mcp")
+        target.write_text("changed after full read\n", encoding="utf-8")
+        refreshed = sm.get_session(session.session_id)
+        self.assertIsNotNone(refreshed)
+
+        status = sm.filesystem_grounding_status_for_path(session=refreshed, path="notes/mcp-existing.txt")
+        self.assertEqual(status.get("status"), "full_read_stale")
+        self.assertEqual(status.get("grounding_kind"), "full_read")
+        self.assertFalse(status.get("fresh"))
+
+    def test_filesystem_write_readiness_for_path_none_without_prior_grounding(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        sm = self.make_session_manager(FinalOnlyBackend(), workspace_root=workspace_root)
+        session = sm.create_session(backend_name="final-only", model="test-model")
+
+        readiness = sm.filesystem_write_readiness_for_path(session=session, path="notes/missing.txt")
+        self.assertFalse(readiness.get("eligible"))
+        self.assertEqual(readiness.get("grounding_status"), "none")
+        self.assertEqual(readiness.get("reason"), "no_prior_grounding")
+
+    def test_filesystem_write_readiness_for_path_partial_read_is_ineligible(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        notes_dir = workspace_root / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        (notes_dir / "truncated.txt").write_text("x" * (70 * 1024), encoding="utf-8")
+
+        sm = self.make_session_manager(
+            McpReadThenFinishBackend(path="notes/truncated.txt"),
+            enable_mcp_filesystem=True,
+            workspace_root=workspace_root,
+        )
+        session = sm.create_session(backend_name="mcp-read-then-finish", model="test-model")
+        sm.run_session_turn(session_id=session.session_id, user_input="please read via mcp")
+        refreshed = sm.get_session(session.session_id)
+        self.assertIsNotNone(refreshed)
+
+        readiness = sm.filesystem_write_readiness_for_path(session=refreshed, path="notes/truncated.txt")
+        self.assertFalse(readiness.get("eligible"))
+        self.assertEqual(readiness.get("grounding_status"), "partial_only")
+        self.assertEqual(readiness.get("reason"), "partial_read_grounding_insufficient")
+
+    def test_filesystem_write_readiness_for_path_full_read_fresh_is_eligible(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        notes_dir = workspace_root / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        (notes_dir / "mcp-existing.txt").write_text("hello from mcp contract path\n", encoding="utf-8")
+
+        sm = self.make_session_manager(
+            McpReadThenFinishBackend(),
+            enable_mcp_filesystem=True,
+            workspace_root=workspace_root,
+        )
+        session = sm.create_session(backend_name="mcp-read-then-finish", model="test-model")
+        sm.run_session_turn(session_id=session.session_id, user_input="please read via mcp")
+        refreshed = sm.get_session(session.session_id)
+        self.assertIsNotNone(refreshed)
+
+        readiness = sm.filesystem_write_readiness_for_path(session=refreshed, path="notes/mcp-existing.txt")
+        self.assertTrue(readiness.get("eligible"))
+        self.assertEqual(readiness.get("grounding_status"), "full_read_fresh")
+        self.assertEqual(readiness.get("reason"), "full_read_fresh_grounding_available")
+
+    def test_filesystem_write_readiness_for_path_full_read_stale_is_ineligible(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))
+        notes_dir = workspace_root / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        target = notes_dir / "mcp-existing.txt"
+        target.write_text("hello from mcp contract path\n", encoding="utf-8")
+
+        sm = self.make_session_manager(
+            McpReadThenFinishBackend(),
+            enable_mcp_filesystem=True,
+            workspace_root=workspace_root,
+        )
+        session = sm.create_session(backend_name="mcp-read-then-finish", model="test-model")
+        sm.run_session_turn(session_id=session.session_id, user_input="please read via mcp")
+        target.write_text("changed after full read\n", encoding="utf-8")
+        refreshed = sm.get_session(session.session_id)
+        self.assertIsNotNone(refreshed)
+
+        readiness = sm.filesystem_write_readiness_for_path(session=refreshed, path="notes/mcp-existing.txt")
+        self.assertFalse(readiness.get("eligible"))
+        self.assertEqual(readiness.get("grounding_status"), "full_read_stale")
+        self.assertEqual(readiness.get("reason"), "stale_full_read_grounding")
+
+    def test_native_write_is_blocked_without_prior_grounding_after_approval(self):
+        sm = self.make_session_manager(ApprovalThenFinishBackend())
+        session = sm.create_session(backend_name="approval-then-finish", model="test-model")
+
+        waiting_plan = sm.run_session_turn(session_id=session.session_id, user_input="please write the file")
+        approvals = sm.list_open_session_approvals()
+        session_approval = next(item for item in approvals if item["session_id"] == session.session_id)
+        final_plan = sm.resolve_session_approval(
+            session_id=session.session_id,
+            approval_request_id=session_approval["approval_request_id"],
+            decision="approve",
+        )
+
+        messages = sm.list_messages(session.session_id)
+        tool_messages = [m for m in messages if m.role == MessageRole.TOOL]
+        self.assertEqual(waiting_plan.plan_label, "approval-needed-waiting-for-approval")
+        self.assertEqual(final_plan.plan_label, "post-tool-final")
+        self.assertEqual(tool_messages[-1].metadata.get("tool_name"), "native__write_file")
+        self.assertFalse(tool_messages[-1].metadata.get("tool_ok"))
+        self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("failure_kind"), "grounding_readiness")
+        self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("write_readiness", {}).get("reason"), "no_prior_grounding")
+
+    def test_native_write_is_blocked_with_stale_grounding_after_approval(self):
+        workspace_root = Path(tempfile.mkdtemp(prefix="orbit-native-write-workspace-"))
+        notes_dir = workspace_root / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        target = notes_dir / "contract-test.txt"
+        target.write_text("seed\n", encoding="utf-8")
+
+        read_sm = self.make_session_manager(McpReadThenFinishBackend(path="notes/contract-test.txt"), enable_mcp_filesystem=True, workspace_root=workspace_root)
+        read_session = read_sm.create_session(backend_name="mcp-read-then-finish", model="test-model")
+        read_sm.run_session_turn(session_id=read_session.session_id, user_input="please read first")
+        read_refreshed = read_sm.get_session(read_session.session_id)
+        self.assertIsNotNone(read_refreshed)
+        grounding_state = dict(read_refreshed.metadata.get("filesystem_read_state", {}))
+        target.write_text("changed after read\n", encoding="utf-8")
+
+        sm = self.make_session_manager(ApprovalThenFinishBackend(path="notes/contract-test.txt"), workspace_root=workspace_root)
+        session = sm.create_session(backend_name="approval-then-finish", model="test-model")
+        session.metadata["filesystem_read_state"] = grounding_state
+        sm.store.save_session(session)
+
+        waiting_plan = sm.run_session_turn(session_id=session.session_id, user_input="please write the file")
+        approvals = sm.list_open_session_approvals()
+        session_approval = next(item for item in approvals if item["session_id"] == session.session_id)
+        final_plan = sm.resolve_session_approval(
+            session_id=session.session_id,
+            approval_request_id=session_approval["approval_request_id"],
+            decision="approve",
+        )
+
+        messages = sm.list_messages(session.session_id)
+        tool_messages = [m for m in messages if m.role == MessageRole.TOOL]
+        self.assertEqual(waiting_plan.plan_label, "approval-needed-waiting-for-approval")
+        self.assertEqual(final_plan.plan_label, "post-tool-final")
+        self.assertEqual(tool_messages[-1].metadata.get("tool_name"), "native__write_file")
+        self.assertFalse(tool_messages[-1].metadata.get("tool_ok"))
+        self.assertEqual(tool_messages[-1].metadata.get("tool_data", {}).get("write_readiness", {}).get("reason"), "stale_full_read_grounding")
+        self.assertEqual(target.read_text(), "changed after read\n")
 
     def test_mcp_path_escape_is_denied_before_tool_execution(self):
         workspace_root = Path(tempfile.mkdtemp(prefix="orbit-mcp-workspace-"))

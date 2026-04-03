@@ -200,6 +200,14 @@ Current implementation progress:
 ### Phase B4 — write/edit coupling
 - when write/edit paths expand later, consume grounding-quality state explicitly instead of assuming any prior path touch is enough
 
+Current implementation progress:
+- ORBIT now exposes an explicit per-path grounding-readiness classification helper for the current session state
+- current statuses are: `none`, `partial_only`, `full_read_fresh`, and `full_read_stale`
+- ORBIT also now exposes a first mutation-facing readiness helper that maps grounding state into write eligibility/reason for a path
+- current write-readiness reasons are: `no_prior_grounding`, `partial_read_grounding_insufficient`, `stale_full_read_grounding`, and `full_read_fresh_grounding_available`
+- ORBIT now uses this helper to gate `native__write_file` at execution time: approval alone is no longer enough when grounding is missing or stale
+- this remains intentionally narrow: the current gated integration applies to `native__write_file` only, not to future edit/diff mutation families yet
+
 ---
 
 ## What this roadmap is intentionally not doing yet
