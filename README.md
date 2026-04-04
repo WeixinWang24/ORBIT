@@ -35,9 +35,52 @@ cd /Volumes/2TB/MAS/openclaw-core/ORBIT
 source /Users/visen24/anaconda3/etc/profile.d/conda.sh
 conda env create -f config/environment.yml || true
 conda activate Orbit
-pip install -e .
-orbit demo
+python -m pip install -e .
+orbit
 ```
+
+## Current terminal entrypoints
+
+The runtime-first PTY CLI/workbench is now the primary terminal surface for ORBIT.
+
+Primary commands:
+
+```bash
+orbit
+orbit-session
+orbit-runtime-workbench
+```
+
+All three currently launch the same runtime-first terminal UI:
+- `orbit.interfaces.pty_runtime_cli:browse_runtime_cli`
+
+Recommended usage:
+- use `orbit` as the default human-facing terminal entrypoint
+- use `orbit-session` only as a compatibility alias during transition
+- use `orbit-runtime-workbench` when you want the entrypoint name to be explicit in scripts/docs
+
+Direct app entrypoint:
+
+```bash
+python apps/orbit_runtime_workbench.py
+```
+
+Current command surface inside the new terminal UI includes session/runtime control such as:
+- `/sessions`
+- `/attach <session_id>`
+- `/new`
+- `/detach`
+- `/show`
+- `/state`
+- `/events`
+- `/approvals`
+- `/pending`
+- `/approve [note]`
+- `/reject [note]`
+- `/clear`
+- `/clear-all`
+- `/status`
+- `/help`
 
 ## Environment and persistence direction
 
