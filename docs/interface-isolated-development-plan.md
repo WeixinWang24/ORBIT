@@ -2,93 +2,93 @@
 
 ## Purpose
 
-This note defines the isolated development posture for the next ORBIT interface work phase.
+This note records the current interface-development posture for ORBIT after the terminal UI direction converged on the raw PTY runtime workbench.
 
-It assumes:
-- another agent is actively modifying MCP and tools capability surface
-- that work may also touch current runtime and web inspector paths
-- the safest acceleration path is to let interface work proceed in parallel without direct runtime coupling
+The immediate goal is no longer to keep many competing interface shells alive. The goal is to preserve one clear terminal reference surface, one active runtime CLI mainline, and one input subsystem mainline.
 
-## Development stance
+## Current terminal interface authority
 
-Current interface work should be split into two isolated modules:
-- **mock-driven Web workbench shell**
-- **mock-driven CLI workbench shell**
+### Interaction / display authority
+- `src/orbit/interfaces/pty_workbench.py`
 
-Both should depend on a shared adapter contract layer rather than on direct SessionManager wiring.
+This file is the authoritative reference for:
+- divider-based sectioning
+- highlighted/focused selection rows
+- color-coded emphasis
+- `t` / `Shift+Tab` tab switching
+- `Enter` drill-down behavior
+- top-fixed header/tab region plus middle work-area composition
 
-## New module surfaces
+### Runtime-first terminal mainline
+- `src/orbit/interfaces/pty_runtime_cli.py`
+- package scripts: `orbit`, `orbit-session`, `orbit-runtime-workbench`
 
-### Source package
-- `src/orbit/interfaces/`
-  - `contracts.py` — adapter-facing view-model contracts
-  - `mock_adapter.py` — deterministic mock data provider
-  - `web_mock.py` — isolated browser-facing workbench shell
-  - `cli_mock.py` — isolated CLI workbench shell
+This is the active raw PTY runtime CLI path for ongoing CLI work.
 
-### App wrappers
+### Input subsystem mainline
+- `src/orbit/interfaces/input.py`
+
+This file now owns the low-level control-sequence assembly direction:
+- pending control-sequence reassembly
+- stale fragment ageing / forced flush
+- bare Escape completion
+- broader fragment detection
+
+## Current file roles
+
+### Active mainline files
+- `contracts.py`
+- `mock_adapter.py`
+- `chat_mock_adapter.py`
+- `termio.py`
+- `input.py`
+- `pty_debug.py`
+- `pty_runtime_router.py`
+- `pty_runtime_cli.py`
+
+### Reference authority file
+- `pty_workbench.py`
+
+### Active entrypoints
+- package scripts: `orbit`, `orbit-session`, `orbit-runtime-workbench`
+
+## Legacy / cleanup status
+
+The following files are no longer the terminal UX authority and should be treated as legacy, fallback, or cleanup targets rather than active design centers:
+- `ptk_workbench.py`
+- `raw_runtime_workbench.py`
+- `cli_mock.py`
+- `web_mock.py`
+- `style_vio.py`
 - `apps/orbit_interface_cli.py`
 - `apps/orbit_workbench.py`
-- `apps/orbit_workbench_raw.py`
 
-### Full-screen terminal UI path
-- `src/orbit/interfaces/ptk_workbench.py` — prompt_toolkit-based runtime-first workbench mainline
-- `src/orbit/interfaces/pty_workbench.py` — raw PTY / low-level terminal workbench path for side-by-side evaluation and terminal-behavior experiments
+## Current product direction
 
-## Contract shape
+### Chat page
+- default homepage = Agent Runtime Chat
+- top message panel + bottom one-line composer
+- plain text input goes to runtime chat
+- slash commands switch modules
 
-The interface adapter currently assumes these read-oriented operations:
-- `list_sessions()`
-- `get_session(session_id)`
-- `list_messages(session_id)`
-- `list_events(session_id)`
-- `list_artifacts(session_id)`
-- `list_tool_calls(session_id)`
-- `list_open_approvals()`
-- `get_workbench_status()` (mock/backend implementation state for operator-facing status inspection)
+### Non-chat pages
+- preserve raw PTY navigation logic
+- direction keys / `j k` / `Enter` / `Tab` / `Shift+Tab`
+- `c` returns to chat
+- `Ctrl+C` exits
 
-This keeps first-wave UI work focused on inspection and operator navigation.
+## Cleanup principle
 
-## Why inspection-first
+Do not re-introduce multiple competing CLI mainlines.
 
-Inspection-first isolated work is the least conflict-prone path because it:
-- avoids mutating runtime semantics for provisional UI needs
-- avoids depending on unstable action/write paths during kernel churn
-- still lets us stabilize layout, view models, tabs, navigation, and output grammar
+If new runtime-first terminal functionality is added:
+1. terminal interaction/display reference comes from `pty_workbench.py`
+2. runtime product behavior lands in `pty_runtime_cli.py`
+3. low-level control-sequence hygiene lands in `input.py`
 
-## Current transition
+## Next-step rule
 
-The interface line is now deliberately transitioning from pure inspection-first shape toward a chat/runtime-first usage surface.
-
-Current near-term posture:
-- keep real runtime integration deferred
-- switch the terminal workbench's primary experience toward user input + transcript + dummy runtime response
-- keep inspect/event/tool/artifact views as secondary panes or modes rather than the primary semantic center
-- enforce input-mode vs navigation-mode separation so typed prompt characters are not consumed as global workbench commands
-- route non-runtime modules through slash commands so the default surface remains the Agent Runtime interaction experience
-- keep the initial screen visually single-purpose: Agent Runtime Chat first, Inspector modules only after explicit slash navigation
-- implement `/help` as a first-class help page/module rather than relying on transcript history for command discovery
-- preserve the top-message-panel / bottom-composer layout while making the message panel itself scrollable for long transcripts and long module output
-
-## Planned next integration step
-
-Once runtime/MCP/tools work is stable again, add a real adapter implementation that maps:
-- `SessionManager`
-- store session/message/event/artifact/tool-call records
-- approval queue access
-
-into the same contracts already used by the mock interface layer.
-
-At that point, Web UI and CLI shells should swap adapters rather than redesign structure.
-
-## PTY direction note
-
-CLI PTY interaction should borrow from coding-agent terminal UX patterns:
-- thin bootstrap path
-- grouped command router
-- explicit interactive `workbench` mode
-- keyboard-first list/preview interaction
-- overlay/help/search concepts
-
-Reference note:
-- `docs/cli-pty-design-reference.md`
+When uncertain where a change belongs:
+- visual/layout/navigation pattern → `pty_workbench.py` reference
+- runtime CLI page/state/router behavior → `pty_runtime_cli.py`
+- ESC/CSI/mouse/focus/input assembly → `input.py`
