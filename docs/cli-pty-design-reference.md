@@ -81,6 +81,7 @@ This is much more useful than a plain REPL once ORBIT has many sessions/artifact
 - progress reporting support
 - terminal capability detection
 - cursor behavior edge cases
+- terminal size / redraw constraints
 
 Implication for ORBIT:
 Even in the mock phase, PTY design should assume:
@@ -193,6 +194,8 @@ The current mock PTY browser now supports:
 - tabbed preview across `transcript / events / tool_calls / artifacts`
 - approval queue mode
 - detailed inspect views for both sessions and approvals
+- terminal-size-aware clipping/truncation so the current browser scales more safely across smaller terminal windows
+- explicit force-exit handling via `ctrl+c` in addition to `q` / `esc`
 - an explicit status command for checking current PTY implementation state and dummy backend readiness: `orbit-interface workbench status`
 - a direct Python launch path from the project directory: `python3 apps/orbit_workbench.py`
 
