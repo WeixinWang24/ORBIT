@@ -14,6 +14,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .mock_adapter import MockOrbitInterfaceAdapter
+from .pty_workbench import browse as browse_workbench
 
 app = typer.Typer(help="ORBIT mock interface CLI")
 session_app = typer.Typer(help="Inspect mock sessions")
@@ -94,6 +95,12 @@ def workbench_plan() -> None:
         "mode=session-browser\nlayout=list + preview + side-summary\nkeys=j/k enter tab shift-tab / ? esc q\nstatus=mock-only, runtime-disconnected",
         title="ORBIT PTY Workbench Plan",
     ))
+
+
+@workbench_app.command("browse")
+def workbench_browse() -> None:
+    """Launch the minimal keyboard-driven mock session browser."""
+    browse_workbench()
 
 
 @app.command("overview")

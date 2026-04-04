@@ -207,7 +207,7 @@ Since current work is still isolated and mock-driven:
 Based on the current repo state, the safest next step is:
 1. keep grouped CLI commands intact
 2. add a documented `workbench` concept to the CLI mock
-3. optionally add a mock keyboard-driven session browser later
+3. add a minimal mock keyboard-driven session browser as the first PTY slice
 4. only after that consider deeper PTY rendering infrastructure
 
 ---
