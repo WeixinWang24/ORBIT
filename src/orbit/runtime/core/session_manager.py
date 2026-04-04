@@ -15,6 +15,9 @@ from orbit.runtime.execution.continuation_context import build_rejection_continu
 from orbit.runtime.governance.tool_approval_policy import PolicyDecision, PolicyEvaluationInput, evaluate_tool_approval_policy
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
 from orbit.runtime.mcp.bootstrap import bootstrap_local_filesystem_mcp_server
+from orbit.runtime.mcp.bash_bootstrap import bootstrap_local_bash_mcp_server
+from orbit.runtime.mcp.process_bootstrap import bootstrap_local_process_mcp_server
+from orbit.runtime.mcp.bash_classification import classify_bash_command
 from orbit.runtime.mcp.governance import resolve_filesystem_mcp_target_path
 from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
 from orbit.runtime.auth.storage.openai_store import OpenAIAuthStoreError
@@ -38,13 +41,20 @@ class SessionManager:
     phase rather than a full reuse of run-oriented approval persistence.
     """
 
-    def __init__(self, *, store: OrbitStore, backend, workspace_root: str, enable_mcp_filesystem: bool = False):
+    def __init__(self, *, store: OrbitStore, backend, workspace_root: str, enable_mcp_filesystem: bool = False, enable_mcp_bash: bool = False, enable_mcp_process: bool = False):
         self.store = store
         self.backend = backend
         self.workspace_root = workspace_root
         self.tool_registry = ToolRegistry(Path(workspace_root))
+        self._enable_mcp_filesystem = enable_mcp_filesystem
         if enable_mcp_filesystem:
             bootstrap = bootstrap_local_filesystem_mcp_server(workspace_root=workspace_root)
+            register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
+        if enable_mcp_bash:
+            bootstrap = bootstrap_local_bash_mcp_server(workspace_root=workspace_root)
+            register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
+        if enable_mcp_process:
+            bootstrap = bootstrap_local_process_mcp_server(workspace_root=workspace_root)
             register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
         if hasattr(self.backend, "tool_registry"):
             self.backend.tool_registry = self.tool_registry
@@ -140,6 +150,25 @@ class SessionManager:
             session.updated_at = datetime.now(timezone.utc)
             self.store.save_session(session)
 
+    def effective_tool_request_for_governance(self, tool_request: ToolRequest) -> ToolRequest:
+        if tool_request.tool_name != "run_bash":
+            return tool_request
+        command = tool_request.input_payload.get("command")
+        if not isinstance(command, str):
+            return tool_request
+        classification, reason = classify_bash_command(command)
+        if classification != "read_only":
+            return tool_request
+        updated = tool_request.model_copy(deep=True)
+        updated.requires_approval = False
+        updated.side_effect_class = "safe"
+        updated.input_payload["__orbit_bash_governance"] = {
+            "classification": classification,
+            "classification_reason": reason,
+            "effective_tool_name": "run_bash__read_only",
+        }
+        return updated
+
     def execute_tool_request(self, *, session: ConversationSession | None = None, tool_request: ToolRequest) -> ToolResult:
         """Execute one normalized tool request against the local registry."""
         unchanged_result = self.maybe_make_filesystem_unchanged_result(session=session, tool_request=tool_request)
@@ -149,10 +178,30 @@ class SessionManager:
         if write_gate_result is not None:
             return write_gate_result
         tool = self.tool_registry.get(tool_request.tool_name)
-        return tool.invoke(**tool_request.input_payload)
+        invoke_payload = dict(tool_request.input_payload)
+        invoke_payload.pop("__orbit_bash_governance", None)
+        if session is not None and getattr(tool, "tool_source", None) == "mcp":
+            if getattr(tool, "server_name", None) == "filesystem" and getattr(tool, "original_name", None) in {"todo_write", "todo_read"}:
+                bootstrap = bootstrap_local_filesystem_mcp_server(
+                    workspace_root=self.workspace_root,
+                    session_id=session.session_id,
+                )
+                temp_registry = ToolRegistry(Path(self.workspace_root))
+                register_mcp_server_tools(registry=temp_registry, bootstrap=bootstrap)
+                return temp_registry.get(tool_request.tool_name).invoke(**invoke_payload)
+            if getattr(tool, "server_name", None) == "process" and getattr(tool, "original_name", None) in {"start_process", "read_process_output", "wait_process", "terminate_process"}:
+                temp_registry = ToolRegistry(Path(self.workspace_root))
+                register_mcp_server_tools(
+                    registry=temp_registry,
+                    bootstrap=bootstrap_local_process_mcp_server(workspace_root=self.workspace_root),
+                )
+                if getattr(tool, "original_name", None) == "start_process":
+                    invoke_payload.setdefault("session_id", session.session_id)
+                return temp_registry.get(tool_request.tool_name).invoke(**invoke_payload)
+        return tool.invoke(**invoke_payload)
 
     def maybe_block_write_for_grounding(self, *, session: ConversationSession | None, tool_request: ToolRequest) -> ToolResult | None:
-        if session is None or tool_request.tool_name not in {"native__write_file", "native__replace_in_file", "native__replace_all_in_file", "native__replace_block_in_file", "native__apply_exact_hunk", "replace_in_file"}:
+        if session is None or tool_request.tool_name not in {"native__write_file", "native__replace_in_file", "native__replace_all_in_file", "native__replace_block_in_file", "native__apply_exact_hunk", "write_file", "replace_in_file", "replace_all_in_file", "replace_block_in_file", "apply_exact_hunk", "apply_unified_patch"}:
             return None
         path = tool_request.input_payload.get("path")
         if not isinstance(path, str) or not path:
@@ -179,7 +228,12 @@ class SessionManager:
             "native__replace_all_in_file": "replace_all_in_file",
             "native__replace_block_in_file": "replace_block_in_file",
             "native__apply_exact_hunk": "apply_exact_hunk",
+            "write_file": "write_file",
             "replace_in_file": "replace_in_file",
+            "replace_all_in_file": "replace_all_in_file",
+            "replace_block_in_file": "replace_block_in_file",
+            "apply_exact_hunk": "apply_exact_hunk",
+            "apply_unified_patch": "apply_unified_patch",
         }.get(tool_name)
 
     def maybe_make_filesystem_unchanged_result(self, *, session: ConversationSession | None, tool_request: ToolRequest) -> ToolResult | None:
@@ -705,6 +759,9 @@ class SessionManager:
                 metadata={"source_backend": plan.source_backend, "plan_label": plan.plan_label},
             )
         elif plan.tool_request is not None:
+            effective_tool_request = self.effective_tool_request_for_governance(plan.tool_request)
+            if effective_tool_request is not plan.tool_request:
+                plan = plan.model_copy(update={"tool_request": effective_tool_request})
             decision = self._evaluate_policy_for_plan(
                 session=session,
                 plan=plan,
@@ -869,18 +926,25 @@ class SessionManager:
         if check_kind == "none":
             return "ok"
         if check_kind == "path_exists":
-            path = tool_request.input_payload.get("path")
+            tool = self.tool_registry.get(tool_request.tool_name)
+            original_name = getattr(tool, "original_name", None)
+            normalized_payload = dict(tool_request.input_payload)
+            if getattr(tool, "tool_source", None) == "mcp" and original_name == "glob":
+                if "base_path" in normalized_payload and "path" not in normalized_payload:
+                    normalized_payload["path"] = normalized_payload.get("base_path")
+                if "path" not in normalized_payload:
+                    normalized_payload["path"] = "."
+            path = normalized_payload.get("path")
             if not path:
                 return "unknown"
 
-            tool = self.tool_registry.get(tool_request.tool_name)
-            if getattr(tool, "tool_source", None) == "mcp" and getattr(tool, "original_name", None) in {"read_file", "list_directory", "list_directory_with_sizes", "directory_tree", "search_files", "get_file_info"}:
+            if getattr(tool, "tool_source", None) == "mcp" and original_name in {"read_file", "list_directory", "list_directory_with_sizes", "directory_tree", "search_files", "glob", "grep", "get_file_info"}:
                 client = getattr(tool, "client", None)
                 bootstrap = getattr(client, "bootstrap", None) if client is not None else None
                 server_args = getattr(bootstrap, "args", []) if bootstrap is not None else []
                 server_env = getattr(bootstrap, "env", {}) if bootstrap is not None else {}
                 target = resolve_filesystem_mcp_target_path(
-                    input_payload=tool_request.input_payload,
+                    input_payload=normalized_payload,
                     server_args=server_args,
                     server_env=server_env,
                 )
@@ -893,9 +957,10 @@ class SessionManager:
                     target.relative_to(allowed_root)
                 except ValueError:
                     return "denied"
-                original_name = getattr(tool, "original_name", None)
-                if original_name in {"list_directory", "list_directory_with_sizes", "directory_tree", "search_files"}:
+                if original_name in {"list_directory", "list_directory_with_sizes", "directory_tree", "search_files", "glob"}:
                     return "ok" if target.exists() and target.is_dir() else "denied"
+                if original_name == "grep":
+                    return "ok" if target.exists() and (target.is_dir() or target.is_file()) else "denied"
                 return "ok" if target.exists() and target.is_file() else "denied"
 
             workspace_root = Path(self.workspace_root).resolve()

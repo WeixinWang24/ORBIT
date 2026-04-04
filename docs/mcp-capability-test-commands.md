@@ -1,0 +1,58 @@
+# MCP Capability Test Commands
+
+Run from:
+
+```bash
+cd /Volumes/2TB/MAS/openclaw-core
+source ~/anaconda3/etc/profile.d/conda.sh
+conda activate Orbit
+export PYTHONPATH=/Volumes/2TB/MAS/openclaw-core/ORBIT/src
+```
+
+## Server-level smoke tests
+
+```bash
+python -m unittest \
+  ORBIT.tests.test_filesystem_mcp_server \
+  ORBIT.tests.test_filesystem_grep_mcp_server \
+  ORBIT.tests.test_todo_mcp_server \
+  ORBIT.tests.test_web_fetch_mcp_server \
+  ORBIT.tests.test_apply_unified_patch_first_slice
+```
+
+## Session/runtime closure tests
+
+```bash
+python -m unittest \
+  ORBIT.tests.test_session_manager_mvp_loop_contract.SessionManagerMvpLoopContractTests.test_mcp_glob_turn_is_closure_complete_inside_run_session_turn \
+  ORBIT.tests.test_session_manager_mvp_loop_contract.SessionManagerMvpLoopContractTests.test_mcp_glob_turn_supports_offset_pagination \
+  ORBIT.tests.test_session_manager_mvp_loop_contract.SessionManagerMvpLoopContractTests.test_mcp_search_files_turn_is_closure_complete_inside_run_session_turn \
+  ORBIT.tests.test_session_manager_mvp_loop_contract.SessionManagerMvpLoopContractTests.test_mcp_search_files_turn_supports_offset_pagination \
+  ORBIT.tests.test_session_manager_mvp_loop_contract.SessionManagerMvpLoopContractTests.test_mcp_grep_turn_is_closure_complete_inside_run_session_turn \
+  ORBIT.tests.test_session_manager_mvp_loop_contract.SessionManagerMvpLoopContractTests.test_mcp_grep_turn_supports_offset_pagination \
+  ORBIT.tests.test_session_manager_mvp_loop_contract.SessionManagerMvpLoopContractTests.test_mcp_todo_write_turn_is_closure_complete_inside_run_session_turn \
+  ORBIT.tests.test_session_manager_mvp_loop_contract.SessionManagerMvpLoopContractTests.test_mcp_todo_read_executes_against_seeded_session_state \
+  ORBIT.tests.test_session_manager_mvp_loop_contract.SessionManagerMvpLoopContractTests.test_mcp_web_fetch_turn_is_closure_complete_inside_run_session_turn \
+  ORBIT.tests.test_apply_unified_patch_session_runtime
+```
+
+## Full current capability-family regression pack
+
+```bash
+python -m unittest \
+  ORBIT.tests.test_filesystem_mcp_server \
+  ORBIT.tests.test_filesystem_grep_mcp_server \
+  ORBIT.tests.test_todo_mcp_server \
+  ORBIT.tests.test_web_fetch_mcp_server \
+  ORBIT.tests.test_apply_unified_patch_first_slice \
+  ORBIT.tests.test_session_manager_mvp_loop_contract.SessionManagerMvpLoopContractTests.test_mcp_glob_turn_is_closure_complete_inside_run_session_turn \
+  ORBIT.tests.test_session_manager_mvp_loop_contract.SessionManagerMvpLoopContractTests.test_mcp_glob_turn_supports_offset_pagination \
+  ORBIT.tests.test_session_manager_mvp_loop_contract.SessionManagerMvpLoopContractTests.test_mcp_search_files_turn_is_closure_complete_inside_run_session_turn \
+  ORBIT.tests.test_session_manager_mvp_loop_contract.SessionManagerMvpLoopContractTests.test_mcp_search_files_turn_supports_offset_pagination \
+  ORBIT.tests.test_session_manager_mvp_loop_contract.SessionManagerMvpLoopContractTests.test_mcp_grep_turn_is_closure_complete_inside_run_session_turn \
+  ORBIT.tests.test_session_manager_mvp_loop_contract.SessionManagerMvpLoopContractTests.test_mcp_grep_turn_supports_offset_pagination \
+  ORBIT.tests.test_session_manager_mvp_loop_contract.SessionManagerMvpLoopContractTests.test_mcp_todo_write_turn_is_closure_complete_inside_run_session_turn \
+  ORBIT.tests.test_session_manager_mvp_loop_contract.SessionManagerMvpLoopContractTests.test_mcp_todo_read_executes_against_seeded_session_state \
+  ORBIT.tests.test_session_manager_mvp_loop_contract.SessionManagerMvpLoopContractTests.test_mcp_web_fetch_turn_is_closure_complete_inside_run_session_turn \
+  ORBIT.tests.test_apply_unified_patch_session_runtime
+```
