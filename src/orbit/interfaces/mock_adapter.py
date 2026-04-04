@@ -120,3 +120,32 @@ class MockOrbitInterfaceAdapter:
 
     def list_open_approvals(self) -> list[InterfaceApproval]:
         return list(self._approvals)
+
+    def get_workbench_status(self) -> dict:
+        return {
+            "implementation_stage": "mock-pty-active",
+            "runtime_integration": "disconnected",
+            "web_shell": {
+                "status": "implemented",
+                "surface": "mock workbench shell",
+                "inspiration": "vio-style layout",
+            },
+            "cli_shell": {
+                "status": "implemented",
+                "surface": "grouped command cli",
+                "pty_browser": True,
+                "tabs": ["transcript", "events", "tool_calls", "artifacts"],
+                "approval_queue": True,
+            },
+            "dummy_backend": {
+                "adapter": "MockOrbitInterfaceAdapter",
+                "session_count": len(self._sessions),
+                "approval_count": len(self._approvals),
+                "data_mode": "deterministic in-memory mock data",
+            },
+            "next_focus": [
+                "session filter/search",
+                "summary pane refinement",
+                "real adapter mapping skeleton",
+            ],
+        }

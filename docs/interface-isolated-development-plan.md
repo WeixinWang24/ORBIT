@@ -39,6 +39,7 @@ The interface adapter currently assumes these read-oriented operations:
 - `list_artifacts(session_id)`
 - `list_tool_calls(session_id)`
 - `list_open_approvals()`
+- `get_workbench_status()` (mock/backend implementation state for operator-facing status inspection)
 
 This keeps first-wave UI work focused on inspection and operator navigation.
 

@@ -103,6 +103,13 @@ def workbench_browse() -> None:
     browse_workbench()
 
 
+@workbench_app.command("status")
+def workbench_status() -> None:
+    """Show current PTY/workbench implementation status."""
+    adapter = _adapter()
+    console.print_json(json.dumps(adapter.get_workbench_status(), indent=2, ensure_ascii=False))
+
+
 @app.command("overview")
 def overview() -> None:
     """Show a compact overview of the mock workbench state."""
