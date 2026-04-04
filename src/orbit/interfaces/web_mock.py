@@ -2,6 +2,9 @@
 
 This module is intentionally isolated from the current runtime and from the
 existing `orbit.web_inspector` implementation.
+
+Layout direction for this shell borrows from the current Vio app's web UI
+language: topbar + left navigation + central work area + right operational rail.
 """
 
 from __future__ import annotations
@@ -14,53 +17,28 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from .mock_adapter import MockOrbitInterfaceAdapter
-
-CSS = """
-:root {
-  --bg: #0b0e17;
-  --panel: #151a26;
-  --border: #283245;
-  --text: #dbe7ff;
-  --muted: #8ca0c6;
-  --accent: #7ce2ff;
-  --accent2: #b690ff;
-  --ok: #67e8a5;
-  --warn: #ffcf70;
-}
-* { box-sizing: border-box; }
-body { margin: 0; font-family: Inter, system-ui, sans-serif; background: var(--bg); color: var(--text); }
-.layout { display: grid; grid-template-columns: 280px 1fr 360px; gap: 14px; min-height: 100vh; padding: 14px; }
-.card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px; }
-.title { margin: 0 0 12px; color: var(--accent); letter-spacing: .08em; text-transform: uppercase; font-size: 14px; }
-.session { display: block; text-decoration: none; color: var(--text); border: 1px solid var(--border); border-radius: 12px; padding: 10px; margin-bottom: 8px; }
-.session.active { border-color: var(--accent); }
-.meta { color: var(--muted); font-size: 13px; }
-.message { border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 10px; }
-.message .role { color: var(--accent2); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 8px; }
-pre { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, monospace; font-size: 13px; }
-.tabs { display: flex; gap: 8px; margin-bottom: 12px; }
-.tab { text-decoration: none; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 8px 12px; }
-.tab.active { color: var(--text); border-color: var(--accent); }
-.badge { display: inline-block; padding: 4px 8px; border-radius: 999px; border: 1px solid var(--border); font-size: 12px; color: var(--muted); }
-.badge.ok { color: var(--ok); }
-.badge.warn { color: var(--warn); }
-.smallblock { border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 10px; }
-.empty { color: var(--muted); font-style: italic; }
-"""
+from .style_vio import VIO_INSPIRED_WORKBENCH_CSS
 
 
 def _render_page(session_id: str | None, tab: str) -> str:
     adapter = MockOrbitInterfaceAdapter()
     sessions = adapter.list_sessions()
+    approvals = adapter.list_open_approvals()
     current = adapter.get_session(session_id) if session_id else (sessions[0] if sessions else None)
     if current is None:
         session_links = '<div class="empty">No sessions.</div>'
         main = '<div class="empty">No session selected.</div>'
         side = '<div class="empty">No details.</div>'
+        title = 'No session selected'
+        status_chip = '<span class="chip">mock-adapter</span>'
     else:
+        title = current.session_id
+        status_chip = f'<span class="chip">{escape(current.status)}</span><span class="chip">{escape(current.backend_name)}</span><span class="chip">{escape(current.model)}</span>'
         session_links = "".join(
-            f'<a class="session {"active" if s.session_id == current.session_id else ""}" href="/?session_id={escape(s.session_id)}&tab={escape(tab)}">'
-            f'<div>{escape(s.session_id)}</div><div class="meta">{escape(s.status)} · {escape(s.updated_at.isoformat())}</div></a>'
+            f'<a class="session-link {"active" if s.session_id == current.session_id else ""}" href="/?session_id={escape(s.session_id)}&tab={escape(tab)}">'
+            f'<div class="session-title">{escape(s.session_id)}</div>'
+            f'<div class="meta">{escape(s.status)} · {escape(s.updated_at.isoformat())}</div>'
+            f'<div class="meta">{escape(s.last_message_preview)}</div></a>'
             for s in sessions
         )
         tabs = ["transcript", "events", "tool_calls", "artifacts"]
@@ -71,13 +49,13 @@ def _render_page(session_id: str | None, tab: str) -> str:
         if tab == "events":
             blocks = adapter.list_events(current.session_id)
             inner = "".join(
-                f'<div class="smallblock"><div class="role">{escape(item.event_type)}</div><pre>{escape(json.dumps(item.payload, indent=2, ensure_ascii=False))}</pre></div>'
+                f'<div class="panel-block"><div class="message-role">{escape(item.event_type)}</div><pre>{escape(json.dumps(item.payload, indent=2, ensure_ascii=False))}</pre></div>'
                 for item in blocks
             ) or '<div class="empty">No events.</div>'
         elif tab == "tool_calls":
             blocks = adapter.list_tool_calls(current.session_id)
             inner = "".join(
-                f'<div class="smallblock"><div><strong>{escape(item.tool_name)}</strong> '
+                f'<div class="panel-block"><div><strong>{escape(item.tool_name)}</strong> '
                 f'<span class="badge {"ok" if item.status == "completed" else "warn"}">{escape(item.status)}</span></div>'
                 f'<div class="meta">{escape(item.summary)}</div><pre>{escape(json.dumps(item.payload, indent=2, ensure_ascii=False))}</pre></div>'
                 for item in blocks
@@ -85,28 +63,31 @@ def _render_page(session_id: str | None, tab: str) -> str:
         elif tab == "artifacts":
             blocks = adapter.list_artifacts(current.session_id)
             inner = "".join(
-                f'<div class="smallblock"><div><strong>{escape(item.artifact_type)}</strong></div><div class="meta">source={escape(item.source)}</div><pre>{escape(item.content)}</pre></div>'
+                f'<div class="panel-block"><div><strong>{escape(item.artifact_type)}</strong></div><div class="meta">source={escape(item.source)}</div><pre>{escape(item.content)}</pre></div>'
                 for item in blocks
             ) or '<div class="empty">No artifacts.</div>'
         else:
             blocks = adapter.list_messages(current.session_id)
             inner = "".join(
-                f'<div class="message"><div class="role">{escape(item.role)}{(" · " + escape(item.message_kind)) if item.message_kind else ""}</div><pre>{escape(item.content)}</pre></div>'
+                f'<div class="message-card"><div class="message-role">{escape(item.role)}{(" · " + escape(item.message_kind)) if item.message_kind else ""}</div><pre>{escape(item.content)}</pre></div>'
                 for item in blocks
             ) or '<div class="empty">No transcript.</div>'
-        main = f'<div class="tabs">{tab_html}</div>{inner}'
-        approvals = adapter.list_open_approvals()
+        main = f'<div class="tabs">{tab_html}</div><div class="main-panel">{inner}</div>'
         approval_html = "".join(
-            f'<div class="smallblock"><div><strong>{escape(a.tool_name)}</strong> <span class="badge warn">{escape(a.status)}</span></div><div class="meta">{escape(a.summary)}</div></div>'
+            f'<div class="panel-block"><div><strong>{escape(a.tool_name)}</strong> <span class="badge warn">{escape(a.status)}</span></div><div class="meta">{escape(a.summary)}</div><div class="meta">session={escape(a.session_id)}</div></div>'
             for a in approvals
         ) or '<div class="empty">No approvals.</div>'
+        event_count = len(adapter.list_events(current.session_id))
+        tool_call_count = len(adapter.list_tool_calls(current.session_id))
         side = (
-            f'<div class="smallblock"><div><strong>{escape(current.session_id)}</strong></div>'
+            f'<div class="panel-block"><div><strong>{escape(current.session_id)}</strong></div>'
+            f'<div class="meta">conversation={escape(current.conversation_id)}</div>'
             f'<div class="meta">backend={escape(current.backend_name)} · model={escape(current.model)}</div>'
-            f'<div class="meta">messages={current.message_count} · status={escape(current.status)}</div></div>'
-            f'<h3 class="title">Open Approvals</h3>{approval_html}'
+            f'<div class="meta">messages={current.message_count} · events={event_count} · tool_calls={tool_call_count}</div></div>'
+            f'<div class="panel-block"><div><strong>Current status</strong></div><div class="meta">{escape(current.status)}</div></div>'
+            f'<div><h3 class="section-title">Open Approvals</h3>{approval_html}</div>'
         )
-    return f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ORBIT Mock Workbench</title><style>{CSS}</style></head><body><div class="layout"><aside class="card"><h2 class="title">Sessions</h2>{session_links}</aside><main class="card"><h2 class="title">Mock Workbench</h2>{main}</main><section class="card"><h2 class="title">Session Summary</h2>{side}</section></div></body></html>'''
+    return f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ORBIT Mock Workbench</title><style>{VIO_INSPIRED_WORKBENCH_CSS}</style></head><body><div class="dashboard"><div class="topbar card"><div class="brand"><h1>ORBIT Mock Workbench</h1><p>Vio-inspired isolated shell · runtime disconnected</p></div><div class="topbar-right">{status_chip}<span class="chip">mock data</span></div></div><aside class="sidebar card"><h2 class="section-title">Sessions</h2>{session_links}</aside><main class="main card"><h2 class="section-title">Main View · {escape(title)}</h2>{main}</main><section class="right"><div class="card"><div class="section-title">Session Summary</div><div style="padding:0 14px 14px;">{side}</div></div></section></div></body></html>'''
 
 
 class MockWorkbenchHandler(BaseHTTPRequestHandler):
