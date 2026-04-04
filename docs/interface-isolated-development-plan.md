@@ -29,9 +29,11 @@ Both should depend on a shared adapter contract layer rather than on direct Sess
 ### App wrappers
 - `apps/orbit_interface_cli.py`
 - `apps/orbit_workbench.py`
+- `apps/orbit_workbench_raw.py`
 
 ### Full-screen terminal UI path
-- `src/orbit/interfaces/ptk_workbench.py` — prompt_toolkit-based workbench entry path for replacing the fragile raw-loop PTY prototype
+- `src/orbit/interfaces/ptk_workbench.py` — prompt_toolkit-based runtime-first workbench mainline
+- `src/orbit/interfaces/pty_workbench.py` — raw PTY / low-level terminal workbench path for side-by-side evaluation and terminal-behavior experiments
 
 ## Contract shape
 
