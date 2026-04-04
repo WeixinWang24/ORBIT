@@ -32,6 +32,9 @@ class MockOrbitChatAdapter(MockOrbitInterfaceAdapter):
         self._tool_calls[session_id] = []
         return session
 
+    def attach_session(self, session_id: str) -> InterfaceSession | None:
+        return self.get_session(session_id)
+
     def send_user_message(self, session_id: str, text: str) -> list[InterfaceMessage]:
         session = self.get_session(session_id)
         if session is None:
@@ -76,6 +79,29 @@ class MockOrbitChatAdapter(MockOrbitInterfaceAdapter):
         session.last_message_preview = assistant_text[:120]
         session.status = "active"
         return [user_message, assistant_message]
+
+    def append_system_message(self, session_id: str, text: str, *, kind: str = "system") -> InterfaceMessage:
+        session = self.get_session(session_id)
+        if session is None:
+            raise ValueError(f"session not found: {session_id}")
+        now = datetime.now(timezone.utc)
+        transcript = self._messages.setdefault(session_id, [])
+        message = InterfaceMessage(
+            session_id=session_id,
+            role="system",
+            content=text,
+            turn_index=len(transcript) + 1,
+            created_at=now,
+            message_kind=kind,
+        )
+        transcript.append(message)
+        session.updated_at = now
+        session.message_count = len(transcript)
+        session.last_message_preview = text[:120]
+        return message
+
+    def slash_help_text(self) -> str:
+        return "Available slash commands: /help /new /sessions /attach <session_id> /inspect /chat /approvals /events /tools /artifacts /status"
 
     def _build_dummy_reply(self, text: str) -> str:
         lowered = text.lower()

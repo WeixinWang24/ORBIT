@@ -63,6 +63,7 @@ Current near-term posture:
 - switch the terminal workbench's primary experience toward user input + transcript + dummy runtime response
 - keep inspect/event/tool/artifact views as secondary panes or modes rather than the primary semantic center
 - enforce input-mode vs navigation-mode separation so typed prompt characters are not consumed as global workbench commands
+- route non-runtime modules through slash commands so the default surface remains the Agent Runtime interaction experience
 
 ## Planned next integration step
 
