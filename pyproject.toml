@@ -19,6 +19,8 @@ dependencies = [
 orbit = "orbit.cli:app"
 orbit-session = "orbit.cli_session:app"
 orbit-inspector = "orbit.web_inspector:serve"
+orbit-interface = "orbit.interfaces.cli_mock:app"
+orbit-mock-workbench = "orbit.interfaces.web_mock:serve"
 
 [build-system]
 requires = ["hatchling"]
