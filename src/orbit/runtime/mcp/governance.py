@@ -18,6 +18,14 @@ DEFAULT_MCP_GOVERNANCE: McpGovernanceMetadata = {
     "environment_check_kind": "none",
 }
 
+_BASH_SYSTEM_ENVIRONMENT_TOOLS = {
+    "run_bash__read_only",
+}
+
+_BASH_PERMISSION_AUTHORITY_TOOLS = {
+    "run_bash",
+}
+
 
 _FILESYSTEM_SYSTEM_ENVIRONMENT_TOOLS = {
     "read_file",
@@ -28,13 +36,22 @@ _FILESYSTEM_SYSTEM_ENVIRONMENT_TOOLS = {
     "list_directory_with_sizes",
     "directory_tree",
     "search_files",
+    "glob",
+    "grep",
     "get_file_info",
     "list_allowed_directories",
+    "todo_read",
+    "todo_write",
+    "web_fetch",
 }
 
 _FILESYSTEM_PERMISSION_AUTHORITY_TOOLS = {
     "write_file",
     "replace_in_file",
+    "replace_all_in_file",
+    "replace_block_in_file",
+    "apply_exact_hunk",
+    "apply_unified_patch",
     "edit_file",
     "create_directory",
     "move_file",
@@ -44,6 +61,31 @@ _FILESYSTEM_PERMISSION_AUTHORITY_TOOLS = {
 def resolve_mcp_tool_governance(*, server_name: str, original_tool_name: str) -> McpGovernanceMetadata:
     server = server_name.strip().lower()
     tool = original_tool_name.strip().lower()
+
+    if server == "bash":
+        if tool in _BASH_SYSTEM_ENVIRONMENT_TOOLS:
+            return {
+                "side_effect_class": "safe",
+                "requires_approval": False,
+                "governance_policy_group": "system_environment",
+                "environment_check_kind": "none",
+            }
+        if tool in _BASH_PERMISSION_AUTHORITY_TOOLS:
+            return {
+                "side_effect_class": "write",
+                "requires_approval": True,
+                "governance_policy_group": "permission_authority",
+                "environment_check_kind": "none",
+            }
+
+    if server == "process":
+        if tool in {"start_process", "read_process_output", "wait_process", "terminate_process"}:
+            return {
+                "side_effect_class": "write",
+                "requires_approval": True,
+                "governance_policy_group": "permission_authority",
+                "environment_check_kind": "none",
+            }
 
     if server == "filesystem":
         if tool in _FILESYSTEM_SYSTEM_ENVIRONMENT_TOOLS:
@@ -60,6 +102,8 @@ def resolve_mcp_tool_governance(*, server_name: str, original_tool_name: str) ->
                     "list_directory_with_sizes",
                     "directory_tree",
                     "search_files",
+                    "glob",
+                    "grep",
                     "get_file_info",
                 }
                 else "none",

@@ -9,6 +9,8 @@ from mcp import types
 from mcp.server.lowlevel import NotificationOptions, Server
 from mcp.server.stdio import stdio_server
 
+from .patching import apply_unified_patch_to_file
+
 SERVER_NAME = "filesystem"
 SERVER_VERSION = "0.1.0"
 WORKSPACE_ROOT_ENV = "ORBIT_WORKSPACE_ROOT"
@@ -341,6 +343,24 @@ def _replace_in_file_result(path: str, old_text: str, new_text: str) -> dict[str
     }
 
 
+def _apply_unified_patch_result(path: str, patch: str) -> dict[str, Any]:
+    result = apply_unified_patch_to_file(workspace_root=_workspace_root(), path=path, patch=patch)
+    if not result.get("ok"):
+        structured = {
+            "mutation_kind": "apply_unified_patch",
+            "path": path,
+            "failure_layer": result.get("failure_layer", "tool_semantic"),
+            "failure_kind": result.get("failure_kind", "patch_apply_failed"),
+            "change_summary": result.get("change_summary"),
+            "applied_hunk_count": result.get("applied_hunk_count", 0),
+        }
+        failed_hunk = result.get("failed_hunk")
+        if failed_hunk is not None:
+            structured["failed_hunk"] = failed_hunk
+        return structured
+    return result
+
+
 @server.list_tools()
 async def list_tools() -> list[types.Tool]:
     return [
@@ -456,6 +476,19 @@ async def list_tools() -> list[types.Tool]:
                 "additionalProperties": False,
             },
         ),
+        types.Tool(
+            name="apply_unified_patch",
+            description="Apply a single-file unified diff patch to a workspace-relative file using strict hunk-context matching.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Workspace-relative file path."},
+                    "patch": {"type": "string", "description": "Single-file unified diff patch text. May include ---/+++ headers and one or more @@ hunks."},
+                },
+                "required": ["path", "patch"],
+                "additionalProperties": False,
+            },
+        ),
     ]
 
 
@@ -476,6 +509,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return _search_files_result(path, arguments.get("query"), arguments.get("maxResults"))
     if name == "replace_in_file":
         return _replace_in_file_result(path, arguments.get("old_text"), arguments.get("new_text"))
+    if name == "apply_unified_patch":
+        return _apply_unified_patch_result(path, arguments.get("patch"))
     raise ValueError(f"unknown tool: {name}")
 
 
