@@ -9,10 +9,10 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout, Window
-from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.controls import BufferControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.containers import ConditionalContainer
-from prompt_toolkit.widgets import Frame
+from prompt_toolkit.widgets import Frame, TextArea
 
 from .chat_mock_adapter import MockOrbitChatAdapter
 
@@ -137,9 +137,9 @@ def _header_text(state: WorkbenchState, adapter: MockOrbitChatAdapter) -> str:
     return f"ORBIT · Inspector · {SESSION_TABS[state.tab_index]} · {session_id}"
 
 
-def _footer_text(state: WorkbenchState, adapter: MockOrbitChatAdapter) -> str:
+def _footer_text(state: WorkbenchState) -> str:
     if state.input_mode:
-        return "INSERT · Enter sends · /command routes modules · Esc -> nav · /help for commands"
+        return "INSERT · Enter sends · Up/Down/PageUp/PageDown scroll messages · /help for commands · Esc -> nav"
     return "NAV · q quit · e edit · j/k move sessions or approvals · t switch inspector tab"
 
 
@@ -150,26 +150,51 @@ def run_workbench() -> None:
         adapter.create_session()
 
     input_buffer = Buffer()
-
-    main_control = FormattedTextControl(lambda: _main_text(state, adapter))
     input_window = Window(content=BufferControl(buffer=input_buffer, focus_on_click=True), height=Dimension(preferred=3))
+
+    message_panel = TextArea(
+        text="",
+        scrollbar=True,
+        focusable=False,
+        read_only=True,
+        wrap_lines=True,
+    )
+
+    def refresh_main_text() -> None:
+        message_panel.text = _main_text(state, adapter)
+        if state.mode == "chat":
+            try:
+                message_panel.buffer.cursor_position = len(message_panel.buffer.text)
+            except Exception:
+                pass
+
+    refresh_main_text()
 
     def in_nav_mode() -> bool:
         return not state.input_mode
 
     root = HSplit([
-        Window(height=1, content=FormattedTextControl(lambda: _header_text(state, adapter))),
-        Frame(Window(content=main_control, wrap_lines=True), title=lambda: _title_for_mode(state)),
-        Frame(
-            input_window,
-            title=lambda: "Input [INSERT]" if state.input_mode else "Input [NAV]",
-        ),
-        Window(height=1, content=FormattedTextControl(lambda: _footer_text(state, adapter))),
+        Window(height=1, content=BufferControl(buffer=Buffer(read_only=True, document=None))),
+        Frame(message_panel, title=lambda: _title_for_mode(state)),
+        Frame(input_window, title=lambda: "Input [INSERT]" if state.input_mode else "Input [NAV]"),
+        Window(height=1, content=BufferControl(buffer=Buffer(read_only=True, document=None))),
         ConditionalContainer(
-            content=Window(height=1, content=FormattedTextControl(lambda: f"Slash commands: {adapter.slash_help_text()}" if state.mode in {'help', 'status', 'inspect', 'approvals'} else "")),
-            filter=Condition(lambda: state.mode in {"help", "status", "inspect", "approvals"}),
+            content=Window(height=1, content=BufferControl(buffer=Buffer(read_only=True, document=None))),
+            filter=Condition(lambda: False),
         ),
     ])
+
+    header_window = root.children[0]
+    footer_window = root.children[3]
+    header_window.content = BufferControl(buffer=Buffer())
+    footer_window.content = BufferControl(buffer=Buffer())
+
+    def refresh_chrome() -> None:
+        header_window.content.buffer.set_document(header_window.content.buffer.document.__class__(_header_text(state, adapter), cursor_position=0), bypass_readonly=True)
+        footer_window.content.buffer.set_document(footer_window.content.buffer.document.__class__(_footer_text(state), cursor_position=0), bypass_readonly=True)
+        refresh_main_text()
+
+    refresh_chrome()
 
     kb = KeyBindings()
 
@@ -181,21 +206,39 @@ def run_workbench() -> None:
     def _escape_to_nav(event) -> None:
         state.input_mode = False
         event.app.layout.focus(root)
+        refresh_chrome()
         event.app.invalidate()
 
     @kb.add("e", filter=Condition(in_nav_mode))
     def _edit_mode(event) -> None:
         state.input_mode = True
         event.app.layout.focus(input_window)
+        refresh_chrome()
         event.app.invalidate()
 
     @kb.add("q", filter=Condition(in_nav_mode))
     def _quit(event) -> None:
         event.app.exit()
 
-    @kb.add("j", filter=Condition(in_nav_mode))
-    @kb.add("down", filter=Condition(in_nav_mode))
-    def _down(event) -> None:
+    @kb.add("up")
+    def _scroll_up(event) -> None:
+        if state.input_mode:
+            message_panel.buffer.cursor_up(count=1)
+            event.app.layout.focus(input_window)
+            return
+        if state.mode == "approvals":
+            state.selected_approval = max(0, state.selected_approval - 1)
+        else:
+            state.selected_session = max(0, state.selected_session - 1)
+        refresh_chrome()
+        event.app.invalidate()
+
+    @kb.add("down")
+    def _scroll_down(event) -> None:
+        if state.input_mode:
+            message_panel.buffer.cursor_down(count=1)
+            event.app.layout.focus(input_window)
+            return
         if state.mode == "approvals":
             approvals = adapter.list_open_approvals()
             if approvals:
@@ -204,15 +247,53 @@ def run_workbench() -> None:
             sessions = adapter.list_sessions()
             if sessions:
                 state.selected_session = min(len(sessions) - 1, state.selected_session + 1)
+        refresh_chrome()
+        event.app.invalidate()
+
+    @kb.add("pageup")
+    def _page_up(event) -> None:
+        if state.input_mode:
+            message_panel.buffer.cursor_up(count=10)
+            event.app.layout.focus(input_window)
+
+    @kb.add("pagedown")
+    def _page_down(event) -> None:
+        if state.input_mode:
+            message_panel.buffer.cursor_down(count=10)
+            event.app.layout.focus(input_window)
+
+    @kb.add("home")
+    def _home(event) -> None:
+        if state.input_mode:
+            message_panel.buffer.cursor_position = 0
+            event.app.layout.focus(input_window)
+
+    @kb.add("end")
+    def _end(event) -> None:
+        if state.input_mode:
+            message_panel.buffer.cursor_position = len(message_panel.buffer.text)
+            event.app.layout.focus(input_window)
+
+    @kb.add("j", filter=Condition(in_nav_mode))
+    def _down_nav(event) -> None:
+        if state.mode == "approvals":
+            approvals = adapter.list_open_approvals()
+            if approvals:
+                state.selected_approval = min(len(approvals) - 1, state.selected_approval + 1)
+        else:
+            sessions = adapter.list_sessions()
+            if sessions:
+                state.selected_session = min(len(sessions) - 1, state.selected_session + 1)
+        refresh_chrome()
         event.app.invalidate()
 
     @kb.add("k", filter=Condition(in_nav_mode))
-    @kb.add("up", filter=Condition(in_nav_mode))
-    def _up(event) -> None:
+    def _up_nav(event) -> None:
         if state.mode == "approvals":
             state.selected_approval = max(0, state.selected_approval - 1)
         else:
             state.selected_session = max(0, state.selected_session - 1)
+        refresh_chrome()
         event.app.invalidate()
 
     @kb.add("t", filter=Condition(in_nav_mode))
@@ -220,6 +301,7 @@ def run_workbench() -> None:
     def _tab(event) -> None:
         if state.mode == "inspect":
             state.tab_index = (state.tab_index + 1) % len(SESSION_TABS)
+            refresh_chrome()
             event.app.invalidate()
 
     def _route_slash_command(text: str) -> None:
@@ -302,6 +384,7 @@ def run_workbench() -> None:
             state.mode = "chat"
             state.banner = "Agent Runtime mode · slash commands available via /help"
         input_buffer.text = ""
+        refresh_chrome()
         event.app.invalidate()
 
     app = Application(layout=Layout(root, focused_element=input_window), key_bindings=kb, full_screen=True)

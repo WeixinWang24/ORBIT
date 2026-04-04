@@ -66,6 +66,7 @@ Current near-term posture:
 - route non-runtime modules through slash commands so the default surface remains the Agent Runtime interaction experience
 - keep the initial screen visually single-purpose: Agent Runtime Chat first, Inspector modules only after explicit slash navigation
 - implement `/help` as a first-class help page/module rather than relying on transcript history for command discovery
+- preserve the top-message-panel / bottom-composer layout while making the message panel itself scrollable for long transcripts and long module output
 
 ## Planned next integration step
 
