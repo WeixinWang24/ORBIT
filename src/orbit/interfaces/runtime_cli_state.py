@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from .chat_viewport_state import ChatViewportState
+from .composer_state import ComposerState
 
 CHAT_MODE = "chat"
 SESSIONS_MODE = "sessions"
@@ -35,10 +38,12 @@ class RuntimeShellState:
 
     mode: str = CHAT_MODE
     selected_session: int = 0
+    active_session_id: str | None = None
     selected_approval: int = 0
     tab_index: int = INSPECT_TRANSCRIPT_TAB
     show_help_overlay: bool = False
-    composer_text: str = ""
+    composer: ComposerState = field(default_factory=ComposerState)
+    chat_viewport: ChatViewportState = field(default_factory=ChatViewportState)
     banner: str = DEFAULT_CHAT_BANNER
 
 
@@ -47,3 +52,13 @@ class RuntimeCliState(RuntimeShellState):
     """Runtime-first PTY CLI state, including scroll position."""
 
     content_scroll: int = 0
+    runtime_busy: bool = False
+    pending_submit_session_id: str | None = None
+    pending_submit_text: str = ""
+    assistant_inflight_text: str | None = None
+    assistant_inflight_dirty: bool = False
+    completed_submit_banner: str | None = None
+    completed_submit_error: str | None = None
+    _submit_thread_started_at: float | None = None
+    startup_loading: bool = True
+    startup_error: str | None = None

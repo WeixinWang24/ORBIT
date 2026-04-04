@@ -336,7 +336,7 @@ class SessionManager:
             },
         )
 
-    def run_session_turn(self, *, session_id: str, user_input: str, descriptor: RunDescriptor | None = None) -> ExecutionPlan:
+    def run_session_turn(self, *, session_id: str, user_input: str, descriptor: RunDescriptor | None = None, on_assistant_partial_text=None) -> ExecutionPlan:
         """Execute one canonical session turn and return its bounded result.
 
         Current MVP closure contract:
@@ -393,7 +393,7 @@ class SessionManager:
             source="runtime",
         )
         try:
-            plan = self._plan_from_messages(session=session, messages=messages)
+            plan = self._plan_from_messages(session=session, messages=messages, on_assistant_partial_text=on_assistant_partial_text)
             self._consume_pending_turn_snapshots(session)
             refreshed_after_plan = self.get_session(session_id)
             if refreshed_after_plan is not None:
@@ -1106,10 +1106,10 @@ class SessionManager:
             failure_reason=None,
         )
 
-    def _plan_from_messages(self, *, session: ConversationSession, messages: list[ConversationMessage]) -> ExecutionPlan:
+    def _plan_from_messages(self, *, session: ConversationSession, messages: list[ConversationMessage], on_assistant_partial_text=None) -> ExecutionPlan:
         """Use history-aware provider path when available, otherwise fallback."""
         if hasattr(self.backend, "plan_from_messages"):
-            return self.backend.plan_from_messages(messages, session=session)
+            return self.backend.plan_from_messages(messages, session=session, on_partial_text=on_assistant_partial_text)
         latest_user = next((message for message in reversed(messages) if message.role == MessageRole.USER), None)
         if latest_user is None:
             raise ValueError("cannot fallback to descriptor path without a user message")

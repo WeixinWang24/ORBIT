@@ -7,92 +7,259 @@ Design rule:
 
 from __future__ import annotations
 
+import os
+import threading
+import time
+from pathlib import Path
+from datetime import datetime
+
 from .adapter_protocol import RuntimeCliAdapter
-from .chat_mock_adapter import MockOrbitChatAdapter
 from .runtime_adapter import RuntimeAdapterConfig, SessionManagerRuntimeAdapter
 from . import termio as T
-from .input import ParsedFocus, ParsedKey, ParsedMouse, parse_sequence, read_sequence
+from .input import ControlToken, ParsedFocus, ParsedKey, ParsedMouse, SequenceToken, TextToken, parse_sequence, read_chunk, tokenize_input_chunk
 from .pty_debug import debug_log
 from .pty_primitives import ScreenBuffer, alt_screen, bracketed_paste, focus_events, mouse_tracking, raw_mode, terminal_size
 from .runtime_cli_handlers import handle_approvals_key, handle_chat_key, handle_info_panel_key, handle_inspect_key, handle_sessions_key
-from .runtime_cli_render import frame_lines
+from .runtime_cli_render import FrameRender, frame_lines
 from .runtime_cli_state import APPROVALS_MODE, CHAT_MODE, HELP_MODE, INSPECT_MODE, RuntimeCliState, SESSIONS_MODE, STATUS_MODE
+
+PTY_INPUT_DEBUG_ENV = "ORBIT_PTY_INPUT_DEBUG"
+
+
+def _pty_input_debug_path() -> Path | None:
+    raw = os.environ.get(PTY_INPUT_DEBUG_ENV, "").strip().lower()
+    if raw not in {"1", "true", "yes", "on"}:
+        return None
+    log_dir = Path("/Volumes/2TB/MAS/openclaw-core/ORBIT/logs")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / f"pty-input-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+
+
+def _append_pty_input_debug(path: Path | None, *, stage: str, state: RuntimeCliState, event: object) -> None:
+    if path is None:
+        return
+    try:
+        line = (
+            f"[{datetime.now().isoformat()}] stage={stage} mode={state.mode} "
+            f"selected_session={state.selected_session} event={event!r}\n"
+        )
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
 
 
 def _build_default_adapter() -> RuntimeCliAdapter:
+    adapter = SessionManagerRuntimeAdapter.build(RuntimeAdapterConfig())
+    debug_log("pty_runtime_cli:using_session_manager_runtime_adapter")
+    return adapter
+
+
+def _start_background_submit(state: RuntimeCliState, adapter: RuntimeCliAdapter) -> None:
+    session_id = state.pending_submit_session_id
+    text = state.pending_submit_text
+    if not session_id or not text:
+        state.runtime_busy = False
+        return
+
+    def _worker() -> None:
+        def _handle_partial_text(partial: str) -> None:
+            state.assistant_inflight_text = partial
+            state.assistant_inflight_dirty = True
+
+        try:
+            state.assistant_inflight_text = ""
+            state.assistant_inflight_dirty = True
+            adapter.send_user_message(
+                session_id,
+                text,
+                on_assistant_partial_text=_handle_partial_text,
+            )
+            state.completed_submit_banner = f"Submitted to {session_id}"
+            state.completed_submit_error = None
+        except Exception as exc:
+            try:
+                adapter.append_system_message(
+                    session_id,
+                    f"submit failed: {exc!r}",
+                    kind="submit_error",
+                )
+            except Exception:
+                pass
+            state.completed_submit_banner = "Submit failed"
+            state.completed_submit_error = repr(exc)
+        finally:
+            state.runtime_busy = False
+            state.pending_submit_text = ""
+            state.pending_submit_session_id = None
+            state.assistant_inflight_text = None
+            state.assistant_inflight_dirty = True
+            state._submit_thread_started_at = None
+
+    state._submit_thread_started_at = time.time()
+    thread = threading.Thread(target=_worker, name="orbit-pty-submit", daemon=True)
+    thread.start()
+
+
+def _position_cursor_for_composer(rendered: FrameRender) -> None:
     try:
-        adapter = SessionManagerRuntimeAdapter.build(RuntimeAdapterConfig())
-        if not adapter.list_sessions():
-            adapter.create_session()
-        debug_log("pty_runtime_cli:using_session_manager_runtime_adapter")
-        return adapter
-    except Exception as exc:
-        debug_log(f"pty_runtime_cli:runtime_adapter_fallback={exc!r}")
-        adapter = MockOrbitChatAdapter()
-        if not adapter.list_sessions():
-            adapter.create_session()
-        return adapter
+        import sys
+        sys.stdout.write(T.cursor_position(rendered.composer_row, rendered.composer_col))
+        sys.stdout.flush()
+    except Exception:
+        pass
 
 
 def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None) -> None:
     debug_log("pty_runtime_cli:start")
-    adapter = adapter or _build_default_adapter()
+    runtime_adapter = adapter
     state = RuntimeCliState()
+    state.banner = "Starting runtime adapter..."
+
+    def _startup_worker() -> None:
+        nonlocal runtime_adapter
+        try:
+            built = runtime_adapter or _build_default_adapter()
+            initial_session = built.create_session()
+            runtime_adapter = built
+            state.active_session_id = initial_session.session_id
+            state.selected_session = 0
+            state.banner = f"Created new session {initial_session.session_id}"
+            state.startup_error = None
+        except Exception as exc:
+            state.startup_error = repr(exc)
+            state.banner = "Startup failed"
+            debug_log(f"pty_runtime_cli:startup_failed={exc!r}")
+        finally:
+            state.startup_loading = False
+
+    threading.Thread(target=_startup_worker, name="orbit-pty-startup", daemon=True).start()
     screen = ScreenBuffer()
     in_paste = False
+    pty_input_debug_path = _pty_input_debug_path()
+    if pty_input_debug_path is not None:
+        debug_log(f"pty_runtime_cli:input_debug_log={pty_input_debug_path}")
 
-    with raw_mode(), alt_screen(), mouse_tracking(), bracketed_paste(), focus_events():
+    last_busy_state = False
+    with raw_mode(), alt_screen():
         while True:
+            if state.runtime_busy and state._submit_thread_started_at is None and runtime_adapter is not None:
+                _start_background_submit(state, runtime_adapter)
+
+            if state.runtime_busy != last_busy_state:
+                screen.invalidate()
+                last_busy_state = state.runtime_busy
+
+            if state.runtime_busy:
+                screen.invalidate()
+
+            if state.assistant_inflight_dirty:
+                screen.invalidate()
+                state.assistant_inflight_dirty = False
+
+            if not state.runtime_busy and state.completed_submit_banner is not None:
+                state.banner = state.completed_submit_banner
+                state.completed_submit_banner = None
+                screen.invalidate()
+
             width, height = terminal_size()
-            screen.render(frame_lines(state, adapter), width, height)
-            raw = read_sequence()
-            if not raw:
+            rendered = frame_lines(state, runtime_adapter)
+            screen.render(rendered.lines, width, height, force_full_repaint=False)
+            if state.mode == CHAT_MODE:
+                _position_cursor_for_composer(rendered)
+            chunk = read_chunk(timeout_ms=50.0)
+            _append_pty_input_debug(pty_input_debug_path, stage="raw", state=state, event=chunk)
+            if not chunk:
                 debug_log("pty_runtime_cli:raw=<empty>")
                 continue
-            debug_log(f"pty_runtime_cli:raw={raw!r}")
-            if raw == T.PASTE_START:
-                in_paste = True
-                continue
-            if raw == T.PASTE_END:
-                in_paste = False
-                continue
-            if in_paste:
+            debug_log(f"pty_runtime_cli:raw={chunk!r}")
+
+            if runtime_adapter is None or state.startup_loading:
                 continue
 
-            event = parse_sequence(raw)
-            debug_log(f"pty_runtime_cli:mode={state.mode} event={event!r}")
-            if event is None:
-                continue
+            tokens = tokenize_input_chunk(chunk)
+            for token in tokens:
+                _append_pty_input_debug(pty_input_debug_path, stage="token", state=state, event=token)
 
-            if isinstance(event, ParsedFocus):
-                screen.invalidate()
-                continue
-            if isinstance(event, ParsedMouse):
-                continue
-            if not isinstance(event, ParsedKey):
-                continue
+                if isinstance(token, TextToken):
+                    if in_paste:
+                        continue
+                    if state.mode == CHAT_MODE:
+                        state.composer.insert_text(token.value)
+                        screen.invalidate()
+                        continue
+                    for ch in token.value:
+                        event = ParsedKey(name=ch, sequence=ch)
+                        if state.mode == SESSIONS_MODE:
+                            handle_sessions_key(state, runtime_adapter, event)
+                        elif state.mode == APPROVALS_MODE:
+                            handle_approvals_key(state, runtime_adapter, event)
+                        elif state.mode == INSPECT_MODE:
+                            handle_inspect_key(state, runtime_adapter, event)
+                        elif state.mode in {HELP_MODE, STATUS_MODE}:
+                            handle_info_panel_key(state, event)
+                        screen.invalidate()
+                    continue
 
-            name = event.name
-            ctrl = event.ctrl
-            if name == "escape":
-                debug_log(f"pty_runtime_cli:swallow_escape mode={state.mode}")
-                continue
-            if ctrl and name == "c":
-                screen.invalidate()
-                screen.render([T.DIM + "Exited ORBIT runtime CLI." + T.RESET], width, 1)
-                return
+                if isinstance(token, ControlToken):
+                    raw = token.value
+                else:
+                    raw = token.value
+                if raw == T.PASTE_START:
+                    in_paste = True
+                    continue
+                if raw == T.PASTE_END:
+                    in_paste = False
+                    continue
+                if in_paste:
+                    continue
 
-            invalidate = False
-            if state.mode == CHAT_MODE:
-                invalidate = handle_chat_key(state, adapter, event)
-            elif state.mode == SESSIONS_MODE:
-                handle_sessions_key(state, adapter, event)
-            elif state.mode == APPROVALS_MODE:
-                handle_approvals_key(state, adapter, event)
-            elif state.mode == INSPECT_MODE:
-                handle_inspect_key(state, adapter, event)
-            elif state.mode in {HELP_MODE, STATUS_MODE}:
-                handle_info_panel_key(state, event)
+                event = parse_sequence(raw)
+                _append_pty_input_debug(pty_input_debug_path, stage="parsed", state=state, event=event)
+                debug_log(f"pty_runtime_cli:mode={state.mode} event={event!r}")
+                if event is None:
+                    continue
 
-            if invalidate:
-                screen.invalidate()
+                if isinstance(event, ParsedFocus):
+                    screen.invalidate()
+                    continue
+                if isinstance(event, ParsedMouse):
+                    continue
+                if not isinstance(event, ParsedKey):
+                    continue
+
+                name = event.name
+                ctrl = event.ctrl
+                if name == "escape":
+                    debug_log(f"pty_runtime_cli:swallow_escape mode={state.mode}")
+                    continue
+                if ctrl and name == "c":
+                    screen.invalidate()
+                    screen.render([T.DIM + "Exited ORBIT runtime CLI." + T.RESET], width, 1)
+                    return
+
+                invalidate = False
+                if state.mode == CHAT_MODE:
+                    invalidate = handle_chat_key(state, runtime_adapter, event)
+                    if pty_input_debug_path is not None:
+                        _append_pty_input_debug(
+                            pty_input_debug_path,
+                            stage="post_chat_key",
+                            state=state,
+                            event={
+                                "event_name": event.name,
+                                "composer_text": state.composer.text,
+                                "banner": state.banner,
+                            },
+                        )
+                elif state.mode == SESSIONS_MODE:
+                    handle_sessions_key(state, runtime_adapter, event)
+                elif state.mode == APPROVALS_MODE:
+                    handle_approvals_key(state, runtime_adapter, event)
+                elif state.mode == INSPECT_MODE:
+                    handle_inspect_key(state, runtime_adapter, event)
+                elif state.mode in {HELP_MODE, STATUS_MODE}:
+                    handle_info_panel_key(state, event)
+
+                if invalidate:
+                    screen.invalidate()

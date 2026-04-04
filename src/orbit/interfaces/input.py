@@ -1,23 +1,13 @@
 """Keyboard and mouse input parser for ORBIT PTY interface.
 
-Ported from claude_code_src/src/ink/parse-keypress.ts (TypeScript → Python).
+Tokenizer-first note:
+- raw stdin should first be split into text tokens vs escape/control sequences
+- chat composer should consume only text tokens
+- escape/control sequences should stay on the functional path and never degrade
+  into text input
 
-Handles:
-  - Standard ANSI arrow / function key sequences
-  - CSI u  (Kitty keyboard protocol)
-  - xterm  modifyOtherKeys  (ESC [ 27 ; mod ; key ~)
-  - SGR    mouse events     (click, drag, scroll wheel)
-  - Bracketed paste markers (DEC 2004)
-  - Focus event markers     (DEC 1004)
-
-Current note (v4):
-  - `read_sequence()` carries a small persistent pending buffer + age counter.
-  - Broken ESC-prefixed sequences are reassembled across loop iterations.
-  - Bare ESC is now a complete sequence, so the Escape key always fires.
-  - DCS / OSC / PM / APC intro bytes are included in the fragment detector.
-  - Stale fragments are force-flushed after `_PENDING_MAX_AGE` consecutive
-    reads with no growth, preventing indefinite input blocking.
-  - SS3 completions are validated against the known `_SS3_LETTER` set.
+This file keeps the existing sequence parser while adding a minimal tokenizer-
+first slice for the PTY runtime CLI.
 """
 
 from __future__ import annotations
@@ -26,17 +16,20 @@ import os
 import re
 import select
 import sys
+import fcntl
+import termios
 from dataclasses import dataclass
 
 ESC = "\x1b"
 _INPUT_DEBUG_ENABLED = os.environ.get("ORBIT_PTY_DEBUG", "").lower() in {"1", "true", "yes", "on"}
 _INPUT_DEBUG_PATH = "/Volumes/2TB/MAS/openclaw-core/ORBIT/.tmp/orbit_pty_debug.log"
-_INPUT_DEBUG_VERSION = "input_read_sequence_v4"
+_INPUT_DEBUG_VERSION = "input_tokenizer_v1"
 _PENDING_SEQ = ""
-# How many consecutive read calls a control fragment may be held before forced
-# flush.  Guards against bare-ESC and other stale fragments blocking forever.
 _PENDING_AGE = 0
 _PENDING_MAX_AGE = 3
+
+_TOKENIZER_BUFFER = ""
+_TOKENIZER_STATE = "ground"
 
 
 def _input_debug(message: str) -> None:
@@ -46,8 +39,6 @@ def _input_debug(message: str) -> None:
     with open(_INPUT_DEBUG_PATH, "a", encoding="utf-8") as f:
         f.write(f"{_INPUT_DEBUG_VERSION}:{message}\n")
 
-
-# ── Compiled regex patterns ───────────────────────────────────────────────────
 
 _CSI_U_RE = re.compile(r"^\x1b\[(\d+)(?:;(\d+))?u$")
 _MOK_RE = re.compile(r"^\x1b\[27;(\d+);(\d+)~$")
@@ -84,7 +75,23 @@ class ParsedFocus:
     sequence: str = ""
 
 
+@dataclass
+class TextToken:
+    value: str
+
+
+@dataclass
+class SequenceToken:
+    value: str
+
+
+@dataclass
+class ControlToken:
+    value: str
+
+
 InputEvent = ParsedKey | ParsedMouse | ParsedFocus
+InputToken = TextToken | ControlToken | SequenceToken
 
 _CSI_LETTER: dict[str, str | None] = {
     "A": "up",
@@ -174,141 +181,182 @@ def _read_available_char(timeout_s: float) -> str | None:
     return c or None
 
 
-def _looks_like_control_fragment(text: str) -> bool:
-    """Return True if *text* looks like an incomplete ESC-prefixed control sequence.
-
-    A bare ESC is NOT considered a fragment here: `_is_sequence_complete` already
-    returns True for it, so there is nothing left to accumulate.  Without this
-    exclusion, a bare Escape key would be held forever (the old v3 bug).
-
-    The character set is extended to include DCS/OSC/PM/APC intro bytes
-    (P, ], ^, _) and SS3 letter candidates (R, S) that were missing before.
-    """
-    if not text:
-        return False
-    if text == ESC:
-        # Bare ESC: complete on its own, do not hold.
-        return False
-    if text.startswith(ESC):
-        text = text[1:]
-    if not text:
-        return False
-    return all(ch in "[O;<~ABCDHFMmPRS]^_0123456789" for ch in text)
-
-
-def read_sequence(timeout_ms: float = 50.0) -> str:
-    """Read one terminal input sequence from stdin.
-
-    v4 behavior:
-    - keeps a small persistent `_PENDING_SEQ` with an age counter
-    - ESC-prefixed fragments are held across iterations until complete
-    - bare ESC is now recognised as a complete sequence and never held forever
-    - DCS / OSC / PM / APC intro bytes are included in the fragment detector
-    - a fragment that fails to grow for `_PENDING_MAX_AGE` consecutive reads is
-      force-flushed so stale data cannot block subsequent input indefinitely
-    """
-    global _PENDING_SEQ, _PENDING_AGE
-
-    _input_debug("read_sequence:active")
-
-    # If there is already a pending control fragment, try to grow it first.
-    if _PENDING_SEQ:
-        _input_debug(f"read_sequence:pending_start={_PENDING_SEQ!r} age={_PENDING_AGE}")
-        timeout_s = max(0.005, timeout_ms / 1000.0)
-        while True:
-            if _is_sequence_complete(_PENDING_SEQ):
-                out = _PENDING_SEQ
-                _PENDING_SEQ = ""
-                _PENDING_AGE = 0
-                _input_debug(f"read_sequence:pending_complete={out!r}")
-                return out
-            nxt = _read_available_char(timeout_s)
-            if nxt is None:
-                if _looks_like_control_fragment(_PENDING_SEQ) and _PENDING_AGE < _PENDING_MAX_AGE:
-                    _PENDING_AGE += 1
-                    _input_debug(f"read_sequence:pending_hold={_PENDING_SEQ!r} age={_PENDING_AGE}")
-                    return ""
-                # Fragment timed out or exceeded max age – flush it.
-                out = _PENDING_SEQ
-                _PENDING_SEQ = ""
-                _PENDING_AGE = 0
-                _input_debug(f"read_sequence:pending_flush={out!r}")
-                return out
-            _PENDING_SEQ += nxt
-            _PENDING_AGE = 0  # fragment grew – reset age
-            _input_debug(f"read_sequence:pending_grow={_PENDING_SEQ!r}")
-
-    ch = sys.stdin.read(1)
-    if not ch:
-        _input_debug("read_sequence:eof")
-        return ""
-    if ch != ESC:
-        _input_debug(f"read_sequence:single={ch!r}")
-        return ch
-
-    buf = ch
+def read_chunk(timeout_ms: float = 50.0) -> str:
     timeout_s = max(0.005, timeout_ms / 1000.0)
-
-    nxt = _read_available_char(timeout_s)
-    if nxt is None:
-        # Nothing followed the ESC within the timeout.
-        # _is_sequence_complete("\x1b") now returns True, so on the next call
-        # the pending loop will immediately dispatch it as a bare Escape event.
-        _PENDING_SEQ = buf
-        _PENDING_AGE = 0
-        _input_debug("read_sequence:bare_escape_pending")
+    fd = sys.stdin.fileno()
+    r, _, _ = select.select([sys.stdin], [], [], timeout_s)
+    if not r:
         return ""
-    buf += nxt
-    _input_debug(f"read_sequence:after_escape_first={buf!r}")
 
+    chunks: list[str] = []
     while True:
-        if _is_sequence_complete(buf):
-            _input_debug(f"read_sequence:complete={buf!r}")
-            return buf
-        nxt = _read_available_char(timeout_s)
-        if nxt is None:
-            if _looks_like_control_fragment(buf):
-                _PENDING_SEQ = buf
-                _PENDING_AGE = 0
-                _input_debug(f"read_sequence:partial_store_pending={buf!r}")
-                return ""
-            _input_debug(f"read_sequence:partial_timeout_return={buf!r}")
-            return buf
-        buf += nxt
-        _input_debug(f"read_sequence:grow={buf!r}")
+        try:
+            available = max(1, fcntl.ioctl(fd, termios.FIONREAD, b"    ")[0])
+        except Exception:
+            available = 1
+        try:
+            piece = os.read(fd, available)
+        except BlockingIOError:
+            piece = b""
+        if not piece:
+            break
+        try:
+            chunks.append(piece.decode("utf-8", errors="ignore"))
+        except Exception:
+            chunks.append(piece.decode(errors="ignore"))
+        r, _, _ = select.select([sys.stdin], [], [], 0)
+        if not r:
+            break
+    return "".join(chunks)
 
 
-def _is_sequence_complete(seq: str) -> bool:
-    # A bare ESC is a complete event on its own (Escape key press).
-    if seq == ESC:
-        return True
+def _is_esc_final(code: int) -> bool:
+    return 0x30 <= code <= 0x7E
 
-    if len(seq) < 2:
-        return False
-    s1 = seq[1]
 
-    if s1 == "O":
-        # SS3 sequence: ESC O <letter>.  Require a valid SS3 terminator so we
-        # don't prematurely complete on an arbitrary third byte.
-        if len(seq) < 3:
-            return False
-        return seq[2] in _SS3_LETTER
+def _is_csi_param(code: int) -> bool:
+    return 0x30 <= code <= 0x3F
 
-    if s1 == "[":
-        if len(seq) < 3:
-            return False
-        last = seq[-1]
-        return "\x40" <= last <= "\x7e"
 
-    if s1 == "P":
-        # DCS: terminated by ST (ESC \)
-        return seq.endswith("\x1b\\")
+def _is_csi_intermediate(code: int) -> bool:
+    return 0x20 <= code <= 0x2F
 
-    if s1 in ("]", "^", "_"):
-        # OSC / PM / APC: terminated by BEL or ST
-        return seq.endswith("\x07") or seq.endswith("\x1b\\")
 
-    return len(seq) >= 2
+def tokenize_input_chunk(chunk: str, *, flush: bool = False) -> list[InputToken]:
+    global _TOKENIZER_BUFFER, _TOKENIZER_STATE
+    data = _TOKENIZER_BUFFER + chunk
+    tokens: list[InputToken] = []
+    i = 0
+    text_start = 0
+    seq_start = 0
+    state = _TOKENIZER_STATE
+
+    def flush_text(end: int) -> None:
+        nonlocal text_start
+        if end > text_start:
+            text = data[text_start:end]
+            if text:
+                current_text = []
+                for ch in text:
+                    code = ord(ch)
+                    if ch in {"\r", "\n", "\t", "\x7f"} or (0 <= code < 32 and ch != "\x1b"):
+                        if current_text:
+                            tokens.append(TextToken("".join(current_text)))
+                            current_text = []
+                        tokens.append(ControlToken(ch))
+                    else:
+                        current_text.append(ch)
+                if current_text:
+                    tokens.append(TextToken("".join(current_text)))
+        text_start = end
+
+    def emit_sequence(end: int) -> None:
+        nonlocal state, text_start
+        seq = data[seq_start:end]
+        if seq:
+            tokens.append(SequenceToken(seq))
+        state = "ground"
+        text_start = end
+
+    while i < len(data):
+        code = ord(data[i])
+        if state == "ground":
+            if code == 0x1B:
+                flush_text(i)
+                seq_start = i
+                state = "escape"
+                i += 1
+            else:
+                i += 1
+            continue
+
+        if state == "escape":
+            if i >= len(data):
+                break
+            if code == 0x5B:
+                state = "csi"
+                i += 1
+            elif code == 0x4F:
+                state = "ss3"
+                i += 1
+            elif code in (0x5D, 0x50, 0x5E, 0x5F):
+                state = "string"
+                i += 1
+            elif _is_csi_intermediate(code):
+                state = "escape_intermediate"
+                i += 1
+            elif _is_esc_final(code):
+                i += 1
+                emit_sequence(i)
+            else:
+                state = "ground"
+                text_start = seq_start
+            continue
+
+        if state == "escape_intermediate":
+            if i >= len(data):
+                break
+            if _is_csi_intermediate(code):
+                i += 1
+            elif _is_esc_final(code):
+                i += 1
+                emit_sequence(i)
+            else:
+                state = "ground"
+                text_start = seq_start
+            continue
+
+        if state == "csi":
+            if i >= len(data):
+                break
+            if 0x40 <= code <= 0x7E:
+                i += 1
+                emit_sequence(i)
+            elif _is_csi_param(code) or _is_csi_intermediate(code):
+                i += 1
+            else:
+                state = "ground"
+                text_start = seq_start
+            continue
+
+        if state == "ss3":
+            if i >= len(data):
+                break
+            if 0x40 <= code <= 0x7E:
+                i += 1
+                emit_sequence(i)
+            else:
+                state = "ground"
+                text_start = seq_start
+            continue
+
+        if state == "string":
+            if i >= len(data):
+                break
+            if code == 0x07:
+                i += 1
+                emit_sequence(i)
+            elif code == 0x1B and i + 1 < len(data) and data[i + 1] == "\\":
+                i += 2
+                emit_sequence(i)
+            else:
+                i += 1
+            continue
+
+    if state == "ground":
+        flush_text(len(data))
+        _TOKENIZER_BUFFER = ""
+    elif flush:
+        remaining = data[seq_start:]
+        if remaining:
+            tokens.append(SequenceToken(remaining))
+        _TOKENIZER_BUFFER = ""
+        state = "ground"
+    else:
+        _TOKENIZER_BUFFER = data[seq_start:]
+
+    _TOKENIZER_STATE = state
+    return tokens
 
 
 def parse_sequence(seq: str) -> InputEvent | None:
@@ -356,7 +404,6 @@ def parse_sequence(seq: str) -> InputEvent | None:
     if seq.startswith("\x1b[") and len(seq) >= 3:
         body = seq[2:]
         last = body[-1]
-
         if last == "~":
             parts = body[:-1].split(";", 1)
             try:
@@ -369,7 +416,6 @@ def parse_sequence(seq: str) -> InputEvent | None:
             if name is None:
                 return None
             return ParsedKey(name=name, sequence=seq, ctrl=ctrl, meta=alt, shift=shift)
-
         if "\x40" <= last <= "\x5a" or "\x61" <= last <= "\x7a":
             parts = body[:-1].split(";", 1)
             mod = int(parts[1]) if len(parts) >= 2 and parts[1] else 1

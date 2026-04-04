@@ -1,18 +1,4 @@
-"""Runtime adapter skeleton for the new runtime-first ORBIT CLI/workbench.
-
-Purpose:
-- preserve the current `cli_session.py` capability surface while the new PTY CLI
-  becomes the future user-facing terminal mainline
-- keep SessionManager integration behind an adapter boundary rather than letting
-  render/handler code couple directly to runtime internals
-- allow a staged migration from the mock chat adapter to real session-backed data
-
-Current posture:
-- this file defines the first SessionManager-oriented adapter skeleton
-- it is intentionally conservative and read/metadata focused for the first pass
-- mutating actions can be filled in incrementally as the new CLI absorbs more of
-  `cli_session.py`'s functionality
-"""
+"""Runtime adapter for the active runtime-first ORBIT PTY CLI."""
 
 from __future__ import annotations
 
@@ -40,10 +26,10 @@ from .contracts import (
 @dataclass
 class RuntimeAdapterConfig:
     model: str = "gpt-5.4"
-    enable_tools: bool = False
-    enable_mcp_filesystem: bool = False
-    enable_mcp_bash: bool = False
-    enable_mcp_process: bool = False
+    enable_tools: bool = True
+    enable_mcp_filesystem: bool = True
+    enable_mcp_bash: bool = True
+    enable_mcp_process: bool = True
 
 
 def build_codex_session_manager(*, model: str, enable_tools: bool = False, enable_mcp_filesystem: bool = False, enable_mcp_bash: bool = False, enable_mcp_process: bool = False) -> SessionManager:
@@ -57,8 +43,6 @@ def build_codex_session_manager(*, model: str, enable_tools: bool = False, enabl
         backend=backend,
         workspace_root=str(DEFAULT_WORKSPACE_ROOT),
         enable_mcp_filesystem=enable_mcp_filesystem,
-        enable_mcp_bash=enable_mcp_bash,
-        enable_mcp_process=enable_mcp_process,
     )
 
 
@@ -124,7 +108,7 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
 
     def list_sessions(self) -> list[InterfaceSession]:
         sessions = self.session_manager.store.list_sessions()
-        return [self._map_session(session) for session in sessions]
+        return [self._map_session_summary(session) for session in sessions]
 
     def list_messages(self, session_id: str) -> list[InterfaceMessage]:
         messages = self.session_manager.list_messages(session_id)
@@ -149,7 +133,10 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         session = self.session_manager.get_session(session_id)
         if session is None:
             return []
-        artifacts = self.session_manager.store.list_context_artifacts_for_run(session.conversation_id)
+        list_artifacts_fn = getattr(self.session_manager.store, "list_context_artifacts_for_run", None)
+        if not callable(list_artifacts_fn):
+            return []
+        artifacts = list_artifacts_fn(session.conversation_id)
         return [
             InterfaceArtifact(
                 session_id=session_id,
@@ -182,8 +169,8 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         approvals = self.session_manager.list_open_session_approvals()
         return [self._map_open_approval(item) for item in approvals]
 
-    def send_user_message(self, session_id: str, text: str) -> list[InterfaceMessage]:
-        self.session_manager.run_session_turn(session_id=session_id, user_input=text)
+    def send_user_message(self, session_id: str, text: str, on_assistant_partial_text=None) -> list[InterfaceMessage]:
+        self.session_manager.run_session_turn(session_id=session_id, user_input=text, on_assistant_partial_text=on_assistant_partial_text)
         return self.list_messages(session_id)
 
     def append_system_message(self, session_id: str, text: str, *, kind: str = "system") -> InterfaceMessage:
@@ -206,34 +193,23 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             [
                 "ORBIT Slash Help",
                 "",
-                "Current runtime-backed target capability set",
-                "- Session list / attach / new session",
-                "- Transcript / events / artifacts / tool-call inspection",
-                "- Pending approval visibility",
-                "- Approval resolve path alignment with cli_session.py",
-                "",
-                "Current transition posture",
-                "- cli_session.py remains the stable full-stack test entrypoint",
-                "- the runtime-first PTY CLI is the future user-facing terminal surface",
-                "- this adapter is the migration boundary between the two",
+                "Slash commands",
+                "/help /new /sessions /attach <session_id> /detach",
+                "/chat /inspect /events /tools /artifacts /approvals /status",
+                "/pending /approve [note] /reject [note]",
+                "/show /state /clear /clear-all",
             ]
         )
 
     def get_workbench_status(self) -> dict[str, Any]:
+        sessions = self.list_sessions()
+        tool_names = sorted(tool.name for tool in self.session_manager.tool_registry.list_tools())
         return {
-            "implementation_stage": "runtime-adapter-skeleton",
-            "runtime_integration": "session-manager-read-path",
-            "session_count": len(self.list_sessions()),
+            "adapter_kind": "session_manager_runtime",
+            "session_count": len(sessions),
             "approval_count": len(self.list_open_approvals()),
-            "preserved_cli_session_capabilities": [
-                "sessions",
-                "attach",
-                "new_session",
-                "show_messages",
-                "events",
-                "pending_approval",
-                "approve_reject_path",
-            ],
+            "registered_tool_count": len(tool_names),
+            "registered_tool_names": tool_names,
         }
 
     def get_pending_approval(self, session_id: str) -> InterfaceApproval | None:
@@ -281,6 +257,18 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             return False
         delete_all_fn()
         return True
+
+    def _map_session_summary(self, session) -> InterfaceSession:
+        return InterfaceSession(
+            session_id=session.session_id,
+            conversation_id=session.conversation_id,
+            backend_name=session.backend_name,
+            model=session.model,
+            updated_at=session.updated_at,
+            message_count=0,
+            last_message_preview="",
+            status="active",
+        )
 
     def _map_session(self, session) -> InterfaceSession:
         messages = self.session_manager.list_messages(session.session_id)

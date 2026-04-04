@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from .adapter_protocol import RuntimeCliAdapter
 from .input import ParsedKey
-from .pty_runtime_router import activate_chat, activate_approvals, activate_sessions, attach_current_session, cycle_inspect_tab, hop_inspect_session, submit_composer
-from .runtime_cli_state import RETURN_TO_CHAT_BANNER, RuntimeCliState
+from .pty_runtime_router import activate_chat, activate_approvals, activate_help, activate_inspect, activate_sessions, attach_current_session, cycle_inspect_tab, hop_inspect_session, resolve_current_approval, submit_composer
+from .runtime_cli_state import INSPECT_TRANSCRIPT_TAB, RETURN_TO_CHAT_BANNER, RuntimeCliState
 
 
 def scroll_up(state: RuntimeCliState) -> None:
@@ -17,18 +17,24 @@ def scroll_down(state: RuntimeCliState) -> None:
 
 
 def chat_scroll_up(state: RuntimeCliState) -> None:
-    state.content_scroll += 1
+    state.chat_viewport.anchor_to_bottom = False
+    state.chat_viewport.scroll_offset += 1
 
 
 def chat_scroll_down(state: RuntimeCliState) -> None:
-    state.content_scroll = max(0, state.content_scroll - 1)
+    state.chat_viewport.scroll_offset = max(0, state.chat_viewport.scroll_offset - 1)
+    if state.chat_viewport.scroll_offset == 0:
+        state.chat_viewport.anchor_to_bottom = True
 
 
 def reset_scroll(state: RuntimeCliState) -> None:
     state.content_scroll = 0
+    state.chat_viewport.scroll_offset = 0
 
 
 def is_printable_text_key(event: ParsedKey) -> bool:
+    if event.sequence.startswith("\x1b"):
+        return False
     if event.ctrl or event.meta or event.fn or event.shift:
         return False
     name = event.name
@@ -50,11 +56,18 @@ def is_printable_text_key(event: ParsedKey) -> bool:
 def handle_chat_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event: ParsedKey) -> bool:
     name = event.name
     if name == "enter":
+        if state.runtime_busy:
+            state.banner = "Runtime busy; you can keep typing, but submit waits for the current turn to finish."
+            return True
+        state.banner = f"Submitting {len(state.composer.text.strip())} chars to active session..."
         submit_composer(state, adapter)
         reset_scroll(state)
         return True
+    if name == "tab":
+        state.composer.insert_newline()
+        return False
     if name == "backspace":
-        state.composer_text = state.composer_text[:-1]
+        state.composer.backspace()
         return False
     if name in {"up", "pageup"}:
         chat_scroll_up(state)
@@ -69,7 +82,7 @@ def handle_chat_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event: P
         state.content_scroll = 0
         return False
     if is_printable_text_key(event):
-        state.composer_text += name
+        state.composer.insert_text(name)
         return False
     return False
 
@@ -77,7 +90,10 @@ def handle_chat_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event: P
 def handle_sessions_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event: ParsedKey) -> bool:
     sessions = adapter.list_sessions()
     name = event.name
-    if name == "c":
+    if name in ("h", "H"):
+        activate_help(state)
+        reset_scroll(state)
+    elif name == "c":
         activate_chat(state, RETURN_TO_CHAT_BANNER)
         reset_scroll(state)
     elif name in ("a", "A"):
@@ -96,7 +112,10 @@ def handle_sessions_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, even
 def handle_approvals_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event: ParsedKey) -> bool:
     approvals = adapter.list_open_approvals()
     name = event.name
-    if name == "c":
+    if name in ("h", "H"):
+        activate_help(state)
+        reset_scroll(state)
+    elif name == "c":
         activate_chat(state, RETURN_TO_CHAT_BANNER)
         reset_scroll(state)
     elif name in ("s", "S"):
@@ -106,12 +125,23 @@ def handle_approvals_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, eve
         state.selected_approval = min(len(approvals) - 1, state.selected_approval + 1)
     elif name in ("k", "up") and approvals:
         state.selected_approval = max(0, state.selected_approval - 1)
+    elif name in ("a", "A") and approvals:
+        resolve_current_approval(state, adapter, "approve")
+        reset_scroll(state)
+        return True
+    elif name in ("r", "R") and approvals:
+        resolve_current_approval(state, adapter, "reject")
+        reset_scroll(state)
+        return True
     return False
 
 
 def handle_inspect_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event: ParsedKey) -> bool:
     name = event.name
-    if name == "c":
+    if name in ("h", "H"):
+        activate_help(state)
+        reset_scroll(state)
+    elif name == "c":
         activate_chat(state, RETURN_TO_CHAT_BANNER)
         reset_scroll(state)
     elif name in {"up", "pageup"}:
@@ -135,7 +165,13 @@ def handle_inspect_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event
 
 def handle_info_panel_key(state: RuntimeCliState, event: ParsedKey) -> bool:
     name = event.name
-    if name == "c":
+    if name in ("i", "I"):
+        activate_inspect(state, INSPECT_TRANSCRIPT_TAB)
+        reset_scroll(state)
+    elif name in ("h", "H"):
+        activate_help(state)
+        reset_scroll(state)
+    elif name == "c":
         activate_chat(state, RETURN_TO_CHAT_BANNER)
         reset_scroll(state)
     elif name in {"up", "pageup", "j"}:

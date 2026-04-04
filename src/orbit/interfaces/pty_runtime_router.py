@@ -34,9 +34,20 @@ def current_session_id(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> 
     sessions = adapter.list_sessions()
     if not sessions:
         session = adapter.create_session()
+        state.selected_session = 0
+        state.active_session_id = session.session_id
         return session.session_id
+
+    if state.active_session_id is not None:
+        for index, session in enumerate(sessions):
+            if session.session_id == state.active_session_id:
+                state.selected_session = index
+                return session.session_id
+
     state.selected_session = min(state.selected_session, len(sessions) - 1)
-    return sessions[state.selected_session].session_id
+    session_id = sessions[state.selected_session].session_id
+    state.active_session_id = session_id
+    return session_id
 
 
 def activate_chat(state: RuntimeShellState, banner: str = RETURN_TO_CHAT_BANNER) -> None:
@@ -77,10 +88,12 @@ def hop_inspect_session(state: RuntimeShellState, adapter: RuntimeCliAdapter, *,
         return
     delta = -1 if reverse else 1
     state.selected_session = max(0, min(len(sessions) - 1, state.selected_session + delta))
+    state.active_session_id = sessions[state.selected_session].session_id
 
 
 def attach_current_session(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> None:
     session_id = current_session_id(state, adapter)
+    state.active_session_id = session_id
     activate_chat(state, f"Attached to {session_id}")
 
 
@@ -93,6 +106,7 @@ def attach_named_session(state: RuntimeShellState, adapter: RuntimeCliAdapter, s
         return
     sessions = adapter.list_sessions()
     state.selected_session = next(i for i, s in enumerate(sessions) if s.session_id == target.session_id)
+    state.active_session_id = target.session_id
     activate_chat(state, f"Attached to {target.session_id}")
 
 
@@ -137,9 +151,11 @@ def detach_current_session(state: RuntimeShellState, adapter: RuntimeCliAdapter)
     if not sessions:
         session = adapter.create_session()
         state.selected_session = 0
+        state.active_session_id = session.session_id
         activate_chat(state, f"Detached to new session {session.session_id}")
         return
     state.selected_session = 0
+    state.active_session_id = sessions[0].session_id
     activate_chat(state, f"Detached to {sessions[0].session_id}")
 
 
@@ -154,9 +170,11 @@ def clear_current_session(state: RuntimeShellState, adapter: RuntimeCliAdapter) 
     if not sessions:
         session = adapter.create_session()
         state.selected_session = 0
+        state.active_session_id = session.session_id
         activate_chat(state, f"Deleted session {session_id}; new session {session.session_id} ready")
         return
     state.selected_session = 0
+    state.active_session_id = sessions[0].session_id
     activate_chat(state, f"Deleted session {session_id}")
 
 
@@ -169,20 +187,41 @@ def clear_all_runtime_sessions(state: RuntimeShellState, adapter: RuntimeCliAdap
         return
     session = adapter.create_session()
     state.selected_session = 0
+    state.active_session_id = session.session_id
     activate_chat(state, f"Deleted all sessions; new session {session.session_id} ready")
 
 
 def resolve_current_approval(state: RuntimeShellState, adapter: RuntimeCliAdapter, decision: str, note: str | None = None) -> None:
     session_id = current_session_id(state, adapter)
+    before = adapter.get_pending_approval(session_id)
     result = adapter.resolve_pending_approval(session_id, decision, note)
     if result is None:
         adapter.append_system_message(session_id, "No pending approval for this session.", kind="approval_info")
         activate_chat(state, "No pending approval")
         return
+    after = adapter.get_pending_approval(session_id)
     final_text = getattr(result, "final_text", None)
     plan_label = getattr(result, "plan_label", None)
+    if after is None:
+        outcome = f"Approval {decision}d and no pending approval remains."
+    elif before is not None and after.approval_request_id != before.approval_request_id:
+        outcome = (
+            f"Approval {decision}d for {before.approval_request_id}, but the resumed run opened a new pending approval "
+            f"{after.approval_request_id} for {after.tool_name}."
+        )
+    else:
+        outcome = (
+            f"Approval {decision}d, but pending approval still appears open "
+            f"({after.approval_request_id if after is not None else 'unknown'})."
+        )
     if final_text or plan_label:
-        adapter.append_system_message(session_id, final_text or plan_label or f"Approval {decision}d.", kind="approval_result")
+        adapter.append_system_message(
+            session_id,
+            (final_text or plan_label or f"Approval {decision}d.") + "\n\n" + outcome,
+            kind="approval_result",
+        )
+    else:
+        adapter.append_system_message(session_id, outcome, kind="approval_result")
     activate_chat(state, f"Approval {decision}d")
 
 
@@ -219,8 +258,9 @@ def route_slash_command(state: RuntimeShellState, adapter: RuntimeCliAdapter, te
         activate_sessions(state)
         return
     if command == "/new":
-        adapter.create_session()
+        session = adapter.create_session()
         state.selected_session = 0
+        state.active_session_id = session.session_id
         activate_chat(state, CREATED_SESSION_BANNER)
         return
     if command == "/attach":
@@ -257,13 +297,19 @@ def route_slash_command(state: RuntimeShellState, adapter: RuntimeCliAdapter, te
 
 
 def submit_composer(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> None:
-    text = state.composer_text.strip()
+    text = state.composer.text.strip()
     if not text:
+        state.banner = "Composer is empty"
         return
     if text.startswith("/"):
         route_slash_command(state, adapter, text)
-    else:
-        session_id = current_session_id(state, adapter)
-        adapter.send_user_message(session_id, text)
-        activate_chat(state, DEFAULT_CHAT_BANNER)
-    state.composer_text = ""
+        state.composer.text = ""
+        return
+    session_id = current_session_id(state, adapter)
+    state.pending_submit_session_id = session_id
+    state.pending_submit_text = text
+    state.runtime_busy = True
+    state.completed_submit_banner = None
+    state.completed_submit_error = None
+    activate_chat(state, f"Running turn for {session_id}...")
+    state.composer.text = ""

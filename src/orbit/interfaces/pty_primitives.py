@@ -34,7 +34,7 @@ class ScreenBuffer:
     def __init__(self) -> None:
         self._prev: list[str] = []
 
-    def render(self, lines: list[str], width: int, height: int) -> None:
+    def render(self, lines: list[str], width: int, height: int, *, force_full_repaint: bool = False) -> None:
         padded = [ln for ln in lines[:height]]
         while len(padded) < height:
             padded.append("")
@@ -46,7 +46,7 @@ class ScreenBuffer:
         if T.SYNC_OUTPUT:
             buf += T.BSU
 
-        if first or shape_changed:
+        if force_full_repaint or first or shape_changed:
             buf += T.ERASE_SCREEN + T.CURSOR_HOME
             for i, line in enumerate(padded):
                 buf += line
