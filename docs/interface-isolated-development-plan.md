@@ -29,7 +29,9 @@ Both should depend on a shared adapter contract layer rather than on direct Sess
 ### App wrappers
 - `apps/orbit_interface_cli.py`
 - `apps/orbit_workbench.py`
-- `apps/orbit_workbench_raw.py`
+
+Legacy raw workbench wrapper note:
+- `apps/orbit_workbench_raw.py` is no longer needed once direct module entry or package entrypoints are used.
 
 ### Full-screen terminal UI path
 - `src/orbit/interfaces/ptk_workbench.py` — prompt_toolkit-based runtime-first workbench mainline
