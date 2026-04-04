@@ -46,7 +46,12 @@ Borrow command-organization ideas from modern coding-agent / operational CLIs, r
 - `extensions/matrix/src/cli.ts`
 - `extensions/openshell/src/cli.ts`
 
-And by user intent specifically referencing Claude Code style.
+And by user intent specifically referencing Claude Code style. For PTY/interactive-shell behavior, a deeper scan was also done against:
+- `claude_code_src/src/entrypoints/cli.tsx`
+- `claude_code_src/src/commands/session/session.tsx`
+- `claude_code_src/src/commands/help/help.tsx`
+- `claude_code_src/src/ink/terminal.ts`
+- `claude_code_src/src/components/QuickOpenDialog.tsx`
 
 ### Borrowed CLI traits
 The ORBIT mock CLI should evolve toward:

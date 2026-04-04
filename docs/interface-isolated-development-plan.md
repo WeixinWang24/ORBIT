@@ -59,3 +59,15 @@ Once runtime/MCP/tools work is stable again, add a real adapter implementation t
 into the same contracts already used by the mock interface layer.
 
 At that point, Web UI and CLI shells should swap adapters rather than redesign structure.
+
+## PTY direction note
+
+CLI PTY interaction should borrow from coding-agent terminal UX patterns:
+- thin bootstrap path
+- grouped command router
+- explicit interactive `workbench` mode
+- keyboard-first list/preview interaction
+- overlay/help/search concepts
+
+Reference note:
+- `docs/cli-pty-design-reference.md`

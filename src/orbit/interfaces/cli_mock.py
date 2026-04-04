@@ -18,8 +18,10 @@ from .mock_adapter import MockOrbitInterfaceAdapter
 app = typer.Typer(help="ORBIT mock interface CLI")
 session_app = typer.Typer(help="Inspect mock sessions")
 approval_app = typer.Typer(help="Inspect mock approvals")
+workbench_app = typer.Typer(help="PTY-oriented mock workbench commands")
 app.add_typer(session_app, name="session")
 app.add_typer(approval_app, name="approval")
+app.add_typer(workbench_app, name="workbench")
 console = Console()
 
 
@@ -83,6 +85,15 @@ def approval_list() -> None:
     """Show open mock approvals."""
     adapter = _adapter()
     console.print_json(json.dumps([approval.model_dump(mode="json") for approval in adapter.list_open_approvals()], indent=2, ensure_ascii=False))
+
+
+@workbench_app.command("plan")
+def workbench_plan() -> None:
+    """Show the current PTY workbench interaction plan."""
+    console.print(Panel.fit(
+        "mode=session-browser\nlayout=list + preview + side-summary\nkeys=j/k enter tab shift-tab / ? esc q\nstatus=mock-only, runtime-disconnected",
+        title="ORBIT PTY Workbench Plan",
+    ))
 
 
 @app.command("overview")
