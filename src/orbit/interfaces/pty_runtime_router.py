@@ -1,0 +1,269 @@
+"""Helpers for layering runtime-first chat + slash routing onto the raw PTY shell.
+
+This module is the early semantic control layer for the new runtime-first CLI UI.
+It is intentionally separate from rendering so route transitions, session actions,
+and composer-submit behavior can keep converging here as the PTY workbench
+replaces older CLI entrypoints.
+"""
+
+from __future__ import annotations
+
+from .adapter_protocol import RuntimeCliAdapter
+from .runtime_cli_state import (
+    APPROVALS_MODE,
+    ATTACH_FAILED_BANNER,
+    CREATED_SESSION_BANNER,
+    DEFAULT_CHAT_BANNER,
+    HELP_MODE,
+    INSPECT_ARTIFACTS_TAB,
+    INSPECT_EVENTS_TAB,
+    INSPECT_MODE,
+    INSPECT_TAB_ORDER,
+    INSPECT_TOOL_CALLS_TAB,
+    INSPECT_TRANSCRIPT_TAB,
+    RETURN_TO_CHAT_BANNER,
+    RuntimeShellState,
+    SESSIONS_MODE,
+    STATUS_MODE,
+    UNKNOWN_COMMAND_BANNER,
+    CHAT_MODE,
+)
+
+
+def current_session_id(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> str:
+    sessions = adapter.list_sessions()
+    if not sessions:
+        session = adapter.create_session()
+        return session.session_id
+    state.selected_session = min(state.selected_session, len(sessions) - 1)
+    return sessions[state.selected_session].session_id
+
+
+def activate_chat(state: RuntimeShellState, banner: str = RETURN_TO_CHAT_BANNER) -> None:
+    state.mode = CHAT_MODE
+    state.banner = banner
+
+
+def activate_sessions(state: RuntimeShellState) -> None:
+    state.mode = SESSIONS_MODE
+
+
+def activate_approvals(state: RuntimeShellState) -> None:
+    state.mode = APPROVALS_MODE
+
+
+def activate_help(state: RuntimeShellState) -> None:
+    state.mode = HELP_MODE
+
+
+def activate_status(state: RuntimeShellState) -> None:
+    state.mode = STATUS_MODE
+
+
+def activate_inspect(state: RuntimeShellState, tab_index: int) -> None:
+    state.mode = INSPECT_MODE
+    state.tab_index = tab_index
+
+
+def cycle_inspect_tab(state: RuntimeShellState, *, reverse: bool = False) -> None:
+    current_index = INSPECT_TAB_ORDER.index(state.tab_index)
+    delta = -1 if reverse else 1
+    state.tab_index = INSPECT_TAB_ORDER[(current_index + delta) % len(INSPECT_TAB_ORDER)]
+
+
+def hop_inspect_session(state: RuntimeShellState, adapter: RuntimeCliAdapter, *, reverse: bool = False) -> None:
+    sessions = adapter.list_sessions()
+    if not sessions:
+        return
+    delta = -1 if reverse else 1
+    state.selected_session = max(0, min(len(sessions) - 1, state.selected_session + delta))
+
+
+def attach_current_session(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> None:
+    session_id = current_session_id(state, adapter)
+    activate_chat(state, f"Attached to {session_id}")
+
+
+def attach_named_session(state: RuntimeShellState, adapter: RuntimeCliAdapter, session_id: str, *, failure_kind: str = "attach_error") -> None:
+    current_id = current_session_id(state, adapter)
+    target = adapter.attach_session(session_id)
+    if target is None:
+        adapter.append_system_message(current_id, f"Session not found: {session_id}", kind=failure_kind)
+        activate_chat(state, ATTACH_FAILED_BANNER)
+        return
+    sessions = adapter.list_sessions()
+    state.selected_session = next(i for i, s in enumerate(sessions) if s.session_id == target.session_id)
+    activate_chat(state, f"Attached to {target.session_id}")
+
+
+def show_pending_approval(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> None:
+    session_id = current_session_id(state, adapter)
+    pending = adapter.get_pending_approval(session_id)
+    if pending is None:
+        adapter.append_system_message(session_id, "No pending approval for this session.", kind="pending_info")
+        activate_chat(state, "No pending approval")
+        return
+    summary = (
+        f"Pending approval: {pending.tool_name} "
+        f"(approval_request_id={pending.approval_request_id}, side_effect={pending.side_effect_class})"
+    )
+    adapter.append_system_message(session_id, summary, kind="pending_approval")
+    activate_chat(state, "Pending approval loaded")
+
+
+def show_current_session_messages(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> None:
+    session_id = current_session_id(state, adapter)
+    messages = adapter.list_messages(session_id)
+    if not messages:
+        adapter.append_system_message(session_id, "No messages yet.", kind="show_info")
+        activate_chat(state, "No messages yet")
+        return
+    activate_chat(state, f"Loaded transcript for {session_id}")
+
+
+def show_current_session_state(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> None:
+    session_id = current_session_id(state, adapter)
+    payload = adapter.get_session_state_payload(session_id)
+    if payload is None:
+        adapter.append_system_message(session_id, "Session not found.", kind="state_error")
+        activate_chat(state, "Session not found")
+        return
+    adapter.append_system_message(session_id, str(payload), kind="session_state")
+    activate_chat(state, "Session state loaded")
+
+
+def detach_current_session(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> None:
+    sessions = adapter.list_sessions()
+    if not sessions:
+        session = adapter.create_session()
+        state.selected_session = 0
+        activate_chat(state, f"Detached to new session {session.session_id}")
+        return
+    state.selected_session = 0
+    activate_chat(state, f"Detached to {sessions[0].session_id}")
+
+
+def clear_current_session(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> None:
+    session_id = current_session_id(state, adapter)
+    ok = adapter.clear_session(session_id)
+    if not ok:
+        adapter.append_system_message(session_id, "Current store does not support session deletion.", kind="clear_error")
+        activate_chat(state, "Clear failed")
+        return
+    sessions = adapter.list_sessions()
+    if not sessions:
+        session = adapter.create_session()
+        state.selected_session = 0
+        activate_chat(state, f"Deleted session {session_id}; new session {session.session_id} ready")
+        return
+    state.selected_session = 0
+    activate_chat(state, f"Deleted session {session_id}")
+
+
+def clear_all_runtime_sessions(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> None:
+    ok = adapter.clear_all_sessions()
+    if not ok:
+        session_id = current_session_id(state, adapter)
+        adapter.append_system_message(session_id, "Current store does not support clearing all sessions.", kind="clear_error")
+        activate_chat(state, "Clear-all failed")
+        return
+    session = adapter.create_session()
+    state.selected_session = 0
+    activate_chat(state, f"Deleted all sessions; new session {session.session_id} ready")
+
+
+def resolve_current_approval(state: RuntimeShellState, adapter: RuntimeCliAdapter, decision: str, note: str | None = None) -> None:
+    session_id = current_session_id(state, adapter)
+    result = adapter.resolve_pending_approval(session_id, decision, note)
+    if result is None:
+        adapter.append_system_message(session_id, "No pending approval for this session.", kind="approval_info")
+        activate_chat(state, "No pending approval")
+        return
+    final_text = getattr(result, "final_text", None)
+    plan_label = getattr(result, "plan_label", None)
+    if final_text or plan_label:
+        adapter.append_system_message(session_id, final_text or plan_label or f"Approval {decision}d.", kind="approval_result")
+    activate_chat(state, f"Approval {decision}d")
+
+
+def route_slash_command(state: RuntimeShellState, adapter: RuntimeCliAdapter, text: str) -> None:
+    parts = text.strip().split(maxsplit=1)
+    command = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    if command in {"/help", "/h"}:
+        activate_help(state)
+        return
+    if command == "/chat":
+        activate_chat(state)
+        return
+    if command == "/inspect":
+        activate_inspect(state, INSPECT_TRANSCRIPT_TAB)
+        return
+    if command == "/events":
+        activate_inspect(state, INSPECT_EVENTS_TAB)
+        return
+    if command == "/tools":
+        activate_inspect(state, INSPECT_TOOL_CALLS_TAB)
+        return
+    if command == "/artifacts":
+        activate_inspect(state, INSPECT_ARTIFACTS_TAB)
+        return
+    if command == "/approvals":
+        activate_approvals(state)
+        return
+    if command == "/status":
+        activate_status(state)
+        return
+    if command == "/sessions":
+        activate_sessions(state)
+        return
+    if command == "/new":
+        adapter.create_session()
+        state.selected_session = 0
+        activate_chat(state, CREATED_SESSION_BANNER)
+        return
+    if command == "/attach":
+        attach_named_session(state, adapter, arg, failure_kind="attach_error")
+        return
+    if command == "/detach":
+        detach_current_session(state, adapter)
+        return
+    if command == "/show":
+        show_current_session_messages(state, adapter)
+        return
+    if command == "/state":
+        show_current_session_state(state, adapter)
+        return
+    if command == "/clear":
+        clear_current_session(state, adapter)
+        return
+    if command == "/clear-all":
+        clear_all_runtime_sessions(state, adapter)
+        return
+    if command == "/pending":
+        show_pending_approval(state, adapter)
+        return
+    if command == "/approve":
+        resolve_current_approval(state, adapter, "approve", arg or None)
+        return
+    if command == "/reject":
+        resolve_current_approval(state, adapter, "reject", arg or None)
+        return
+
+    session_id = current_session_id(state, adapter)
+    adapter.append_system_message(session_id, f"Unknown slash command: {text}", kind="slash_error")
+    activate_chat(state, UNKNOWN_COMMAND_BANNER)
+
+
+def submit_composer(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> None:
+    text = state.composer_text.strip()
+    if not text:
+        return
+    if text.startswith("/"):
+        route_slash_command(state, adapter, text)
+    else:
+        session_id = current_session_id(state, adapter)
+        adapter.send_user_message(session_id, text)
+        activate_chat(state, DEFAULT_CHAT_BANNER)
+    state.composer_text = ""

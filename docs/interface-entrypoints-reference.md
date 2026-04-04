@@ -484,67 +484,44 @@ For isolated development, these should be treated as **future inspectable adapte
 
 # 8. Current CLI entry surfaces
 
-## Legacy CLI
+## Runtime-first terminal mainline
 
-**Path:** `src/orbit/cli.py`
+**Primary path:** `src/orbit/interfaces/pty_runtime_cli.py`
 
 ### Posture
-The file itself explicitly says this is a **legacy scaffold / teaching CLI** centered on the older `OrbitCoordinator` path.
+This is now the authoritative terminal entry surface for ORBIT.
+The older `src/orbit/cli.py` and `src/orbit/cli_session.py` entrypoints were removed after the runtime-first PTY CLI absorbed their primary interactive responsibilities.
 
-### Commands currently exposed
-- `demo(dummy_scenario: str = "tool_then_finish")`
-- `approvals()`
-- `approvals_json()`
-- `approve(approval_id: str)`
-- `reject(approval_id: str)`
-- `inspect(run_id: str)`
-- `inspect_json(run_id: str)`
-- `oauth_url(originator: str = "pi")`
+### Primary script entrypoints
+- `orbit`
+- `orbit-session`
+- `orbit-runtime-workbench`
+
+All three now point at:
+- `orbit.interfaces.pty_runtime_cli:browse_runtime_cli`
+
+### Runtime integration helper path
+SessionManager-backed runtime wiring used to live behind `cli_session.py` helpers.
+It now lives in:
+- `src/orbit/interfaces/runtime_adapter.py`
+
+Key helpers:
+- `build_codex_session_manager(...)`
+- `get_pending_session_approval(...)`
+- `resolve_pending_session_approval(...)`
 
 ### Recommendation
-Do **not** build the new isolated CLI surface on this file's semantics.
-Treat it as historical reference only.
+Build all new terminal UX, session control, and approval-flow work on the runtime-first PTY CLI and its adapter/router layers rather than reviving removed legacy entrypoints.
 
 ---
 
-## SessionManager-mainline CLI
+## Historical note
 
-**Path:** `src/orbit/cli_session.py`
+The removed legacy paths:
+- `src/orbit/cli.py`
+- `src/orbit/cli_session.py`
 
-### Posture
-This is the most relevant current interactive CLI reference for future session-based CLI design.
-
-### Important helper
-
-#### `_build_codex_session_manager(...)`
-
-```python
-_build_codex_session_manager(*, model: str, enable_tools: bool = False, enable_mcp_filesystem: bool = False) -> SessionManager
-```
-
-### Purpose
-Convenience builder that wires `OpenAICodexExecutionBackend` into `SessionManager`.
-
-### Parameters
-- `model: str`
-- `enable_tools: bool = False`
-- `enable_mcp_filesystem: bool = False`
-
-### Returns
-- `SessionManager`
-
-### CLI callback
-
-#### `chat(...)`
-
-```python
-chat(
-    model: str = "gpt-5.4",
-    session_id: str | None = None,
-    enable_tools: bool = False,
-    enable_mcp_filesystem: bool = False,
-) -> None
-```
+should be treated as historical documentation references only when reading older notes or commits.
 
 ### Purpose
 Run a minimal SessionManager-mainline chat REPL.

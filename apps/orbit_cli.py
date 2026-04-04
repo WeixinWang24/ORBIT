@@ -1,7 +1,7 @@
-"""Thin application entrypoint wrapper for the ORBIT CLI."""
+"""Thin application entrypoint wrapper for the runtime-first ORBIT CLI."""
 
-from orbit.cli import app
+from orbit.interfaces.pty_runtime_cli import browse_runtime_cli
 
 
 if __name__ == "__main__":
-    app()
+    browse_runtime_cli()

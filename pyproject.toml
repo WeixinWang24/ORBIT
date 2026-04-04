@@ -16,11 +16,10 @@ dependencies = [
 ]
 
 [project.scripts]
-orbit = "orbit.cli:app"
-orbit-session = "orbit.cli_session:app"
+orbit = "orbit.interfaces.pty_runtime_cli:browse_runtime_cli"
+orbit-session = "orbit.interfaces.pty_runtime_cli:browse_runtime_cli"
 orbit-inspector = "orbit.web_inspector:serve"
-orbit-interface = "orbit.interfaces.cli_mock:app"
-orbit-mock-workbench = "orbit.interfaces.web_mock:serve"
+orbit-runtime-workbench = "orbit.interfaces.pty_runtime_cli:browse_runtime_cli"
 
 [build-system]
 requires = ["hatchling"]

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 
-from .contracts import InterfaceEvent, InterfaceMessage, InterfaceSession
+from .adapter_protocol import RuntimeCliAdapter
+from .contracts import InterfaceApproval, InterfaceEvent, InterfaceMessage, InterfaceSession
 from .mock_adapter import MockOrbitInterfaceAdapter
 
 
-class MockOrbitChatAdapter(MockOrbitInterfaceAdapter):
+class MockOrbitChatAdapter(MockOrbitInterfaceAdapter, RuntimeCliAdapter):
     """Add a simple interactive session loop on top of the mock interface data."""
 
     def create_session(self, *, backend_name: str = "mock-backend", model: str = "dummy-runtime") -> InterfaceSession:
@@ -101,7 +103,7 @@ class MockOrbitChatAdapter(MockOrbitInterfaceAdapter):
         return message
 
     def slash_help_text(self) -> str:
-        return "Available slash commands: /help /new /sessions /attach <session_id> /inspect /chat /approvals /events /tools /artifacts /status"
+        return "Available slash commands: /help /new /sessions /attach <session_id> /inspect /chat /approvals /events /tools /artifacts /status /pending /approve /reject"
 
     def slash_help_page(self) -> str:
         return "\n".join([
@@ -123,6 +125,9 @@ class MockOrbitChatAdapter(MockOrbitInterfaceAdapter):
             "/artifacts           Open inspector artifacts tab",
             "/approvals           Open approvals module",
             "/status              Show current workbench/runtime status",
+            "/pending             Show pending approval for current session",
+            "/approve [note]      Approve current pending approval",
+            "/reject [note]       Reject current pending approval",
             "",
             "Modes",
             "- INSERT: type freely, Enter submits, Esc switches to NAV.",
@@ -132,6 +137,56 @@ class MockOrbitChatAdapter(MockOrbitInterfaceAdapter):
             "- Runtime loop is still dummy-backed.",
             "- Real SessionManager integration is the next later phase.",
         ])
+
+    def get_pending_approval(self, session_id: str) -> InterfaceApproval | None:
+        return next((approval for approval in self.list_open_approvals() if approval.session_id == session_id), None)
+
+    def resolve_pending_approval(self, session_id: str, decision: str, note: str | None = None) -> dict:
+        approval = self.get_pending_approval(session_id)
+        if approval is None:
+            return {"ok": False, "decision": decision, "note": note, "reason": "no_pending_approval"}
+        approval.status = "approved" if decision == "approve" else "rejected"
+        summary = f"Approval {approval.status} for {approval.tool_name}."
+        if note:
+            summary += f" Note: {note}"
+        self.append_system_message(session_id, summary, kind="approval_decision")
+        self._approvals = [item for item in self._approvals if item.approval_request_id != approval.approval_request_id]
+        return {"ok": True, "decision": decision, "note": note, "approval_request_id": approval.approval_request_id}
+
+    def get_session_state_payload(self, session_id: str) -> dict | None:
+        session = self.get_session(session_id)
+        if session is None:
+            return None
+        return {
+            "session_id": session.session_id,
+            "conversation_id": session.conversation_id,
+            "backend_name": session.backend_name,
+            "model": session.model,
+            "message_count": session.message_count,
+            "last_message_preview": session.last_message_preview,
+            "status": session.status,
+        }
+
+    def clear_session(self, session_id: str) -> bool:
+        session = self.get_session(session_id)
+        if session is None:
+            return False
+        self._sessions = [item for item in self._sessions if item.session_id != session_id]
+        self._messages.pop(session_id, None)
+        self._events.pop(session_id, None)
+        self._artifacts.pop(session_id, None)
+        self._tool_calls.pop(session_id, None)
+        self._approvals = [item for item in self._approvals if item.session_id != session_id]
+        return True
+
+    def clear_all_sessions(self) -> bool:
+        self._sessions = []
+        self._messages = {}
+        self._events = {}
+        self._artifacts = {}
+        self._tool_calls = {}
+        self._approvals = []
+        return True
 
     def _build_dummy_reply(self, text: str) -> str:
         lowered = text.lower()
