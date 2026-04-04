@@ -174,8 +174,10 @@ Always available and small.
 - `q` / `esc` → close current overlay or exit workbench
 - `?` → help overlay
 - `/` → search/filter mode
-- `tab` → cycle panes
+- `tab` or `t` → cycle panes/tabs
 - `shift+tab` → reverse cycle panes
+- `a` → switch to approval queue view
+- `b` → return from approval queue to session browser
 
 ### Lists
 - `j / down` → next
@@ -185,12 +187,18 @@ Always available and small.
 - `enter` → open focused item
 - `space` → expand/collapse or toggle preview emphasis
 
+### Current first-slice PTY behavior
+The current mock PTY browser now supports:
+- session browser mode
+- tabbed preview across `transcript / events / tool_calls / artifacts`
+- approval queue mode
+- detailed inspect views for both sessions and approvals
+
 ### Future action hooks
 Reserved now, wired later when runtime integration is safe:
-- `a` → approval action panel
 - `r` → refresh/reload adapter data
 - `o` → open details view
-- `t` → switch transcript / tool / event tabs
+- approval decision keys once real runtime integration exists
 
 ---
 
