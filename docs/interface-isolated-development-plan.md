@@ -54,6 +54,15 @@ Inspection-first isolated work is the least conflict-prone path because it:
 - avoids depending on unstable action/write paths during kernel churn
 - still lets us stabilize layout, view models, tabs, navigation, and output grammar
 
+## Current transition
+
+The interface line is now deliberately transitioning from pure inspection-first shape toward a chat/runtime-first usage surface.
+
+Current near-term posture:
+- keep real runtime integration deferred
+- switch the terminal workbench's primary experience toward user input + transcript + dummy runtime response
+- keep inspect/event/tool/artifact views as secondary panes or modes rather than the primary semantic center
+
 ## Planned next integration step
 
 Once runtime/MCP/tools work is stable again, add a real adapter implementation that maps:
