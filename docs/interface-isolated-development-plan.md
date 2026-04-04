@@ -64,6 +64,7 @@ Current near-term posture:
 - keep inspect/event/tool/artifact views as secondary panes or modes rather than the primary semantic center
 - enforce input-mode vs navigation-mode separation so typed prompt characters are not consumed as global workbench commands
 - route non-runtime modules through slash commands so the default surface remains the Agent Runtime interaction experience
+- keep the initial screen visually single-purpose: Agent Runtime Chat first, Inspector modules only after explicit slash navigation
 
 ## Planned next integration step
 

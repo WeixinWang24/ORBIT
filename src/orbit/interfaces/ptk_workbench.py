@@ -8,7 +8,7 @@ from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
+from prompt_toolkit.layout import HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.containers import ConditionalContainer
@@ -26,7 +26,6 @@ class WorkbenchState:
     selected_session: int = 0
     selected_approval: int = 0
     tab_index: int = 0
-    show_help: bool = False
     banner: str = "Agent Runtime mode · slash commands available via /help"
 
 
@@ -39,19 +38,25 @@ def _current_session_id(state: WorkbenchState, adapter: MockOrbitChatAdapter) ->
     return sessions[state.selected_session].session_id
 
 
-def _navigation_text(state: WorkbenchState, adapter: MockOrbitChatAdapter) -> str:
-    sessions = adapter.list_sessions()
-    lines = ["Sessions"]
-    for i, session in enumerate(sessions):
-        prefix = ">" if i == state.selected_session else " "
-        lines.append(f"{prefix} {session.session_id}")
-        lines.append(f"  {session.status} · {session.backend_name} · {session.model}")
-    return "\n".join(lines)
+def _module_text(state: WorkbenchState, adapter: MockOrbitChatAdapter, session_id: str) -> str:
+    if state.mode == "approvals":
+        approvals = adapter.list_open_approvals()
+        if not approvals:
+            return "Approval Queue\n\nNo pending approvals."
+        current = approvals[min(state.selected_approval, len(approvals) - 1)]
+        return "\n".join([
+            "Approval Queue",
+            f"tool={current.tool_name}",
+            f"session={current.session_id}",
+            f"status={current.status} · side_effect_class={current.side_effect_class}",
+            "",
+            current.summary,
+            "",
+            f"payload={current.payload}",
+        ])
 
-
-def _inspect_payload_text(state: WorkbenchState, adapter: MockOrbitChatAdapter, session_id: str) -> str:
     tab = SESSION_TABS[state.tab_index]
-    lines = [f"Inspect · tab={tab}", ""]
+    lines = [f"Inspector · tab={tab}", ""]
     if tab == "events":
         for event in adapter.list_events(session_id):
             lines.append(f"{event.event_type}: {event.payload}")
@@ -73,27 +78,11 @@ def _main_text(state: WorkbenchState, adapter: MockOrbitChatAdapter) -> str:
     sessions = adapter.list_sessions()
     session = next(s for s in sessions if s.session_id == session_id)
 
-    if state.mode == "approvals":
-        approvals = adapter.list_open_approvals()
-        if not approvals:
-            return "Approval Queue\n\nNo pending approvals."
-        current = approvals[min(state.selected_approval, len(approvals) - 1)]
-        return "\n".join([
-            "Approval Queue",
-            f"tool={current.tool_name}",
-            f"session={current.session_id}",
-            f"status={current.status} · side_effect_class={current.side_effect_class}",
-            "",
-            current.summary,
-            "",
-            f"payload={current.payload}",
-        ])
-
-    if state.mode == "inspect":
-        return _inspect_payload_text(state, adapter, session_id)
+    if state.mode != "chat":
+        return _module_text(state, adapter, session_id)
 
     transcript_lines = [
-        "ORBIT Agent Runtime",
+        "ORBIT Agent Runtime Chat",
         state.banner,
         f"session={session.session_id}",
         f"backend={session.backend_name} · model={session.model}",
@@ -109,32 +98,20 @@ def _main_text(state: WorkbenchState, adapter: MockOrbitChatAdapter) -> str:
     return "\n".join(transcript_lines)
 
 
-def _status_text(state: WorkbenchState, adapter: MockOrbitChatAdapter) -> str:
-    status = adapter.get_workbench_status()
+def _header_text(state: WorkbenchState, adapter: MockOrbitChatAdapter) -> str:
     session_id = _current_session_id(state, adapter)
     session = adapter.get_session(session_id)
-    lines = [
-        "Runtime Status",
-        f"stage={status['implementation_stage']}",
-        f"runtime={status['runtime_integration']}",
-        f"surface_mode={state.mode}",
-        f"input_mode={'insert' if state.input_mode else 'nav'}",
-        f"session={session_id}",
-        f"messages={session.message_count if session else 0}",
-        "",
-        "Primary UX",
-        "default = agent runtime chat",
-        "slash commands switch modules",
-        "Esc -> nav, e -> edit",
-        "Ctrl-C -> quit",
-    ]
-    if state.show_help:
-        lines.extend([
-            "",
-            "Slash Commands",
-            adapter.slash_help_text(),
-        ])
-    return "\n".join(lines)
+    if state.mode == "chat":
+        return f"ORBIT · Agent Runtime Chat · {session_id} · {session.backend_name}/{session.model}"
+    if state.mode == "approvals":
+        return f"ORBIT · Approvals · {session_id}"
+    return f"ORBIT · Inspector · {SESSION_TABS[state.tab_index]} · {session_id}"
+
+
+def _footer_text(state: WorkbenchState, adapter: MockOrbitChatAdapter) -> str:
+    if state.input_mode:
+        return "INSERT · Enter sends · /command routes modules · Esc -> nav · /help for commands"
+    return "NAV · q quit · e edit · j/k move sessions or approvals · t switch inspector tab"
 
 
 def run_workbench() -> None:
@@ -145,29 +122,23 @@ def run_workbench() -> None:
 
     input_buffer = Buffer()
 
-    navigation_control = FormattedTextControl(lambda: _navigation_text(state, adapter))
     main_control = FormattedTextControl(lambda: _main_text(state, adapter))
-    status_control = FormattedTextControl(lambda: _status_text(state, adapter))
-
     input_window = Window(content=BufferControl(buffer=input_buffer, focus_on_click=True), height=Dimension(preferred=3))
 
     def in_nav_mode() -> bool:
         return not state.input_mode
 
     root = HSplit([
-        Window(height=1, content=FormattedTextControl(lambda: "ORBIT Workbench · runtime-first prompt_toolkit mock")),
-        VSplit([
-            Frame(Window(content=navigation_control, wrap_lines=False), title="Sessions"),
-            Frame(Window(content=main_control, wrap_lines=True), title="Agent Runtime" if state.mode == 'chat' else f"Module: {state.mode}"),
-            Frame(Window(content=status_control, wrap_lines=True), title="Status"),
-        ]),
+        Window(height=1, content=FormattedTextControl(lambda: _header_text(state, adapter))),
+        Frame(Window(content=main_control, wrap_lines=True), title=lambda: "Agent Runtime Chat" if state.mode == 'chat' else ("Approvals" if state.mode == 'approvals' else f"Inspector · {SESSION_TABS[state.tab_index]}")),
         Frame(
             input_window,
-            title=lambda: "Input [INSERT] (Enter sends, /command routes, Esc -> nav)" if state.input_mode else "Input [NAV] (press e to edit)",
+            title=lambda: "Input [INSERT]" if state.input_mode else "Input [NAV]",
         ),
+        Window(height=1, content=FormattedTextControl(lambda: _footer_text(state, adapter))),
         ConditionalContainer(
-            content=Window(height=1, content=FormattedTextControl(lambda: "NAV MODE · q quit · e edit · j/k move sessions · slash commands from insert mode")),
-            filter=Condition(lambda: not state.input_mode),
+            content=Window(height=1, content=FormattedTextControl(lambda: f"Slash commands: {adapter.slash_help_text()}" if state.mode != 'chat' else "")),
+            filter=Condition(lambda: state.mode != 'chat'),
         ),
     ])
 
@@ -193,11 +164,6 @@ def run_workbench() -> None:
     def _quit(event) -> None:
         event.app.exit()
 
-    @kb.add("?", filter=Condition(in_nav_mode))
-    def _help_toggle(event) -> None:
-        state.show_help = not state.show_help
-        event.app.invalidate()
-
     @kb.add("j", filter=Condition(in_nav_mode))
     @kb.add("down", filter=Condition(in_nav_mode))
     def _down(event) -> None:
@@ -219,6 +185,13 @@ def run_workbench() -> None:
         else:
             state.selected_session = max(0, state.selected_session - 1)
         event.app.invalidate()
+
+    @kb.add("t", filter=Condition(in_nav_mode))
+    @kb.add("tab", filter=Condition(in_nav_mode))
+    def _tab(event) -> None:
+        if state.mode not in {"chat", "approvals"}:
+            state.tab_index = (state.tab_index + 1) % len(SESSION_TABS)
+            event.app.invalidate()
 
     def _route_slash_command(text: str) -> None:
         session_id = _current_session_id(state, adapter)
@@ -256,7 +229,7 @@ def run_workbench() -> None:
             return
         if command == "/inspect":
             state.mode = "inspect"
-            state.banner = "Inspect module opened"
+            state.tab_index = 0
             return
         if command == "/chat":
             state.mode = "chat"
@@ -264,25 +237,22 @@ def run_workbench() -> None:
             return
         if command == "/approvals":
             state.mode = "approvals"
-            state.banner = "Approval queue opened"
             return
         if command == "/events":
             state.mode = "inspect"
             state.tab_index = 1
-            state.banner = "Inspecting runtime events"
             return
         if command == "/tools":
             state.mode = "inspect"
             state.tab_index = 2
-            state.banner = "Inspecting tool calls"
             return
         if command == "/artifacts":
             state.mode = "inspect"
             state.tab_index = 3
-            state.banner = "Inspecting artifacts"
             return
         if command == "/status":
-            adapter.append_system_message(session_id, str(adapter.get_workbench_status()), kind="status_dump")
+            status_dump = f"session={session_id}\nmode={state.mode}\ninput_mode={'insert' if state.input_mode else 'nav'}\n{adapter.slash_help_text()}"
+            adapter.append_system_message(session_id, status_dump, kind="status_dump")
             state.mode = "chat"
             state.banner = "Status dumped into transcript"
             return
