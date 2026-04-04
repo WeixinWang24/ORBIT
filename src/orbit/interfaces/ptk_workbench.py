@@ -39,6 +39,19 @@ def _current_session_id(state: WorkbenchState, adapter: MockOrbitChatAdapter) ->
 
 
 def _module_text(state: WorkbenchState, adapter: MockOrbitChatAdapter, session_id: str) -> str:
+    if state.mode == "help":
+        return adapter.slash_help_page()
+
+    if state.mode == "status":
+        return "\n".join([
+            "ORBIT Status",
+            f"session={session_id}",
+            f"input_mode={'insert' if state.input_mode else 'nav'}",
+            f"surface_mode={state.mode}",
+            "",
+            str(adapter.get_workbench_status()),
+        ])
+
     if state.mode == "approvals":
         approvals = adapter.list_open_approvals()
         if not approvals:
@@ -98,6 +111,18 @@ def _main_text(state: WorkbenchState, adapter: MockOrbitChatAdapter) -> str:
     return "\n".join(transcript_lines)
 
 
+def _title_for_mode(state: WorkbenchState) -> str:
+    if state.mode == "chat":
+        return "Agent Runtime Chat"
+    if state.mode == "approvals":
+        return "Approvals"
+    if state.mode == "help":
+        return "Slash Help"
+    if state.mode == "status":
+        return "Status"
+    return f"Inspector · {SESSION_TABS[state.tab_index]}"
+
+
 def _header_text(state: WorkbenchState, adapter: MockOrbitChatAdapter) -> str:
     session_id = _current_session_id(state, adapter)
     session = adapter.get_session(session_id)
@@ -105,6 +130,10 @@ def _header_text(state: WorkbenchState, adapter: MockOrbitChatAdapter) -> str:
         return f"ORBIT · Agent Runtime Chat · {session_id} · {session.backend_name}/{session.model}"
     if state.mode == "approvals":
         return f"ORBIT · Approvals · {session_id}"
+    if state.mode == "help":
+        return "ORBIT · Slash Help"
+    if state.mode == "status":
+        return f"ORBIT · Status · {session_id}"
     return f"ORBIT · Inspector · {SESSION_TABS[state.tab_index]} · {session_id}"
 
 
@@ -130,15 +159,15 @@ def run_workbench() -> None:
 
     root = HSplit([
         Window(height=1, content=FormattedTextControl(lambda: _header_text(state, adapter))),
-        Frame(Window(content=main_control, wrap_lines=True), title=lambda: "Agent Runtime Chat" if state.mode == 'chat' else ("Approvals" if state.mode == 'approvals' else f"Inspector · {SESSION_TABS[state.tab_index]}")),
+        Frame(Window(content=main_control, wrap_lines=True), title=lambda: _title_for_mode(state)),
         Frame(
             input_window,
             title=lambda: "Input [INSERT]" if state.input_mode else "Input [NAV]",
         ),
         Window(height=1, content=FormattedTextControl(lambda: _footer_text(state, adapter))),
         ConditionalContainer(
-            content=Window(height=1, content=FormattedTextControl(lambda: f"Slash commands: {adapter.slash_help_text()}" if state.mode != 'chat' else "")),
-            filter=Condition(lambda: state.mode != 'chat'),
+            content=Window(height=1, content=FormattedTextControl(lambda: f"Slash commands: {adapter.slash_help_text()}" if state.mode in {'help', 'status', 'inspect', 'approvals'} else "")),
+            filter=Condition(lambda: state.mode in {"help", "status", "inspect", "approvals"}),
         ),
     ])
 
@@ -189,20 +218,18 @@ def run_workbench() -> None:
     @kb.add("t", filter=Condition(in_nav_mode))
     @kb.add("tab", filter=Condition(in_nav_mode))
     def _tab(event) -> None:
-        if state.mode not in {"chat", "approvals"}:
+        if state.mode == "inspect":
             state.tab_index = (state.tab_index + 1) % len(SESSION_TABS)
             event.app.invalidate()
 
     def _route_slash_command(text: str) -> None:
-        session_id = _current_session_id(state, adapter)
         parts = text.strip().split(maxsplit=1)
-        command = parts[0]
+        command = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
 
-        if command == "/help":
-            adapter.append_system_message(session_id, adapter.slash_help_text(), kind="slash_help")
-            state.mode = "chat"
-            state.banner = "Slash help shown in transcript"
+        if command in {"/help", "/h"}:
+            state.mode = "help"
+            state.banner = "Help page opened"
             return
         if command == "/new":
             adapter.create_session()
@@ -211,6 +238,7 @@ def run_workbench() -> None:
             state.banner = "Created new session"
             return
         if command == "/sessions":
+            session_id = _current_session_id(state, adapter)
             sessions = adapter.list_sessions()
             listing = "Stored sessions:\n" + "\n".join(f"- {s.session_id} ({s.status})" for s in sessions)
             adapter.append_system_message(session_id, listing, kind="sessions_list")
@@ -218,6 +246,7 @@ def run_workbench() -> None:
             state.banner = "Session list inserted into transcript"
             return
         if command == "/attach":
+            session_id = _current_session_id(state, adapter)
             target = adapter.attach_session(arg)
             if target is None:
                 adapter.append_system_message(session_id, f"Session not found: {arg}", kind="attach_error")
@@ -251,11 +280,9 @@ def run_workbench() -> None:
             state.tab_index = 3
             return
         if command == "/status":
-            status_dump = f"session={session_id}\nmode={state.mode}\ninput_mode={'insert' if state.input_mode else 'nav'}\n{adapter.slash_help_text()}"
-            adapter.append_system_message(session_id, status_dump, kind="status_dump")
-            state.mode = "chat"
-            state.banner = "Status dumped into transcript"
+            state.mode = "status"
             return
+        session_id = _current_session_id(state, adapter)
         adapter.append_system_message(session_id, f"Unknown slash command: {text}", kind="slash_error")
         state.mode = "chat"
         state.banner = "Unknown slash command"

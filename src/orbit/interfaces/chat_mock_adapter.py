@@ -103,6 +103,36 @@ class MockOrbitChatAdapter(MockOrbitInterfaceAdapter):
     def slash_help_text(self) -> str:
         return "Available slash commands: /help /new /sessions /attach <session_id> /inspect /chat /approvals /events /tools /artifacts /status"
 
+    def slash_help_page(self) -> str:
+        return "\n".join([
+            "ORBIT Slash Help",
+            "",
+            "Default behavior",
+            "- Plain text input goes to Agent Runtime chat.",
+            "- Slash input routes to CLI/workbench modules.",
+            "",
+            "Commands",
+            "/help                Show this help page",
+            "/new                 Create a new session",
+            "/sessions            Show stored sessions",
+            "/attach <session_id> Attach to an existing session",
+            "/chat                Return to Agent Runtime chat",
+            "/inspect             Open inspector transcript tab",
+            "/events              Open inspector events tab",
+            "/tools               Open inspector tool-calls tab",
+            "/artifacts           Open inspector artifacts tab",
+            "/approvals           Open approvals module",
+            "/status              Show current workbench/runtime status",
+            "",
+            "Modes",
+            "- INSERT: type freely, Enter submits, Esc switches to NAV.",
+            "- NAV: q quit, e edit, j/k move, t switch inspector tab.",
+            "",
+            "Current stage",
+            "- Runtime loop is still dummy-backed.",
+            "- Real SessionManager integration is the next later phase.",
+        ])
+
     def _build_dummy_reply(self, text: str) -> str:
         lowered = text.lower()
         if "tool" in lowered:

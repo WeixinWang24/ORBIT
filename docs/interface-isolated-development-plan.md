@@ -65,6 +65,7 @@ Current near-term posture:
 - enforce input-mode vs navigation-mode separation so typed prompt characters are not consumed as global workbench commands
 - route non-runtime modules through slash commands so the default surface remains the Agent Runtime interaction experience
 - keep the initial screen visually single-purpose: Agent Runtime Chat first, Inspector modules only after explicit slash navigation
+- implement `/help` as a first-class help page/module rather than relying on transcript history for command discovery
 
 ## Planned next integration step
 
