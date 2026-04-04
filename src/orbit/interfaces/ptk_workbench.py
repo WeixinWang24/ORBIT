@@ -6,10 +6,12 @@ from dataclasses import dataclass
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.layout.containers import ConditionalContainer
 from prompt_toolkit.widgets import Frame
 
 from .chat_mock_adapter import MockOrbitChatAdapter
@@ -20,6 +22,7 @@ SESSION_TABS = ["transcript", "events", "tool_calls", "artifacts"]
 @dataclass
 class WorkbenchState:
     mode: str = "chat"
+    input_mode: bool = True
     selected_session: int = 0
     selected_approval: int = 0
     tab_index: int = 0
@@ -89,14 +92,14 @@ def _main_text(state: WorkbenchState, adapter: MockOrbitChatAdapter) -> str:
         return "\n".join(lines)
 
     transcript_lines = [
-        f"ORBIT Chat Session",
+        "ORBIT Chat Session",
         f"session={session.session_id}",
         f"backend={session.backend_name} · model={session.model}",
         "",
     ]
     for message in adapter.list_messages(session_id):
         label = message.role.upper() if not message.message_kind else f"{message.role.upper()} [{message.message_kind}]"
-        transcript_lines.append(f"{label}")
+        transcript_lines.append(label)
         transcript_lines.append(message.content)
         transcript_lines.append("")
     if len(transcript_lines) == 4:
@@ -113,27 +116,21 @@ def _status_text(state: WorkbenchState, adapter: MockOrbitChatAdapter) -> str:
         f"stage={status['implementation_stage']}",
         f"runtime={status['runtime_integration']}",
         f"mode={state.mode}",
+        f"input_mode={'insert' if state.input_mode else 'nav'}",
         f"session={session_id}",
         f"messages={session.message_count if session else 0}",
         "",
-        "Keys",
-        "j/k or arrows: move sessions/approvals",
-        "enter: send message (input focused)",
-        "i: inspect mode",
-        "c: chat mode",
-        "t/tab: next inspect tab",
-        "a: approvals",
-        "b: back",
-        "n: new session",
-        "?: help",
-        "q or Ctrl-C: quit",
+        "Mode rules",
+        "insert: type freely, Enter sends, Esc -> nav",
+        "nav: q/j/k/a/b/i/c/t/n/? active, e -> insert",
+        "Ctrl-C: always quit",
     ]
     if state.show_help:
         lines.extend([
             "",
             "Help",
-            "This is the chat-first prompt_toolkit ORBIT workbench.",
-            "Current runtime loop is still dummy-backed, but the UI shape is now usage-first.",
+            "Insert mode isolates typed characters from workbench commands.",
+            "Navigation mode enables workbench shortcuts.",
         ])
     return "\n".join(lines)
 
@@ -150,6 +147,9 @@ def run_workbench() -> None:
     main_control = FormattedTextControl(lambda: _main_text(state, adapter))
     status_control = FormattedTextControl(lambda: _status_text(state, adapter))
 
+    def in_nav_mode() -> bool:
+        return not state.input_mode
+
     root = HSplit([
         Window(height=1, content=FormattedTextControl(lambda: "ORBIT Workbench · chat-first prompt_toolkit mock")),
         VSplit([
@@ -158,25 +158,44 @@ def run_workbench() -> None:
             Frame(Window(content=status_control, wrap_lines=True), title="Status"),
         ]),
         Frame(
-            Window(content=BufferControl(buffer=input_buffer), height=Dimension(preferred=3)),
-            title="Input (Enter to send in chat mode)",
+            Window(content=BufferControl(buffer=input_buffer, focus_on_click=True), height=Dimension(preferred=3)),
+            title=lambda: "Input [INSERT] (Enter sends, Esc -> nav)" if state.input_mode else "Input [NAV] (press e to edit)",
+        ),
+        ConditionalContainer(
+            content=Window(height=1, content=FormattedTextControl(lambda: "NAV MODE · q quit · e edit · j/k move · a approvals · i inspect · c chat · n new session")),
+            filter=Condition(lambda: not state.input_mode),
         ),
     ])
 
     kb = KeyBindings()
 
-    @kb.add("q")
     @kb.add("c-c")
+    def _quit_force(event) -> None:
+        event.app.exit()
+
+    @kb.add("escape")
+    def _escape_to_nav(event) -> None:
+        state.input_mode = False
+        event.app.layout.focus(root)
+        event.app.invalidate()
+
+    @kb.add("e", filter=Condition(in_nav_mode))
+    def _edit_mode(event) -> None:
+        state.input_mode = True
+        event.app.layout.focus(input_window)
+        event.app.invalidate()
+
+    @kb.add("q", filter=Condition(in_nav_mode))
     def _quit(event) -> None:
         event.app.exit()
 
-    @kb.add("?")
+    @kb.add("?", filter=Condition(in_nav_mode))
     def _help(event) -> None:
         state.show_help = not state.show_help
         event.app.invalidate()
 
-    @kb.add("j")
-    @kb.add("down")
+    @kb.add("j", filter=Condition(in_nav_mode))
+    @kb.add("down", filter=Condition(in_nav_mode))
     def _down(event) -> None:
         if state.mode == "approvals":
             approvals = adapter.list_open_approvals()
@@ -188,8 +207,8 @@ def run_workbench() -> None:
                 state.selected_session = min(len(sessions) - 1, state.selected_session + 1)
         event.app.invalidate()
 
-    @kb.add("k")
-    @kb.add("up")
+    @kb.add("k", filter=Condition(in_nav_mode))
+    @kb.add("up", filter=Condition(in_nav_mode))
     def _up(event) -> None:
         if state.mode == "approvals":
             state.selected_approval = max(0, state.selected_approval - 1)
@@ -197,34 +216,34 @@ def run_workbench() -> None:
             state.selected_session = max(0, state.selected_session - 1)
         event.app.invalidate()
 
-    @kb.add("t")
-    @kb.add("tab")
+    @kb.add("t", filter=Condition(in_nav_mode))
+    @kb.add("tab", filter=Condition(in_nav_mode))
     def _tab(event) -> None:
         if state.mode == "inspect":
             state.tab_index = (state.tab_index + 1) % len(SESSION_TABS)
             event.app.invalidate()
 
-    @kb.add("a")
+    @kb.add("a", filter=Condition(in_nav_mode))
     def _approvals(event) -> None:
         state.mode = "approvals"
         event.app.invalidate()
 
-    @kb.add("b")
+    @kb.add("b", filter=Condition(in_nav_mode))
     def _back(event) -> None:
         state.mode = "chat"
         event.app.invalidate()
 
-    @kb.add("i")
+    @kb.add("i", filter=Condition(in_nav_mode))
     def _inspect(event) -> None:
         state.mode = "inspect"
         event.app.invalidate()
 
-    @kb.add("c")
+    @kb.add("c", filter=Condition(in_nav_mode))
     def _chat(event) -> None:
         state.mode = "chat"
         event.app.invalidate()
 
-    @kb.add("n")
+    @kb.add("n", filter=Condition(in_nav_mode))
     def _new_session(event) -> None:
         adapter.create_session()
         state.selected_session = 0
@@ -233,7 +252,7 @@ def run_workbench() -> None:
 
     @kb.add("enter")
     def _send(event) -> None:
-        if state.mode != "chat":
+        if not state.input_mode or state.mode != "chat":
             return
         text = input_buffer.text.strip()
         if not text:
@@ -243,5 +262,23 @@ def run_workbench() -> None:
         input_buffer.text = ""
         event.app.invalidate()
 
-    app = Application(layout=Layout(root), key_bindings=kb, full_screen=True)
+    input_window = Window(content=BufferControl(buffer=input_buffer, focus_on_click=True), height=Dimension(preferred=3))
+    root = HSplit([
+        Window(height=1, content=FormattedTextControl(lambda: "ORBIT Workbench · chat-first prompt_toolkit mock")),
+        VSplit([
+            Frame(Window(content=navigation_control, wrap_lines=False), title="Navigation"),
+            Frame(Window(content=main_control, wrap_lines=True), title="Conversation / Inspect"),
+            Frame(Window(content=status_control, wrap_lines=True), title="Status"),
+        ]),
+        Frame(
+            input_window,
+            title=lambda: "Input [INSERT] (Enter sends, Esc -> nav)" if state.input_mode else "Input [NAV] (press e to edit)",
+        ),
+        ConditionalContainer(
+            content=Window(height=1, content=FormattedTextControl(lambda: "NAV MODE · q quit · e edit · j/k move · a approvals · i inspect · c chat · n new session")),
+            filter=Condition(lambda: not state.input_mode),
+        ),
+    ])
+
+    app = Application(layout=Layout(root, focused_element=input_window), key_bindings=kb, full_screen=True)
     app.run()

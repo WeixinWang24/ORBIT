@@ -62,6 +62,7 @@ Current near-term posture:
 - keep real runtime integration deferred
 - switch the terminal workbench's primary experience toward user input + transcript + dummy runtime response
 - keep inspect/event/tool/artifact views as secondary panes or modes rather than the primary semantic center
+- enforce input-mode vs navigation-mode separation so typed prompt characters are not consumed as global workbench commands
 
 ## Planned next integration step
 

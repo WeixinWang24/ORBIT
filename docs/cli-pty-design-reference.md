@@ -194,6 +194,7 @@ The current mock PTY browser now supports:
 - tabbed preview across `transcript / events / tool_calls / artifacts`
 - approval queue mode
 - a prompt_toolkit full-screen workbench path as the preferred terminal UI implementation direction
+- explicit input-mode vs navigation-mode separation so normal typed characters do not trigger global workbench commands while editing
 - explicit force-exit handling via `ctrl+c` in addition to `q`
 - an explicit status command for checking current PTY implementation state and dummy backend readiness: `orbit-interface workbench status`
 - a direct Python launch path from the project directory: `python3 apps/orbit_workbench.py`
