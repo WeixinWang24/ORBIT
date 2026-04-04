@@ -1,4 +1,4 @@
-"""Python entrypoint for the ORBIT mock PTY workbench.
+"""Python entrypoint for the ORBIT prompt-toolkit mock workbench.
 
 Run from the ORBIT project directory with the Conda `Orbit` environment active.
 Example:
@@ -15,8 +15,8 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from orbit.interfaces.pty_workbench import browse
+from orbit.interfaces.ptk_workbench import run_workbench
 
 
 if __name__ == "__main__":
-    browse()
+    run_workbench()

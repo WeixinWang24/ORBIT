@@ -30,6 +30,9 @@ Both should depend on a shared adapter contract layer rather than on direct Sess
 - `apps/orbit_interface_cli.py`
 - `apps/orbit_workbench.py`
 
+### Full-screen terminal UI path
+- `src/orbit/interfaces/ptk_workbench.py` — prompt_toolkit-based workbench entry path for replacing the fragile raw-loop PTY prototype
+
 ## Contract shape
 
 The interface adapter currently assumes these read-oriented operations:
