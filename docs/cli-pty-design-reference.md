@@ -2,90 +2,237 @@
 
 ## Purpose
 
-This note records the current PTY design conclusions for ORBIT after direct user testing of multiple terminal UI variants.
+This note captures CLI / PTY interaction patterns observed in `claude_code_src` and translates them into design guidance for ORBIT's isolated CLI work.
 
-Earlier references to mock/PTK-first directions are now historical. The present reference point is the raw PTY route.
+Scope here is **interaction design borrowing**, not code reuse.
 
-## Current accepted terminal direction
+## Source scanned
 
-### Preferred UX authority
-- `src/orbit/interfaces/pty_workbench.py`
+Repository scanned:
+- `/Volumes/2TB/MAS/openclaw-core/claude_code_src`
 
-Why this is preferred:
-- stronger terminal-native feel
-- faster / more direct interaction
-- better perceived stability and responsiveness
-- preferred display composition and navigation semantics
+Key files reviewed:
+- `src/entrypoints/cli.tsx`
+- `src/commands/session/session.tsx`
+- `src/commands/help/help.tsx`
+- `src/ink/terminal.ts`
+- `src/components/QuickOpenDialog.tsx`
 
-### Active runtime CLI mainline
-- `src/orbit/interfaces/pty_runtime_cli.py`
-- package entrypoints: `orbit`, `orbit-session`, `orbit-runtime-workbench`
+## Key observed design patterns
 
-This is the active runtime-first raw PTY CLI path.
+### 1. Fast-path bootstrap before full CLI load
+Claude Code's CLI entrypoint strongly separates:
+- tiny startup flag handling
+- fast-path commands
+- only then full CLI/TUI load
 
-### Input authority
-- `src/orbit/interfaces/input.py`
+Implication for ORBIT:
+- PTY CLI should keep a **thin bootstrap path**
+- simple commands should avoid loading the whole interactive shell when possible
+- interactive PTY mode should be an explicit branch, not the only way to use the CLI
 
-This is now the preferred home for:
-- ESC-prefixed control-sequence assembly
-- broken fragment reassembly
-- stale fragment ageing/flush behavior
-- low-level input hygiene for the raw PTY route
+### 2. Clear split between command router and interactive UI
+Observed shape:
+- command router in entrypoint / command layer
+- interactive UI components under terminal UI infrastructure
+- command handlers can return JSX/TUI views
 
-## Preserved raw PTY interaction anchors
+Implication for ORBIT:
+- keep CLI command parsing separate from PTY rendering
+- define command nouns/verbs independently from interactive panes
+- allow future commands to render either:
+  - plain structured text/json
+  - PTY/TUI overlay or panel view
 
-The following qualities from `pty_workbench.py` must remain authoritative:
-- divider-based page separation
-- highlighted/focused row selection
-- color-coded status/content emphasis
-- `t` / `Shift+Tab` tab switching
-- `Enter`-driven page entry/drill-down
-- fixed header/tab region + central work-area layout
+### 3. Overlay-style interaction model
+Observed in session/help/quick-open flows:
+- focused temporary interaction surfaces
+- close/cancel action always available
+- modal/overlay interactions are small and single-purpose
 
-## Runtime-first behavioral overlay
+Implication for ORBIT:
+- PTY UI should not begin as a giant full-screen monolith
+- prefer composable interaction surfaces:
+  - help overlay
+  - session picker
+  - approval list
+  - quick-open / jump-to-session
+  - artifact preview
 
-The runtime CLI mainline layers product behavior on top of that raw PTY shell language:
-- default homepage = Agent Runtime Chat
-- bottom one-line composer
-- slash commands route to non-chat modules
-- non-chat pages remain navigation-first rather than composer-first
+### 4. Search / picker / preview interaction is first-class
+`QuickOpenDialog` is especially relevant:
+- query input
+- filtered result list
+- focused item preview
+- keyboard actions for open/insert/cancel
 
-## Current key rules
+Implication for ORBIT:
+A strong PTY workbench pattern would be:
+- left = selectable list
+- right/bottom = preview/details
+- keyboard-driven focus movement
+- enter/tab/esc semantics
 
-### Chat page
-- plain text → runtime chat
-- slash text → module routing
-- `Up/Down/PageUp/PageDown/Home/End` → history/content scrolling
-- `Enter` → submit
-- `Ctrl+C` → exit
+This is much more useful than a plain REPL once ORBIT has many sessions/artifacts/events.
 
-### Non-chat pages
-- `↑↓` / `j k` → navigation or page scrolling
-- `Enter` → select / enter where relevant
-- `t` / `Shift+Tab` → switch inspect tabs where relevant
-- `c` → return to chat
-- `Ctrl+C` → exit
+### 5. Terminal capability awareness matters
+`src/ink/terminal.ts` shows Claude Code cares about:
+- synchronized output support
+- progress reporting support
+- terminal capability detection
+- cursor behavior edge cases
+- terminal size / redraw constraints
 
-## Engineering direction
+Implication for ORBIT:
+Even in the mock phase, PTY design should assume:
+- terminal features vary
+- output redraws should be capability-aware later
+- fallback plain rendering should remain possible
 
-### Keep
-- `termio.py`
-- `input.py`
-- `pty_debug.py`
-- `pty_runtime_router.py`
-- `pty_runtime_cli.py`
-- `pty_workbench.py` (reference authority)
+For ORBIT right now, the practical rule is:
+- first design the PTY interaction grammar
+- later add capability-aware redraw optimization if we move to a richer TUI runtime
 
-### Demote / cleanup
-- prompt_toolkit fallback path
-- older mock CLI / mock web workbench scaffolds
-- transitional raw runtime experiments that are no longer the chosen mainline
+### 6. Keyboard-first navigation is central
+Observed interaction principles:
+- esc to close/cancel
+- tab / shift-tab for alternate actions
+- focused item state matters
+- terminal UI is built around keyboard affordances
+
+Implication for ORBIT:
+PTY design should define keyboard actions explicitly, not implicitly.
+
+Initial ORBIT PTY interaction grammar should likely include:
+- `j / k` or arrow keys for navigation
+- `enter` for open / inspect
+- `tab` for alternate action
+- `esc` for cancel / back
+- `/` for search/filter
+- `?` for help
+- `:` for command mode (optional later)
+
+### 7. Command tree and PTY shell are complementary, not competing
+Claude-style structure suggests:
+- there is a normal command tree
+- interactive terminal views sit on top of that
+- users can still do direct commands non-interactively
+
+Implication for ORBIT:
+We should keep both:
+- grouped non-interactive CLI commands
+- a future PTY workbench mode
+
+Not either/or.
+
+---
+
+## ORBIT-specific PTY translation
+
+## Recommended PTY shell shape for ORBIT
+
+### Mode 1: structured command mode
+Non-interactive and script-friendly:
+- `orbit-interface session list`
+- `orbit-interface session show <id>`
+- `orbit-interface approval list`
+- `orbit-interface tool-call list --session <id>`
+
+### Mode 2: PTY workbench mode
+Interactive, keyboard-first operator shell:
+- `orbit-interface workbench`
+- or later `orbit workbench`
+
+This PTY workbench should start small.
+
+## Recommended first PTY screens
+
+### A. Session browser
+Layout:
+- left: session list
+- main: transcript / event summary preview
+- right or bottom: metadata / approvals / tool summary
+
+### B. Approval queue
+Layout:
+- top/left: pending approvals
+- preview pane: payload + session context + governance summary
+- future action keys reserved for approve/reject once runtime integration exists
+
+### C. Artifact / event inspector
+Layout:
+- list of artifacts/events
+- preview pane with structured content
+
+### D. Help / keybindings overlay
+Always available and small.
+
+---
+
+## Recommended PTY interaction rules for ORBIT
+
+### Global
+- `q` / `esc` → close current overlay or exit workbench
+- `?` → help overlay
+- `/` → search/filter mode
+- `tab` or `t` → cycle panes/tabs
+- `shift+tab` → reverse cycle panes
+- `a` → switch to approval queue view
+- `b` → return from approval queue to session browser
+
+### Lists
+- `j / down` → next
+- `k / up` → previous
+- `g` → top
+- `G` → bottom
+- `enter` → open focused item
+- `space` → expand/collapse or toggle preview emphasis
+
+### Current first-slice PTY behavior
+The current mock PTY browser now supports:
+- session browser mode
+- tabbed preview across `transcript / events / tool_calls / artifacts`
+- approval queue mode
+- a prompt_toolkit full-screen workbench path as the preferred terminal UI implementation direction
+- explicit input-mode vs navigation-mode separation so normal typed characters do not trigger global workbench commands while editing
+- explicit force-exit handling via `ctrl+c` in addition to `q`
+- an explicit status command for checking current PTY implementation state and dummy backend readiness: `orbit-interface workbench status`
+- a direct Python launch path from the project directory: `python3 apps/orbit_workbench.py`
+
+### Future action hooks
+Reserved now, wired later when runtime integration is safe:
+- `r` → refresh/reload adapter data
+- `o` → open details view
+- approval decision keys once real runtime integration exists
+
+---
+
+## Practical implementation advice for ORBIT now
+
+Since current work is still isolated and mock-driven:
+- do **not** build a real full Ink-style PTY app yet unless needed
+- first evolve the CLI module structure and keyboard interaction spec
+- if we add PTY next, prefer a minimal curses/Textual-style prototype or a simple prompt-toolkit/Typer-compatible interactive loop
+- keep the PTY shell behind a dedicated command such as `workbench`
+
+## Immediate next coding move
+
+Based on the current repo state, the safest next step is:
+1. keep grouped CLI commands intact
+2. add a documented `workbench` concept to the CLI mock
+3. add a minimal mock keyboard-driven session browser as the first PTY slice
+4. only after that consider deeper PTY rendering infrastructure
+
+---
 
 ## Short conclusion
 
-The current ORBIT PTY direction is no longer “evaluate many shells.”
-It is now:
-- raw PTY as preferred terminal UX
-- `pty_workbench.py` as visual/interaction authority
-- `pty_runtime_cli.py` as runtime-first CLI mainline
-- `input.py` as the growing low-level input subsystem
+The main lesson from `claude_code_src` is not “copy this TUI”.
+The main lesson is:
+- **fast bootstrap**
+- **grouped command routing**
+- **keyboard-first overlays**
+- **search/list/preview workflow**
+- **interactive PTY mode layered on top of a usable non-interactive CLI**
+
+That is the right borrowing direction for ORBIT.

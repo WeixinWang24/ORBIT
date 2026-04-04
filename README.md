@@ -59,10 +59,10 @@ Recommended usage:
 - use `orbit-session` only as a compatibility alias during transition
 - use `orbit-runtime-workbench` when you want the entrypoint name to be explicit in scripts/docs
 
-Direct Python module-style entry is now preferred over app-wrapper scripts:
+Direct app entrypoint:
 
 ```bash
-python -m orbit.interfaces.pty_runtime_cli
+python apps/orbit_runtime_workbench.py
 ```
 
 Current command surface inside the new terminal UI includes session/runtime control such as:
@@ -121,4 +121,3 @@ See also:
 - `docs/session-manager-mvp-loop-contract.md`
 - `docs/filesystem-runtime-quality-roadmap.md`
 - `docs/mcp-adapter-layering-design.md`
-- `docs/pty-runtime-cli-migration-carryover-checklist-2026-04-04.md`
