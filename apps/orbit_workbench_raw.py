@@ -3,6 +3,12 @@
 Run from the ORBIT project directory with the Conda `Orbit` environment active.
 Example:
     python3 apps/orbit_workbench_raw.py
+
+Optional diagnostics:
+    ORBIT_PTY_DEBUG=1 python3 apps/orbit_workbench_raw.py
+
+Current key rule:
+    q or Ctrl-C exit; Esc is reserved for ignore/back behavior, not global exit.
 """
 
 from __future__ import annotations
