@@ -1,8 +1,7 @@
 """Minimal PTY-style mock workbench for ORBIT interface development.
 
-This is intentionally lightweight and runtime-disconnected.
-It provides a keyboard-loop session browser over the mock adapter so the PTY
-interaction grammar can be validated before real adapter integration.
+This version renders explicit fixed-width text frames and writes them in a
+single flush per redraw to reduce wrapping drift / misaligned rows in PTY mode.
 """
 
 from __future__ import annotations
@@ -14,34 +13,48 @@ from contextlib import contextmanager
 from termios import TCSADRAIN, tcgetattr, tcsetattr
 import tty
 
-from rich.console import Console
-
 from .mock_adapter import MockOrbitInterfaceAdapter
 
-console = Console()
 SESSION_TABS = ["transcript", "events", "tool_calls", "artifacts"]
 FORCE_EXIT_KEYS = {"q", "Q", "\x1b", "\x03"}
-
-
-def _clear() -> None:
-    console.print("\033[2J\033[H", end="")
+ANSI_CLEAR = "\033[2J\033[H"
+ANSI_RESET = "\033[0m"
 
 
 def _terminal_size() -> os.terminal_size:
     return shutil.get_terminal_size((100, 32))
 
 
+def _safe_width() -> int:
+    return max(40, _terminal_size().columns)
+
+
+def _safe_height() -> int:
+    return max(16, _terminal_size().lines)
+
+
 def _fit_text(text: str, width: int) -> str:
-    if width <= 4:
+    text = text.replace("\n", " ").replace("\r", " ")
+    if width <= 1:
         return text[:width]
     if len(text) <= width:
         return text
     return text[: width - 1] + "…"
 
 
-def _divider() -> str:
-    cols = _terminal_size().columns
-    return "─" * max(12, min(cols - 2, 120))
+def _divider(width: int) -> str:
+    return "-" * width
+
+
+def _emit_frame(lines: list[str]) -> None:
+    width = _safe_width()
+    height = _safe_height()
+    clipped = [_fit_text(line, width) for line in lines[:height]]
+    if len(clipped) < height:
+        clipped.extend([""] * (height - len(clipped)))
+    payload = ANSI_CLEAR + "\n".join(clipped) + ANSI_RESET
+    sys.stdout.write(payload)
+    sys.stdout.flush()
 
 
 @contextmanager
@@ -73,183 +86,168 @@ def _read_key() -> str:
     return seq
 
 
-def _render_tab_preview(adapter: MockOrbitInterfaceAdapter, session_id: str, tab: str, width: int, max_lines: int) -> None:
-    lines_printed = 0
-
-    def emit(line: str) -> None:
-        nonlocal lines_printed
-        if lines_printed >= max_lines:
-            return
-        console.print(_fit_text(line, width))
-        lines_printed += 1
-
+def _tab_preview_lines(adapter: MockOrbitInterfaceAdapter, session_id: str, tab: str, max_lines: int) -> list[str]:
+    lines: list[str] = []
     if tab == "events":
         for event in adapter.list_events(session_id)[-max_lines:]:
-            emit(f"[magenta]{event.event_type}[/magenta]: {event.payload}")
-        return
+            lines.append(f"{event.event_type}: {event.payload}")
+        return lines
     if tab == "tool_calls":
         for call in adapter.list_tool_calls(session_id)[:max_lines]:
-            emit(f"[magenta]{call.tool_name}[/magenta]: {call.status} · {call.summary}")
-        return
+            lines.append(f"{call.tool_name}: {call.status} · {call.summary}")
+        return lines
     if tab == "artifacts":
         for artifact in adapter.list_artifacts(session_id)[:max_lines]:
-            emit(f"[magenta]{artifact.artifact_type}[/magenta]: {artifact.content}")
-        return
+            lines.append(f"{artifact.artifact_type}: {artifact.content}")
+        return lines
     for message in adapter.list_messages(session_id)[-max_lines:]:
         label = message.role if not message.message_kind else f"{message.role}/{message.message_kind}"
-        emit(f"[magenta]{label}[/magenta]: {message.content}")
+        lines.append(f"{label}: {message.content}")
+    return lines
 
 
-def _render_browser(selected: int, tab_index: int, show_help: bool = False) -> None:
+def _browser_lines(selected: int, tab_index: int, show_help: bool = False) -> list[str]:
     adapter = MockOrbitInterfaceAdapter()
     sessions = adapter.list_sessions()
-    width = _terminal_size().columns
-    height = _terminal_size().lines
+    width = _safe_width()
+    height = _safe_height()
     if not sessions:
-        _clear()
-        console.print("ORBIT Mock Workbench\n\nNo sessions.")
-        return
+        return ["ORBIT Mock Workbench", "", "No sessions."]
+    selected = min(selected, len(sessions) - 1)
     current = sessions[selected]
     approvals = [a for a in adapter.list_open_approvals() if a.session_id == current.session_id]
     tab = SESSION_TABS[tab_index]
-    tab_bar = "  ".join(f"[bold cyan]{name}[/bold cyan]" if i == tab_index else f"[dim]{name}[/dim]" for i, name in enumerate(SESSION_TABS))
+    tab_bar = " | ".join(f"[{name}]" if i == tab_index else name for i, name in enumerate(SESSION_TABS))
     max_sessions = max(2, min(len(sessions), max(4, height // 4)))
     preview_lines = max(4, min(10, height - max_sessions - (10 if show_help else 7)))
-    _clear()
-    console.print(_fit_text("[bold magenta]ORBIT PTY Mock Workbench[/bold magenta]  [cyan]mock-only[/cyan]  [dim]q/esc/ctrl+c exit · j/k move · t tab · a approvals · enter inspect · ? help[/dim]", width))
-    console.print(_divider())
-    console.print("[bold]Sessions[/bold]")
-    visible_sessions = sessions[:max_sessions]
-    for i, session in enumerate(visible_sessions):
-        prefix = "➜" if i == selected else " "
-        style = "bold cyan" if i == selected else "white"
-        line = f"{prefix} {session.session_id} {session.status} · {session.backend_name} · {session.model}"
-        console.print(f"[{style}]{_fit_text(line, width)}[/]")
-    if selected >= len(visible_sessions):
-        console.print(f"[dim]… {len(sessions) - len(visible_sessions)} more session(s)[/dim]")
-    console.print(_divider())
-    console.print(_fit_text(f"[bold]Current tab[/bold]  {tab_bar}", width))
-    console.print(_fit_text(f"[cyan]{current.session_id}[/cyan] [dim]conversation={current.conversation_id}[/dim]", width))
-    console.print(_fit_text(f"[dim]messages={current.message_count} · approvals={len(approvals)} · tab={tab}[/dim]", width))
-    console.print(_divider())
-    _render_tab_preview(adapter, current.session_id, tab, width=width, max_lines=preview_lines)
+    lines = [
+        _fit_text("ORBIT PTY Mock Workbench · mock-only · q/esc/ctrl+c exit · j/k move · t tab · a approvals · enter inspect · ? help", width),
+        _divider(width),
+        "Sessions",
+    ]
+    for i, session in enumerate(sessions[:max_sessions]):
+        prefix = ">" if i == selected else " "
+        lines.append(f"{prefix} {session.session_id} · {session.status} · {session.backend_name} · {session.model}")
+    if len(sessions) > max_sessions:
+        lines.append(f"... {len(sessions) - max_sessions} more session(s)")
+    lines.extend([
+        _divider(width),
+        f"Current tab: {tab_bar}",
+        f"Session: {current.session_id} · conversation={current.conversation_id}",
+        f"messages={current.message_count} · approvals={len(approvals)} · tab={tab}",
+        _divider(width),
+    ])
+    lines.extend(_tab_preview_lines(adapter, current.session_id, tab, preview_lines))
     if approvals and preview_lines >= 5:
-        console.print(_divider())
-        console.print("[yellow]Pending approvals for this session[/yellow]")
+        lines.append(_divider(width))
+        lines.append("Pending approvals for this session")
         for approval in approvals[: max(1, min(3, preview_lines // 2))]:
-            console.print(_fit_text(f"- {approval.tool_name}: {approval.summary}", width))
+            lines.append(f"- {approval.tool_name}: {approval.summary}")
     if show_help:
-        console.print(_divider())
-        console.print("[bold]Help[/bold]")
-        for line in [
-            "j / ↓    next session",
-            "k / ↑    previous session",
-            "t / tab  next tab",
-            "a        switch to approval queue",
-            "enter    open detailed inspect view",
-            "?        toggle help",
-            "q / esc / ctrl+c  exit",
-        ]:
-            console.print(_fit_text(line, width))
+        lines.extend([
+            _divider(width),
+            "Help",
+            "j / down      next session",
+            "k / up        previous session",
+            "t / tab       next tab",
+            "a             switch to approval queue",
+            "enter         open detailed inspect view",
+            "q / esc / ^C  exit",
+        ])
+    return lines
 
 
-def _render_inspect(session_id: str, tab: str) -> None:
+def _inspect_lines(session_id: str, tab: str) -> list[str]:
     adapter = MockOrbitInterfaceAdapter()
     session = adapter.get_session(session_id)
-    width = _terminal_size().columns
-    height = _terminal_size().lines
+    width = _safe_width()
+    height = _safe_height()
     if session is None:
-        return
-    _clear()
-    console.print(_fit_text(f"[bold magenta]Session Inspect[/bold magenta] [cyan]{session.session_id}[/cyan] [dim]tab={tab} · press any key to go back[/dim]", width))
-    console.print(_divider())
-    console.print(_fit_text(f"backend={session.backend_name} · model={session.model} · status={session.status}", width))
-    console.print(_divider())
+        return ["Session not found."]
+    lines = [
+        _fit_text(f"Session Inspect · {session.session_id} · tab={tab} · press any key to go back", width),
+        _divider(width),
+        f"backend={session.backend_name} · model={session.model} · status={session.status}",
+        _divider(width),
+    ]
     max_lines = max(8, height - 6)
-    lines_printed = 0
-
-    def emit(line: str) -> None:
-        nonlocal lines_printed
-        if lines_printed >= max_lines:
-            return
-        console.print(_fit_text(line, width))
-        lines_printed += 1
-
     if tab == "events":
         for event in adapter.list_events(session_id):
-            emit(f"{event.event_type}")
-            emit(str(event.payload))
-            emit("")
+            lines.append(event.event_type)
+            lines.append(str(event.payload))
+            lines.append("")
     elif tab == "tool_calls":
         for call in adapter.list_tool_calls(session_id):
-            emit(call.tool_name)
-            emit(f"status={call.status} · side_effect_class={call.side_effect_class}")
-            emit(str(call.payload))
-            emit("")
+            lines.append(call.tool_name)
+            lines.append(f"status={call.status} · side_effect_class={call.side_effect_class}")
+            lines.append(str(call.payload))
+            lines.append("")
     elif tab == "artifacts":
         for artifact in adapter.list_artifacts(session_id):
-            emit(f"{artifact.artifact_type} · source={artifact.source}")
-            emit(artifact.content)
-            emit("")
+            lines.append(f"{artifact.artifact_type} · source={artifact.source}")
+            lines.append(artifact.content)
+            lines.append("")
     else:
         for message in adapter.list_messages(session_id):
             label = message.role if not message.message_kind else f"{message.role}/{message.message_kind}"
-            emit(label)
-            emit(message.content)
-            emit("")
-    sys.stdin.read(1)
+            lines.append(label)
+            lines.append(message.content)
+            lines.append("")
+    return lines[:max_lines]
 
 
-def _render_approval_queue(selected: int, show_help: bool = False) -> None:
+def _approval_queue_lines(selected: int, show_help: bool = False) -> list[str]:
     adapter = MockOrbitInterfaceAdapter()
     approvals = adapter.list_open_approvals()
-    width = _terminal_size().columns
-    height = _terminal_size().lines
-    _clear()
-    console.print(_fit_text("[bold magenta]ORBIT Approval Queue[/bold magenta]  [cyan]mock-only[/cyan]  [dim]j/k move · enter inspect · b back · q/esc/ctrl+c exit[/dim]", width))
-    console.print(_divider())
+    width = _safe_width()
+    height = _safe_height()
+    lines = [
+        _fit_text("ORBIT Approval Queue · mock-only · j/k move · enter inspect · b back · q/esc/ctrl+c exit", width),
+        _divider(width),
+    ]
     if not approvals:
-        console.print("No pending approvals.")
-        return
+        lines.append("No pending approvals.")
+        return lines
+    selected = min(selected, len(approvals) - 1)
     current = approvals[selected]
     max_approvals = max(2, min(len(approvals), max(4, height // 3)))
-    console.print("[bold]Approvals[/bold]")
+    lines.append("Approvals")
     for i, approval in enumerate(approvals[:max_approvals]):
-        prefix = "➜" if i == selected else " "
-        style = "bold yellow" if i == selected else "white"
-        line = f"{prefix} {approval.tool_name} {approval.session_id} · {approval.status}"
-        console.print(f"[{style}]{_fit_text(line, width)}[/]")
-    if selected >= max_approvals:
-        console.print(f"[dim]… {len(approvals) - max_approvals} more approval(s)[/dim]")
-    console.print(_divider())
-    console.print(_fit_text(f"[yellow]{current.tool_name}[/yellow] [dim]session={current.session_id}[/dim]", width))
-    console.print(_fit_text(f"[dim]side_effect_class={current.side_effect_class}[/dim]", width))
-    console.print(_fit_text(current.summary, width))
-    console.print(_fit_text(f"payload={current.payload}", width))
+        prefix = ">" if i == selected else " "
+        lines.append(f"{prefix} {approval.tool_name} · {approval.session_id} · {approval.status}")
+    if len(approvals) > max_approvals:
+        lines.append(f"... {len(approvals) - max_approvals} more approval(s)")
+    lines.extend([
+        _divider(width),
+        f"{current.tool_name} · session={current.session_id}",
+        f"side_effect_class={current.side_effect_class}",
+        current.summary,
+        f"payload={current.payload}",
+    ])
     if show_help:
-        console.print(_divider())
-        for line in [
-            "j / ↓    next approval",
-            "k / ↑    previous approval",
-            "enter    open detailed inspect view",
-            "b        back to session browser",
-            "?        toggle help",
-            "q / esc / ctrl+c  exit",
-        ]:
-            console.print(_fit_text(line, width))
+        lines.extend([
+            _divider(width),
+            "Help",
+            "j / down      next approval",
+            "k / up        previous approval",
+            "enter         open detailed inspect view",
+            "b             back to session browser",
+            "q / esc / ^C  exit",
+        ])
+    return lines
 
 
-def _render_approval_inspect(selected: int) -> None:
+def _approval_inspect_lines(selected: int) -> list[str]:
     adapter = MockOrbitInterfaceAdapter()
     approvals = adapter.list_open_approvals()
-    width = _terminal_size().columns
+    width = _safe_width()
     if not approvals:
-        return
+        return ["No pending approvals."]
+    selected = min(selected, len(approvals) - 1)
     current = approvals[selected]
-    _clear()
-    console.print(_fit_text(f"[bold magenta]Approval Inspect[/bold magenta] [yellow]{current.tool_name}[/yellow] [dim]press any key to go back[/dim]", width))
-    console.print(_divider())
-    for line in [
+    return [
+        _fit_text(f"Approval Inspect · {current.tool_name} · press any key to go back", width),
+        _divider(width),
         f"approval_request_id={current.approval_request_id}",
         f"session_id={current.session_id}",
         f"status={current.status} · side_effect_class={current.side_effect_class}",
@@ -257,16 +255,15 @@ def _render_approval_inspect(selected: int) -> None:
         current.summary,
         "",
         str(current.payload),
-    ]:
-        console.print(_fit_text(line, width))
-    sys.stdin.read(1)
+    ]
 
 
 def browse() -> None:
     adapter = MockOrbitInterfaceAdapter()
     sessions = adapter.list_sessions()
     if not sessions:
-        console.print("No sessions available.")
+        sys.stdout.write("No sessions available.\n")
+        sys.stdout.flush()
         return
     selected = 0
     approval_selected = 0
@@ -278,13 +275,12 @@ def browse() -> None:
             sessions = adapter.list_sessions()
             selected = min(selected, max(0, len(sessions) - 1))
             if mode == "approvals":
-                _render_approval_queue(selected=approval_selected, show_help=show_help)
+                _emit_frame(_approval_queue_lines(selected=approval_selected, show_help=show_help))
             else:
-                _render_browser(selected=selected, tab_index=tab_index, show_help=show_help)
+                _emit_frame(_browser_lines(selected=selected, tab_index=tab_index, show_help=show_help))
             key = _read_key()
             if key in FORCE_EXIT_KEYS:
-                _clear()
-                console.print("Exited ORBIT mock workbench.")
+                _emit_frame(["Exited ORBIT mock workbench."])
                 return
             if key in {"?"}:
                 show_help = not show_help
@@ -302,7 +298,8 @@ def browse() -> None:
                     approval_selected = max(0, approval_selected - 1)
                     continue
                 if key in {"\r", "\n"} and approvals:
-                    _render_approval_inspect(approval_selected)
+                    _emit_frame(_approval_inspect_lines(approval_selected))
+                    sys.stdin.read(1)
                     continue
             else:
                 if key in {"a", "A"}:
@@ -318,5 +315,6 @@ def browse() -> None:
                     tab_index = (tab_index + 1) % len(SESSION_TABS)
                     continue
                 if key in {"\r", "\n"} and sessions:
-                    _render_inspect(sessions[selected].session_id, SESSION_TABS[tab_index])
+                    _emit_frame(_inspect_lines(sessions[selected].session_id, SESSION_TABS[tab_index]))
+                    sys.stdin.read(1)
                     continue
