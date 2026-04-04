@@ -194,6 +194,7 @@ The current mock PTY browser now supports:
 - approval queue mode
 - detailed inspect views for both sessions and approvals
 - an explicit status command for checking current PTY implementation state and dummy backend readiness: `orbit-interface workbench status`
+- a direct Python launch path from the project directory: `python3 apps/orbit_workbench.py`
 
 ### Future action hooks
 Reserved now, wired later when runtime integration is safe:

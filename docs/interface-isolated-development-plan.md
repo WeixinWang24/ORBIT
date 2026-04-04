@@ -28,6 +28,7 @@ Both should depend on a shared adapter contract layer rather than on direct Sess
 
 ### App wrappers
 - `apps/orbit_interface_cli.py`
+- `apps/orbit_workbench.py`
 
 ## Contract shape
 
