@@ -9,6 +9,7 @@ while still remaining deterministic and inspectable.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from orbit.models import MemoryType
 
@@ -24,6 +25,16 @@ class DurableMemoryCandidate:
     strategy: str
 
 
+def _best_clause_for_markers(text: str, markers: list[str]) -> str:
+    clauses = [part.strip(" -:;,.\n\t") for part in re.split(r"[\n.!?;]+", text) if part.strip()]
+    lowered_clauses = [clause.lower() for clause in clauses]
+    for marker in markers:
+        for clause, lowered in zip(clauses, lowered_clauses):
+            if marker in lowered:
+                return clause
+    return text.strip()
+
+
 def extract_durable_candidates(*, user_text: str, assistant_text: str) -> list[DurableMemoryCandidate]:
     """Extract bounded durable-memory candidates from a completed turn.
 
@@ -37,28 +48,30 @@ def extract_durable_candidates(*, user_text: str, assistant_text: str) -> list[D
     if user_text:
         preference_markers = ["i prefer", "prefer ", "i like", "please keep"]
         if any(marker in user_lower for marker in preference_markers):
+            clause = _best_clause_for_markers(user_text, preference_markers)
             candidates.append(
                 DurableMemoryCandidate(
                     memory_type=MemoryType.USER_PREFERENCE,
-                    summary_text=user_text.strip(),
+                    summary_text=clause,
                     detail_text=user_text.strip(),
-                    tags=["user_preference", "policy_v2"],
+                    tags=["user_preference", "policy_v2_1"],
                     salience=0.82,
-                    confidence=0.78,
-                    strategy="policy_v2_preference_clause",
+                    confidence=0.8,
+                    strategy="policy_v2_1_preference_clause",
                 )
             )
         todo_markers = ["remember to", "need to", "todo", "we need to", "don't forget"]
         if any(marker in user_lower for marker in todo_markers):
+            clause = _best_clause_for_markers(user_text, todo_markers)
             candidates.append(
                 DurableMemoryCandidate(
                     memory_type=MemoryType.TODO,
-                    summary_text=user_text.strip(),
+                    summary_text=clause,
                     detail_text=user_text.strip(),
-                    tags=["todo", "policy_v2"],
+                    tags=["todo", "policy_v2_1"],
                     salience=0.86,
-                    confidence=0.74,
-                    strategy="policy_v2_todo_clause",
+                    confidence=0.76,
+                    strategy="policy_v2_1_todo_clause",
                 )
             )
 
@@ -67,28 +80,30 @@ def extract_durable_candidates(*, user_text: str, assistant_text: str) -> list[D
     if decision_source:
         decision_markers = ["decision:", "we will", "we decided", "decided", "the plan is"]
         if any(marker in decision_lower for marker in decision_markers):
+            clause = _best_clause_for_markers(decision_source, decision_markers)
             candidates.append(
                 DurableMemoryCandidate(
                     memory_type=MemoryType.DECISION,
-                    summary_text=decision_source,
+                    summary_text=clause,
                     detail_text=decision_source,
-                    tags=["decision", "policy_v2"],
+                    tags=["decision", "policy_v2_1"],
                     salience=0.9,
-                    confidence=0.78,
-                    strategy="policy_v2_decision_clause",
+                    confidence=0.8,
+                    strategy="policy_v2_1_decision_clause",
                 )
             )
         lesson_markers = ["lesson", "rule of thumb", "remember:", "takeaway"]
         if any(marker in decision_lower for marker in lesson_markers):
+            clause = _best_clause_for_markers(decision_source, lesson_markers)
             candidates.append(
                 DurableMemoryCandidate(
                     memory_type=MemoryType.LESSON,
-                    summary_text=decision_source,
+                    summary_text=clause,
                     detail_text=decision_source,
-                    tags=["lesson", "policy_v2"],
+                    tags=["lesson", "policy_v2_1"],
                     salience=0.78,
-                    confidence=0.72,
-                    strategy="policy_v2_lesson_clause",
+                    confidence=0.74,
+                    strategy="policy_v2_1_lesson_clause",
                 )
             )
 

@@ -27,6 +27,20 @@ class MemoryRetrievalBackend(ABC):
         """Return scored memory candidates in backend-specific order."""
 
 
+class PostgresMemoryRetrievalBackend(MemoryRetrievalBackend):
+    """Reserved PostgreSQL/pgvector retrieval backend stub for later phases."""
+
+    def score(
+        self,
+        *,
+        query_text: str,
+        query_vector: list[float],
+        records: list[MemoryRecord],
+        embeddings: dict[str, MemoryEmbedding],
+    ) -> list[RetrievalScore]:
+        return []
+
+
 class ApplicationMemoryRetrievalBackend(MemoryRetrievalBackend):
     """Current app-side hybrid retrieval backend."""
 

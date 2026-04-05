@@ -1,6 +1,6 @@
 """Memory services and retrieval helpers for ORBIT."""
 
-from orbit.memory.backend import ApplicationMemoryRetrievalBackend, MemoryRetrievalBackend
+from orbit.memory.backend import ApplicationMemoryRetrievalBackend, MemoryRetrievalBackend, PostgresMemoryRetrievalBackend
 from orbit.memory.embedding_service import EmbeddingService, cosine_similarity
 from orbit.memory.extraction import DurableMemoryCandidate, extract_durable_candidates
 from orbit.memory.memory_service import MemoryService
@@ -11,6 +11,7 @@ __all__ = [
     "DurableMemoryCandidate",
     "EmbeddingService",
     "MemoryRetrievalBackend",
+    "PostgresMemoryRetrievalBackend",
     "MemoryService",
     "RetrievalBackendPlan",
     "RetrievalScore",

@@ -303,6 +303,14 @@ def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[
         '<div class="panel-block"><h2 class="section-title">Canonical Memory Records</h2>' + records_html_joined + '</div>'
         + '<div class="panel-block"><h2 class="section-title">Memory Embeddings</h2>' + embeddings_html_joined + '</div>'
         + '<div class="panel-block"><h2 class="section-title">Retrieval Probe</h2>'
+        + '<form method="GET" style="margin-bottom:12px; display:grid; gap:8px;">'
+        + '<input type="hidden" name="tab" value="memory" />'
+        + f'<input type="hidden" name="session_id" value="{escape(str((memory_records[0].get("session_id") if memory_records else "") or ""))}" />'
+        + f'<label class="fragment-meta">query <input name="memory_query" value="{escape(retrieval_query or "")}" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
+        + '<label class="fragment-meta">top-k <input name="memory_top_k" value="10" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
+        + '<label class="fragment-meta">scope <select name="memory_scope" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;"><option value="all">all</option><option value="durable">durable</option><option value="session">session</option></select></label>'
+        + '<button type="submit" style="background:#121222; color:#00FFC6; border:1px solid rgba(0,255,198,.25); border-radius:8px; padding:8px 12px;">Run Probe</button>'
+        + '</form>'
         + f'<div class="fragment-meta">query={escape(retrieval_query or "")}</div>'
         + retrieval_html
         + '</div>'
@@ -568,6 +576,11 @@ class InspectorHandler(BaseHTTPRequestHandler):
             for memory_id in memory_ids:
                 memory_embeddings_raw.extend(store.list_memory_embeddings(memory_id=memory_id))
         retrieval_query = query.get("memory_query", [""])[0]
+        memory_scope = query.get("memory_scope", ["all"])[0]
+        try:
+            memory_top_k = max(1, min(int(query.get("memory_top_k", ["10"])[0]), 50))
+        except Exception:
+            memory_top_k = 10
         retrieval_results = []
         if current_session and retrieval_query.strip():
             probe_query = retrieval_query.strip()
@@ -575,7 +588,12 @@ class InspectorHandler(BaseHTTPRequestHandler):
             latest_embedding_by_memory_id = {}
             for embedding in memory_embeddings_raw:
                 latest_embedding_by_memory_id.setdefault(embedding.memory_id, embedding)
-            for record in memory_records_raw:
+            filtered_memory_records = memory_records_raw
+            if memory_scope == "durable":
+                filtered_memory_records = [record for record in memory_records_raw if str(record.scope) == "durable"]
+            elif memory_scope == "session":
+                filtered_memory_records = [record for record in memory_records_raw if str(record.scope) == "session"]
+            for record in filtered_memory_records:
                 embedding = latest_embedding_by_memory_id.get(record.memory_id)
                 if embedding is None:
                     embedding = memory_service._upsert_embedding_for_record(record)
@@ -600,7 +618,7 @@ class InspectorHandler(BaseHTTPRequestHandler):
                     "retrieval_backend": "application",
                 })
             retrieval_results.sort(key=lambda item: item["score"], reverse=True)
-            retrieval_results = retrieval_results[:10]
+            retrieval_results = retrieval_results[:memory_top_k]
         memory_records = [record.model_dump(mode="json") for record in memory_records_raw]
         memory_embeddings = [embedding.model_dump(mode="json") for embedding in memory_embeddings_raw]
         metadata = current_session.metadata if current_session is not None else {}
