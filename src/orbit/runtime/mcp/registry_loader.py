@@ -4,6 +4,7 @@ import anyio
 
 from orbit.runtime.mcp.client import build_mcp_client
 from orbit.runtime.mcp.models import McpClientBootstrap
+from orbit.runtime.mcp.persistent_client_registry import PERSISTENT_MCP_CLIENT_REGISTRY
 from orbit.tools.mcp import McpToolWrapper
 from orbit.tools.registry import ToolRegistry
 
@@ -13,7 +14,7 @@ async def async_register_mcp_server_tools(*, registry: ToolRegistry, bootstrap: 
 
     Async-friendly version for notebook/event-loop contexts.
     """
-    client = build_mcp_client(bootstrap)
+    client = PERSISTENT_MCP_CLIENT_REGISTRY.get_or_create(bootstrap) if bootstrap.server_name == "browser" else build_mcp_client(bootstrap)
     descriptors = await client.async_list_tools()
     wrapped = [McpToolWrapper(descriptor=descriptor, client=client) for descriptor in descriptors]
     registry.register_many(wrapped)

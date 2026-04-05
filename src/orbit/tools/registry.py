@@ -3,12 +3,35 @@ from __future__ import annotations
 from pathlib import Path
 
 from .base import Tool
+from .browser import BrowserClickTool, BrowserConsoleTool, BrowserOpenTool, BrowserScreenshotTool, BrowserSnapshotTool, BrowserTypeTool
+from orbit.browser_manager import BrowserManager
 from .files import ApplyExactHunkTool, ReadFileTool, ReplaceAllInFileTool, ReplaceBlockInFileTool, ReplaceInFileTool, WriteFileTool
+from .introspection import DescribeToolTool, ListAvailableToolsTool
 
 
 class ToolRegistry:
-    def __init__(self, workspace_root: Path):
-        tools = [ReadFileTool(workspace_root), WriteFileTool(workspace_root), ReplaceInFileTool(workspace_root), ReplaceAllInFileTool(workspace_root), ReplaceBlockInFileTool(workspace_root), ApplyExactHunkTool(workspace_root)]
+    def __init__(self, workspace_root: Path, *, enable_native_browser_tools: bool = False):
+        self._tools: dict[str, Tool] = {}
+        tools = [
+            ReadFileTool(workspace_root),
+            WriteFileTool(workspace_root),
+            ReplaceInFileTool(workspace_root),
+            ReplaceAllInFileTool(workspace_root),
+            ReplaceBlockInFileTool(workspace_root),
+            ApplyExactHunkTool(workspace_root),
+            ListAvailableToolsTool(lambda: self),
+            DescribeToolTool(lambda: self),
+        ]
+        if enable_native_browser_tools:
+            browser_manager = BrowserManager(workspace_root)
+            tools.extend([
+                BrowserOpenTool(browser_manager),
+                BrowserSnapshotTool(browser_manager),
+                BrowserClickTool(browser_manager),
+                BrowserTypeTool(browser_manager),
+                BrowserConsoleTool(browser_manager),
+                BrowserScreenshotTool(browser_manager),
+            ])
         self._tools = {tool.name: tool for tool in tools}
 
     def register(self, tool: Tool) -> None:

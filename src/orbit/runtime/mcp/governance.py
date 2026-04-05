@@ -78,6 +78,23 @@ _GIT_PERMISSION_AUTHORITY_TOOLS = {
     "git_checkout_branch",
 }
 
+# Structured pytest diagnostics — workspace-scoped, bounded, no-approval for coding workflow.
+# Classified as safe/system_environment so a coding agent can run tests without approval gates.
+# Note: test execution does run arbitrary code and may write .pytest_cache; this is accepted
+# as benign for the first-slice diagnostics use case.
+_PYTEST_SYSTEM_ENVIRONMENT_TOOLS = {
+    "run_pytest_structured",
+}
+
+_BROWSER_SYSTEM_ENVIRONMENT_TOOLS = {
+    "browser_open",
+    "browser_snapshot",
+    "browser_click",
+    "browser_type",
+    "browser_console",
+    "browser_screenshot",
+}
+
 
 def resolve_mcp_tool_governance(*, server_name: str, original_tool_name: str) -> McpGovernanceMetadata:
     server = server_name.strip().lower()
@@ -134,6 +151,24 @@ def resolve_mcp_tool_governance(*, server_name: str, original_tool_name: str) ->
                 "side_effect_class": "write",
                 "requires_approval": True,
                 "governance_policy_group": "permission_authority",
+                "environment_check_kind": "none",
+            }
+
+    if server == "pytest":
+        if tool in _PYTEST_SYSTEM_ENVIRONMENT_TOOLS:
+            return {
+                "side_effect_class": "safe",
+                "requires_approval": False,
+                "governance_policy_group": "system_environment",
+                "environment_check_kind": "none",
+            }
+
+    if server == "browser":
+        if tool in _BROWSER_SYSTEM_ENVIRONMENT_TOOLS:
+            return {
+                "side_effect_class": "safe",
+                "requires_approval": False,
+                "governance_policy_group": "system_environment",
                 "environment_check_kind": "none",
             }
 

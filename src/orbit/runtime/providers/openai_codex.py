@@ -130,11 +130,13 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
                 query_text=query_text,
                 limit=5,
             )
+        runtime_mode = session.runtime_mode if session is not None else "dev"
         assembly_plan = build_text_only_prompt_assembly_plan(
             backend_name=self.backend_name,
             model=self.config.model,
             messages=messages,
             workspace_root=str(self.workspace_root),
+            runtime_mode=runtime_mode,
             memory_fragments=memory_fragments,
         )
         instructions = assembly_plan.effective_instructions
