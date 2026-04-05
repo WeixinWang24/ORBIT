@@ -139,7 +139,7 @@ class PostgresStore(OrbitStore):
 
     def list_sessions(self) -> list[ConversationSession]:
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT data FROM sessions ORDER BY updated_at ASC, created_at ASC")
+            cur.execute("SELECT data FROM sessions ORDER BY updated_at DESC, created_at DESC")
             return [self._read_model(ConversationSession, row) for row in cur.fetchall()]
 
     def list_messages_for_session(self, session_id: str) -> list[ConversationMessage]:

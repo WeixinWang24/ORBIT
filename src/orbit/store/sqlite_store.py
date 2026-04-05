@@ -105,7 +105,7 @@ class SQLiteStore(OrbitStore):
         return [Run.model_validate_json(row["data"]) for row in rows]
 
     def list_sessions(self) -> list[ConversationSession]:
-        rows = self.conn.execute("SELECT data FROM sessions ORDER BY updated_at ASC, rowid ASC").fetchall()
+        rows = self.conn.execute("SELECT data FROM sessions ORDER BY updated_at DESC, rowid DESC").fetchall()
         return [ConversationSession.model_validate_json(row["data"]) for row in rows]
 
     def list_managed_processes(self) -> list[ManagedProcess]:
