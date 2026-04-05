@@ -5,7 +5,7 @@ Design contract
 - Input:  plain markdown text + a display width (in terminal columns).
 - Output: a ``tuple[str, ...]`` of pre-wrapped, ANSI-coded lines.
 - The caller (chat_projection.py) prepends its own indent prefix and feeds
-  lines directly into the body list.  Lines must NOT be re-wrapped after
+  lines directly into the body list. Lines must NOT be re-wrapped after
   being returned here — they are already wrapped to ``width``.
 
 What uses this
@@ -26,27 +26,28 @@ What must NOT use this
 Caching
 -------
 ``render_markdown`` is cached with ``@lru_cache(maxsize=256)`` keyed on
-``(text, width)``.  Committed messages are immutable, so the hit-rate is
-near 100%.  On terminal resize the new width produces new cache entries;
-stale width entries evict naturally via LRU.  256 slots cover ~12 distinct
-terminal widths × 20-message history with headroom.
+``(text, width)``. Committed messages are immutable, so the hit-rate is near
+100%. On terminal resize the new width produces new cache entries; stale width
+entries evict naturally via LRU.
 
-Code fence style
-----------------
-``code_theme="none"`` suppresses Pygments syntax-token coloring inside fenced
-blocks.  The panel/container background (a grey fill) is a Rich container
-style, not a Pygments theme, so it is preserved — this is intentional and
-acceptable for the MVP.  Syntax highlighting can be enabled in a later stage
-by exposing a ``code_theme`` parameter.
+Fenced code blocks
+------------------
+Fenced code blocks use Rich's built-in dark ``monokai`` theme. This keeps the
+container background and token spans consistently dark, which works much better
+for ORBIT's dark terminal than Rich's default bright code-block presentation.
 
-Trailing whitespace
--------------------
-Rich pads rendered lines with trailing spaces to fill the requested terminal
-width.  For lines that end in plain spaces (paragraphs, list items, numbered
-items) we strip them with ``rstrip(' ')``.  For lines that end in an ANSI
-reset sequence (blockquotes, code-block borders) the padding spaces appear
-*before* the reset code — ``rstrip(' ')`` leaves those alone, preserving the
-intentional background-color fill.
+H1 headings
+-----------
+Rich's default H1 rendering is visually loud (heavy box chrome). ORBIT rewrites
+that three-line box into a lighter treatment:
+- one title line in a muted bright heading colour
+- one soft purple divider line underneath
+
+Emoji / status glyphs
+---------------------
+Some terminals render certain emoji/status sequences unreliably inside the raw
+PTY path (for example clipped right halves or odd fallback glyphs). For the
+markdown path we normalize a few high-risk symbols into stable text forms.
 """
 
 from __future__ import annotations
@@ -60,30 +61,7 @@ from rich.markdown import Markdown
 
 from . import termio as T
 
-
-LIGHT_CODE_BG_PATTERNS = (
-    "\x1b[40m",
-    "\x1b[47m",
-    "\x1b[107m",
-    "\x1b[48;2;0;0;0m",
-    "\x1b[48;2;248;248;248m",
-    "\x1b[48;2;250;250;250m",
-    "\x1b[48;2;255;255;255m",
-    "\x1b[48;5;15m",
-    "\x1b[48;5;231m",
-    "\x1b[48;5;255m",
-)
-LIGHT_CODE_FG_PATTERNS = (
-    T.FG_DEFAULT,
-    T.FG_BLACK,
-    T.FG_BRIGHT_BLACK,
-    T.FG_WHITE,
-    T.FG_BRIGHT_WHITE,
-    T.fg_rgb(0, 0, 0),
-    T.fg_rgb(255, 255, 255),
-)
-MUTED_CODE_BG = T.bg_rgb(58, 58, 62)
-MUTED_CODE_FG = T.fg_rgb(214, 214, 214)
+_CODE_THEME = "monokai"
 MUTED_HEADING = T.fg_rgb(220, 208, 255) + T.BOLD
 MUTED_HEADING_DIVIDER = T.fg_rgb(120, 104, 160)
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -94,51 +72,11 @@ def _strip_ansi(text: str) -> str:
 
 
 def _normalize_emoji_for_terminal(text: str) -> str:
-    """Reduce known terminal-width troublemakers in markdown-rendered text.
-
-    Some emoji/glyph presentation sequences render wider in the terminal than
-    the upstream wrapping logic expects, especially when variation selectors
-    are involved.  This can produce clipped right halves (observed with ✅).
-    Be conservative: remove variation selectors, but preserve common status
-    symbols in readable text form when the terminal might otherwise fall back
-    to odd glyphs.
-    """
     return (
         text.replace("\ufe0f", "")
-            .replace("✅", "[OK]")
-            .replace("☑", "[DONE]")
+        .replace("✅", "[OK]")
+        .replace("☑", "[DONE]")
     )
-
-
-def _soften_code_block_background(lines: list[str]) -> list[str]:
-    softened: list[str] = []
-    code_block_like = False
-    for ln in lines:
-        plain = _strip_ansi(ln)
-        stripped = plain.strip()
-        if stripped.startswith("╭") or stripped.startswith("╰") or stripped.startswith("│"):
-            code_block_like = True
-        if code_block_like:
-            # Rich code blocks can carry nested per-token spans with their own
-            # bright backgrounds and syntax colours. For ORBIT's current dark
-            # terminal aesthetic, strip those inner spans entirely and repaint
-            # the whole code block line with one coherent muted style.
-            softened.append(MUTED_CODE_BG + MUTED_CODE_FG + plain + T.RESET)
-            continue
-        updated = ln
-        touched_bg = False
-        for pattern in LIGHT_CODE_BG_PATTERNS:
-            if pattern in updated:
-                updated = updated.replace(pattern, MUTED_CODE_BG)
-                touched_bg = True
-        if touched_bg:
-            for fg_pattern in LIGHT_CODE_FG_PATTERNS:
-                if fg_pattern in updated:
-                    updated = updated.replace(fg_pattern, MUTED_CODE_FG)
-            if MUTED_CODE_FG not in updated:
-                updated = MUTED_CODE_FG + updated
-        softened.append(updated)
-    return softened
 
 
 def _rewrite_heavy_h1_box(lines: list[str], width: int) -> list[str]:
@@ -151,7 +89,14 @@ def _rewrite_heavy_h1_box(lines: list[str], width: int) -> list[str]:
             top_plain = _strip_ansi(lines[i]).strip()
             mid_plain = _strip_ansi(lines[i + 1]).strip()
             bot_plain = _strip_ansi(lines[i + 2]).strip()
-            if top_plain.startswith("┏") and top_plain.endswith("┓") and mid_plain.startswith("┃") and mid_plain.endswith("┃") and bot_plain.startswith("┗") and bot_plain.endswith("┛"):
+            if (
+                top_plain.startswith("┏")
+                and top_plain.endswith("┓")
+                and mid_plain.startswith("┃")
+                and mid_plain.endswith("┃")
+                and bot_plain.startswith("┗")
+                and bot_plain.endswith("┛")
+            ):
                 title = mid_plain.strip("┃").strip()
                 if title:
                     divider_width = max(6, min(width, max(len(title), 12)))
@@ -166,22 +111,7 @@ def _rewrite_heavy_h1_box(lines: list[str], width: int) -> list[str]:
 
 @lru_cache(maxsize=256)
 def render_markdown(text: str, width: int) -> tuple[str, ...]:
-    """Render *text* as markdown and return pre-wrapped ANSI terminal lines.
-
-    Parameters
-    ----------
-    text:
-        Raw markdown string from a committed user or assistant message.
-    width:
-        Available display-column budget for this message body (the caller's
-        ``width - 4`` value, *before* the 2-space indent prefix is applied).
-
-    Returns
-    -------
-    A non-empty tuple of strings.  Each string is a single terminal line with
-    embedded ANSI escape codes.  Lines contain no ``\\n`` characters and are
-    already wrapped to *width* display columns.
-    """
+    """Render *text* as markdown and return pre-wrapped ANSI terminal lines."""
     if not text or not text.strip():
         return ("",)
 
@@ -190,47 +120,26 @@ def render_markdown(text: str, width: int) -> tuple[str, ...]:
     buf = io.StringIO()
     console = Console(
         file=buf,
-        force_terminal=True,   # emit ANSI codes even though target is StringIO
+        force_terminal=True,
         width=width,
-        highlight=False,       # disable Rich's auto-highlighter (IP, paths, etc.)
-        no_color=False,        # keep markdown-driven colours
+        highlight=False,
+        no_color=False,
     )
-    # hyperlinks=False: suppress OSC-8 escape sequences; raw PTY support is
-    # unreliable across terminals and it clutters the diff-based renderer.
-    # code_theme="none": no Pygments syntax colouring in this MVP.
     try:
-        md = Markdown(text, hyperlinks=False, code_theme="none")
+        md = Markdown(text, hyperlinks=False, code_theme=_CODE_THEME)
         console.print(md, end="")
     except Exception:
-        # Defensive fallback: if Rich fails to parse (shouldn't happen in
-        # practice), return the text as a single plain line so the UI
-        # doesn't crash.
         return (text.replace("\n", " "),)
 
     raw = buf.getvalue()
     lines = raw.split("\n")
 
-    # Rich appends a trailing "\n" which produces a spurious empty final
-    # element after split — remove all trailing empty strings.
     while lines and lines[-1] == "":
         lines.pop()
 
     if not lines:
         return ("",)
 
-    # Strip trailing plain-space padding that Rich adds to fill terminal width.
-    # ``rstrip(' ')`` is safe here:
-    #   - Paragraphs / list items / numbered items end in spaces → stripped.
-    #   - Blockquote / code-block lines end in an ANSI reset code after the
-    #     spaces, so the spaces sit before the reset; ``rstrip(' ')`` won't
-    #     reach them and the intentional background colour fill is preserved.
     lines = [ln.rstrip(" ") for ln in lines]
-
-    # ORBIT-local visual polish:
-    # - tone down Rich's very bright code-block container background so it fits
-    #   dark terminals better
-    # - rewrite heavy H1 title boxes into a lighter title + divider treatment
-    lines = _soften_code_block_background(lines)
     lines = _rewrite_heavy_h1_box(lines, width)
-
     return tuple(lines)
