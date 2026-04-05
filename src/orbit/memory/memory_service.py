@@ -287,6 +287,40 @@ class MemoryService:
                 )
                 self.store.save_context_artifact(artifact)
                 snapshot["context_artifact_id"] = artifact.context_artifact_id
+        export_rows = [
+            {
+                "memory_id": result["memory_id"],
+                "score": result["score"],
+                "semantic_score": result["semantic_score"],
+                "lexical_score": result["lexical_score"],
+                "retrieval_backend": result["retrieval_backend"],
+            }
+            for result in results
+        ]
+        if session_id is not None:
+            session = self.store.get_session(session_id)
+            if session is not None and backend_override:
+                compare_artifact = ContextArtifact(
+                    run_id=session.conversation_id,
+                    artifact_type="memory_compare_summary",
+                    source="memory_service.probe_memory_retrieval",
+                    content=json.dumps({
+                        "backend_plan": {
+                            "backend": self._current_backend_plan(backend_override=backend_override).backend,
+                            "strategy": self._current_backend_plan(backend_override=backend_override).strategy,
+                        },
+                        "weights": {
+                            "semantic_weight": effective_weights.semantic_weight,
+                            "lexical_weight": effective_weights.lexical_weight,
+                            "durable_boost": effective_weights.durable_boost,
+                            "session_boost": effective_weights.session_boost,
+                            "salience_weight": effective_weights.salience_weight,
+                        },
+                        "snapshot": snapshot,
+                        "export_rows": export_rows,
+                    }, ensure_ascii=False),
+                )
+                self.store.save_context_artifact(compare_artifact)
         return {
             "backend_plan": self._current_backend_plan(backend_override=backend_override),
             "results": results,
@@ -298,6 +332,7 @@ class MemoryService:
                 "salience_weight": effective_weights.salience_weight,
             },
             "snapshot": snapshot,
+            "export_rows": export_rows,
         }
 
     def _current_backend_plan(self, backend_override: str | None = None):
@@ -330,7 +365,9 @@ class MemoryService:
                 "execution_enabled": False,
                 "planned_sql_shape": getattr(PostgresMemoryRetrievalBackend, "planned_sql_shape", None),
                 "sql_draft_path": getattr(PostgresMemoryRetrievalBackend, "sql_draft_path", None),
+                "migration_stub_path": getattr(PostgresMemoryRetrievalBackend, "migration_stub_path", None),
                 "execution_todo": getattr(PostgresMemoryRetrievalBackend, "execution_todo", None),
+                "dry_run_payload": PostgresMemoryRetrievalBackend().dry_run_payload(),
             }
             backend_plan.notes = (
                 "Postgres backend selected from store type or override; current phase keeps this as an explainable stub until pgvector execution is enabled. "

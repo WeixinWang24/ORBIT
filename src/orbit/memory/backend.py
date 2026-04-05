@@ -37,6 +37,7 @@ class PostgresMemoryRetrievalBackend(MemoryRetrievalBackend):
     execution_todo = "Enable pgvector-native derived embedding storage, exact similarity SQL, and capability-gated execution path."
     planned_sql_shape = "SELECT memory_id, 1 - (embedding <=> $query_vector) AS score FROM memory_embedding_vectors ORDER BY embedding <=> $query_vector LIMIT $k"
     sql_draft_path = "docs/persistence/sql/pgvector-memory-embedding-vectors.sql"
+    migration_stub_path = "docs/persistence/sql/migrations/0001_pgvector_memory_embedding_vectors.sql"
 
     def _score_with_pgvector(
         self,
@@ -60,6 +61,17 @@ class PostgresMemoryRetrievalBackend(MemoryRetrievalBackend):
         stable method seam for future server-side similarity execution.
         """
         return []
+
+    def dry_run_payload(self) -> dict:
+        """Return an explain-oriented dry-run payload for future pgvector execution."""
+        return {
+            "backend": self.backend_name,
+            "strategy": self.strategy_name,
+            "planned_sql_shape": self.planned_sql_shape,
+            "sql_draft_path": self.sql_draft_path,
+            "migration_stub_path": self.migration_stub_path,
+            "execution_todo": self.execution_todo,
+        }
 
     def score(
         self,
