@@ -55,7 +55,8 @@ def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy:
             max_width = max(20, width)
             if len(compact) > max_width:
                 compact = compact[: max(0, max_width - 1)] + "…"
-            body.append(T.FG_YELLOW + compact + T.RESET)
+            tone = T.FG_GREEN if tool_ok is True else T.FG_RED if tool_ok is False else T.FG_YELLOW
+            body.append(tone + compact + T.RESET)
             body.append("")
             continue
         body.append(color + label + T.RESET)
