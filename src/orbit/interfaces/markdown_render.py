@@ -65,15 +65,22 @@ LIGHT_CODE_BG_PATTERNS = (
     "\x1b[40m",
     "\x1b[47m",
     "\x1b[107m",
+    "\x1b[48;2;0;0;0m",
     "\x1b[48;2;248;248;248m",
     "\x1b[48;2;250;250;250m",
+    "\x1b[48;2;255;255;255m",
+    "\x1b[48;5;15m",
+    "\x1b[48;5;231m",
     "\x1b[48;5;255m",
 )
 LIGHT_CODE_FG_PATTERNS = (
     T.FG_DEFAULT,
     T.FG_BLACK,
     T.FG_BRIGHT_BLACK,
+    T.FG_WHITE,
+    T.FG_BRIGHT_WHITE,
     T.fg_rgb(0, 0, 0),
+    T.fg_rgb(255, 255, 255),
 )
 MUTED_CODE_BG = T.bg_rgb(58, 58, 62)
 MUTED_CODE_FG = T.fg_rgb(214, 214, 214)
@@ -105,14 +112,28 @@ def _normalize_emoji_for_terminal(text: str) -> str:
 
 def _soften_code_block_background(lines: list[str]) -> list[str]:
     softened: list[str] = []
+    code_block_like = False
     for ln in lines:
+        plain = _strip_ansi(ln).strip()
+        if plain.startswith("╭") or plain.startswith("╰") or plain.startswith("│"):
+            code_block_like = True
         updated = ln
         touched_bg = False
         for pattern in LIGHT_CODE_BG_PATTERNS:
             if pattern in updated:
                 updated = updated.replace(pattern, MUTED_CODE_BG)
                 touched_bg = True
-        if touched_bg:
+        if code_block_like:
+            # Force the container lines and nested content toward one coherent
+            # dark code-block style, even when Rich emits mixed span styles.
+            for fg_pattern in LIGHT_CODE_FG_PATTERNS:
+                if fg_pattern in updated:
+                    updated = updated.replace(fg_pattern, MUTED_CODE_FG)
+            if MUTED_CODE_BG not in updated:
+                updated = MUTED_CODE_BG + updated
+            if MUTED_CODE_FG not in updated:
+                updated = MUTED_CODE_FG + updated
+        elif touched_bg:
             for fg_pattern in LIGHT_CODE_FG_PATTERNS:
                 if fg_pattern in updated:
                     updated = updated.replace(fg_pattern, MUTED_CODE_FG)
