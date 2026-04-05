@@ -141,7 +141,7 @@ def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None) -> None:
         debug_log(f"pty_runtime_cli:input_debug_log={pty_input_debug_path}")
 
     last_busy_state = False
-    with raw_mode(), alt_screen():
+    with raw_mode(), alt_screen(), bracketed_paste(), focus_events():
         while True:
             if state.runtime_busy and state._submit_thread_started_at is None and runtime_adapter is not None:
                 _start_background_submit(state, runtime_adapter)
@@ -221,7 +221,11 @@ def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None) -> None:
                     continue
 
                 if isinstance(event, ParsedFocus):
+                    if not event.focused:
+                        screen.invalidate()
+                        continue
                     screen.invalidate()
+                    state.assistant_inflight_dirty = True
                     continue
                 if isinstance(event, ParsedMouse):
                     continue
@@ -234,9 +238,11 @@ def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None) -> None:
                     debug_log(f"pty_runtime_cli:swallow_escape mode={state.mode}")
                     continue
                 if ctrl and name == "c":
-                    screen.invalidate()
-                    screen.render([T.DIM + "Exited ORBIT runtime CLI." + T.RESET], width, 1)
-                    return
+                    try:
+                        screen.invalidate()
+                        screen.render([T.DIM + "Exited ORBIT runtime CLI." + T.RESET], width, 1)
+                    finally:
+                        return
 
                 invalidate = False
                 if state.mode == CHAT_MODE:
