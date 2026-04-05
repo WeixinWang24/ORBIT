@@ -20,14 +20,27 @@ def bootstrap_stdio_mcp_server(config: McpStdioServerConfig) -> McpClientBootstr
     )
 
 
-def bootstrap_local_filesystem_mcp_server(*, workspace_root: str, max_read_bytes: int | None = None) -> McpClientBootstrap:
+def bootstrap_local_filesystem_mcp_server(*, workspace_root: str, max_read_bytes: int | None = None, session_id: str | None = None) -> McpClientBootstrap:
     env = {"ORBIT_WORKSPACE_ROOT": workspace_root}
     if max_read_bytes is not None:
         env["ORBIT_MCP_MAX_READ_BYTES"] = str(max_read_bytes)
+    if session_id is not None:
+        env["ORBIT_SESSION_ID"] = str(session_id)
     config = McpStdioServerConfig(
         name="filesystem",
         command=str(ORBIT_CONDA_PYTHON),
         args=["-m", "mcp_servers.system.core.filesystem.stdio_server"],
+        env=env,
+    )
+    return bootstrap_stdio_mcp_server(config)
+
+
+def bootstrap_local_git_mcp_server(*, workspace_root: str) -> McpClientBootstrap:
+    env = {"ORBIT_WORKSPACE_ROOT": workspace_root}
+    config = McpStdioServerConfig(
+        name="git",
+        command=str(ORBIT_CONDA_PYTHON),
+        args=["-m", "mcp_servers.system.core.git.stdio_server"],
         env=env,
     )
     return bootstrap_stdio_mcp_server(config)

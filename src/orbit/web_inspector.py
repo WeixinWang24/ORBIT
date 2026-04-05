@@ -59,8 +59,7 @@ def _mutation_detail_html(tool_data: dict | None) -> str:
         )
     return ''.join(blocks)
 
-from orbit.runtime.embedding_service import cosine_similarity
-from orbit.runtime.memory_service import MemoryService
+from orbit.memory import MemoryService, cosine_similarity
 from orbit.settings import DEFAULT_DB_PATH, DEFAULT_INSPECTOR_HOST, DEFAULT_INSPECTOR_PORT, DEFAULT_WORKSPACE_ROOT
 from orbit.store.sqlite_store import SQLiteStore
 
@@ -292,8 +291,8 @@ def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[
     for result in retrieval_results:
         retrieval_blocks.append(
             f'<div class="fragment-card">'
-            f'<h3 class="fragment-title">retrieval · score={escape(str(result.get("score", 0.0)))}</h3>'
-            f'<div class="fragment-meta">memory_id={escape(str(result.get("memory_id", "unknown")))} · scope={escape(str(result.get("memory_scope", "unknown")))} · model={escape(str(result.get("embedding_model", "unknown")))}</div>'
+            f'<h3 class="fragment-title">retrieval · hybrid={escape(str(result.get("score", 0.0)))}</h3>'
+            f'<div class="fragment-meta">memory_id={escape(str(result.get("memory_id", "unknown")))} · scope={escape(str(result.get("memory_scope", "unknown")))} · model={escape(str(result.get("embedding_model", "unknown")))} · semantic={escape(str(result.get("semantic_score", 0.0)))} · lexical={escape(str(result.get("lexical_score", 0.0)))}</div>'
             f'<pre>{escape(json.dumps(result, indent=2, ensure_ascii=False))}</pre>'
             f'</div>'
         )
@@ -583,15 +582,22 @@ class InspectorHandler(BaseHTTPRequestHandler):
                     latest_embedding_by_memory_id[record.memory_id] = embedding
                     memory_embeddings_raw.append(embedding)
                 score = cosine_similarity(query_vector, embedding.vector)
+                lexical_tokens = set(part for part in retrieval_query.lower().split() if part) & set(part for part in (record.summary_text + ' ' + record.detail_text + ' ' + ' '.join(record.tags)).lower().split() if part)
+                lexical_score = (len(lexical_tokens) / len(set(part for part in retrieval_query.lower().split() if part))) if retrieval_query.strip() else 0.0
+                hybrid_score = 0.8 * score + 0.2 * lexical_score
                 retrieval_results.append({
                     "memory_id": record.memory_id,
                     "memory_scope": str(record.scope),
                     "memory_type": str(record.memory_type),
                     "summary_text": record.summary_text,
                     "detail_text": record.detail_text,
-                    "score": round(score, 6),
+                    "score": round(hybrid_score, 6),
+                    "semantic_score": round(score, 6),
+                    "lexical_score": round(lexical_score, 6),
                     "embedding_model": embedding.model_name,
                     "embedding_dim": embedding.embedding_dim,
+                    "promotion_strategy": record.metadata.get("promotion_strategy") if isinstance(record.metadata, dict) else None,
+                    "retrieval_backend": "application",
                 })
             retrieval_results.sort(key=lambda item: item["score"], reverse=True)
             retrieval_results = retrieval_results[:10]

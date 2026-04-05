@@ -14,6 +14,8 @@ import hashlib
 import re
 from typing import Iterable
 
+from orbit.memory.embedding_service import EmbeddingService, cosine_similarity
+from orbit.memory.retrieval import RetrievalScore, default_retrieval_backend_plan
 from orbit.models import (
     ConversationMessage,
     MemoryEmbedding,
@@ -22,7 +24,6 @@ from orbit.models import (
     MemorySourceKind,
     MemoryType,
 )
-from orbit.runtime.embedding_service import EmbeddingService, cosine_similarity
 from orbit.runtime.execution.context_assembly import ContextFragment
 from orbit.settings import DEFAULT_MEMORY_RETRIEVAL_TOP_K
 from orbit.store.base import OrbitStore
@@ -220,13 +221,7 @@ class MemoryService:
         return promoted
 
     def retrieve_memory_fragments(self, *, session_id: str | None, query_text: str, limit: int = DEFAULT_MEMORY_RETRIEVAL_TOP_K) -> list[ContextFragment]:
-        """Return retrieval-oriented context fragments for the current query.
-
-        Current first slice uses recent durable memory first, then session memory,
-        as a non-embedding placeholder retrieval strategy. The interface shape is
-        chosen so later embedding-backed retrieval can replace the selection
-        logic without changing context-assembly consumers.
-        """
+        """Return retrieval-oriented context fragments for the current query."""
         if not query_text.strip():
             return []
         candidate_records: list[MemoryRecord] = []
@@ -240,9 +235,10 @@ class MemoryService:
         for embedding in self.store.list_memory_embeddings(model_name=self.embedding_service.model_name):
             embedding_by_memory_id.setdefault(embedding.memory_id, embedding)
 
+        backend_plan = default_retrieval_backend_plan()
         query_vector = self.embedding_service.embed_text(query_text)
         query_tokens = _tokenize(query_text)
-        scored: list[tuple[float, float, float, MemoryRecord]] = []
+        scored: list[RetrievalScore] = []
         for record in candidate_records:
             embedding = embedding_by_memory_id.get(record.memory_id)
             if embedding is None:
@@ -254,12 +250,23 @@ class MemoryService:
             hybrid_score = 0.8 * semantic_score + 0.2 * lexical_score
             if hybrid_score <= 0:
                 continue
-            scored.append((hybrid_score, semantic_score, lexical_score, record))
-        scored.sort(key=lambda item: item[0], reverse=True)
+            scored.append(
+                RetrievalScore(
+                    memory=record,
+                    hybrid_score=hybrid_score,
+                    semantic_score=semantic_score,
+                    lexical_score=lexical_score,
+                )
+            )
+        scored.sort(key=lambda item: item.hybrid_score, reverse=True)
 
         fragments: list[ContextFragment] = []
         seen_memory_ids: set[str] = set()
-        for hybrid_score, semantic_score, lexical_score, record in scored:
+        for scored_item in scored:
+            hybrid_score = scored_item.hybrid_score
+            semantic_score = scored_item.semantic_score
+            lexical_score = scored_item.lexical_score
+            record = scored_item.memory
             if record.memory_id in seen_memory_ids:
                 continue
             seen_memory_ids.add(record.memory_id)
@@ -279,6 +286,8 @@ class MemoryService:
                         "semantic_score": round(semantic_score, 6),
                         "lexical_score": round(lexical_score, 6),
                         "embedding_model": self.embedding_service.model_name,
+                        "retrieval_backend": backend_plan.backend,
+                        "retrieval_strategy": backend_plan.strategy,
                     },
                 )
             )

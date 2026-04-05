@@ -33,7 +33,14 @@ from orbit.tools import ToolRegistry
 
 
 class OrbitCoordinator:
-    """Coordinate explicit ORBIT runtime flows against a persistence store."""
+    """Coordinate explicit ORBIT runtime flows against a persistence store.
+
+    Historical scaffold note:
+    this coordinator remains a development-history surface and does not define
+    the current MCP-aware runtime truth path. Its local ToolRegistry usage is
+    intentionally left as historical/native-scaffold behavior unless this
+    module is explicitly revived.
+    """
 
     def __init__(self, store: OrbitStore, workspace_root: Path, backend: ExecutionBackend | None = None):
         self.store = store

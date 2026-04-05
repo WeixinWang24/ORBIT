@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from orbit.models import ConversationMessage, MessageRole
-from orbit.runtime.memory_service import MemoryService
+from orbit.memory import MemoryService
 from orbit.store.sqlite_store import SQLiteStore
 
 

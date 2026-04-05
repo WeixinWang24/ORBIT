@@ -4,7 +4,7 @@ from pathlib import Path
 
 from orbit.models import ConversationMessage, MemoryScope, MessageRole
 from orbit.runtime.execution.context_assembly import build_text_only_prompt_assembly_plan
-from orbit.runtime.memory_service import MemoryService
+from orbit.memory import MemoryService
 from orbit.store.sqlite_store import SQLiteStore
 
 

@@ -11,8 +11,7 @@ from orbit.models.core import new_id
 from orbit.runtime.core.contracts import RunDescriptor, WorkspaceDescriptor
 from orbit.runtime.core.events import RuntimeEventType
 from orbit.runtime.execution.continuation_context import build_rejection_continuation_context
-from orbit.runtime.embedding_service import EmbeddingService
-from orbit.runtime.memory_service import MemoryService
+from orbit.memory import EmbeddingService, MemoryService
 from orbit.runtime.governance.tool_approval_policy import PolicyDecision, PolicyEvaluationInput, evaluate_tool_approval_policy
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
 from orbit.runtime.mcp.bootstrap import bootstrap_local_filesystem_mcp_server, bootstrap_local_git_mcp_server

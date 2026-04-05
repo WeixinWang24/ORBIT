@@ -39,6 +39,10 @@ _FILESYSTEM_SYSTEM_ENVIRONMENT_TOOLS = {
     "glob",
     "grep",
     "get_file_info",
+    "get_symbols_overview",
+    "find_symbol",
+    "find_references",
+    "read_symbol_body",
     "list_allowed_directories",
     "todo_read",
     "todo_write",
@@ -55,6 +59,23 @@ _FILESYSTEM_PERMISSION_AUTHORITY_TOOLS = {
     "edit_file",
     "create_directory",
     "move_file",
+}
+
+
+_GIT_SYSTEM_ENVIRONMENT_TOOLS = {
+    "git_status",
+    "git_diff",
+    "git_log",
+    "git_show",
+    "git_changed_files",
+}
+
+_GIT_PERMISSION_AUTHORITY_TOOLS = {
+    "git_add",
+    "git_restore",
+    "git_unstage",
+    "git_commit",
+    "git_checkout_branch",
 }
 
 
@@ -109,6 +130,22 @@ def resolve_mcp_tool_governance(*, server_name: str, original_tool_name: str) ->
                 else "none",
             }
         if tool in _FILESYSTEM_PERMISSION_AUTHORITY_TOOLS:
+            return {
+                "side_effect_class": "write",
+                "requires_approval": True,
+                "governance_policy_group": "permission_authority",
+                "environment_check_kind": "none",
+            }
+
+    if server == "git":
+        if tool in _GIT_SYSTEM_ENVIRONMENT_TOOLS:
+            return {
+                "side_effect_class": "safe",
+                "requires_approval": False,
+                "governance_policy_group": "system_environment",
+                "environment_check_kind": "path_exists",
+            }
+        if tool in _GIT_PERMISSION_AUTHORITY_TOOLS:
             return {
                 "side_effect_class": "write",
                 "requires_approval": True,
