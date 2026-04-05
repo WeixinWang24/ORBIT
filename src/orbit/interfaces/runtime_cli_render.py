@@ -90,6 +90,7 @@ def chat_body_lines(state: RuntimeCliState, adapter: RuntimeCliAdapter, width: i
         approval_picker_index=state.approval_picker_index,
         approval_action_pending=state.approval_action_pending,
         approval_action_label=state.approval_action_label,
+        chat_history_limit=state.chat_history_limit,
     )
     return projection.lines
 

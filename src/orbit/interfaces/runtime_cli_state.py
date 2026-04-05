@@ -62,6 +62,7 @@ class RuntimeCliState(RuntimeShellState):
     approval_picker_index: int = 0
     approval_action_pending: bool = False
     approval_action_label: str | None = None
+    chat_history_limit: int = 20
     _submit_thread_started_at: float | None = None
     startup_loading: bool = True
     startup_error: str | None = None

@@ -22,7 +22,7 @@ class ChatProjection:
     assistant_inflight_text: str | None = None
 
 
-def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy: bool, pending_submit_session_id: str | None, pending_submit_text: str, submit_started_at: float | None, assistant_inflight_text: str | None, accent_user: str, accent_assistant: str, accent_warning: str, accent_muted: str, approval_picker_index: int = 0, approval_action_pending: bool = False, approval_action_label: str | None = None) -> ChatProjection:
+def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy: bool, pending_submit_session_id: str | None, pending_submit_text: str, submit_started_at: float | None, assistant_inflight_text: str | None, accent_user: str, accent_assistant: str, accent_warning: str, accent_muted: str, approval_picker_index: int = 0, approval_action_pending: bool = False, approval_action_label: str | None = None, chat_history_limit: int = 20) -> ChatProjection:
     lines: list[str] = []
     body: list[str] = []
     hidden_kinds = {
@@ -31,7 +31,10 @@ def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy:
         "structured_reauthorization",
         "approval_decision",
     }
-    for msg in adapter.list_messages(session_id):
+    messages = adapter.list_messages(session_id)
+    if chat_history_limit > 0:
+        messages = messages[-chat_history_limit:]
+    for msg in messages:
         if msg.message_kind in hidden_kinds:
             continue
         label = msg.role.upper() if not msg.message_kind else f"{msg.role.upper()} [{msg.message_kind}]"

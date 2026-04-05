@@ -130,10 +130,19 @@ def _position_cursor_for_composer(rendered: FrameRender) -> None:
         pass
 
 
-def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None) -> None:
+def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None, *, chat_history_limit: int | None = None) -> None:
     debug_log("pty_runtime_cli:start")
     runtime_adapter = adapter
     state = RuntimeCliState()
+    env_limit = os.environ.get("ORBIT_CLI_CHAT_HISTORY_LIMIT", "").strip()
+    resolved_limit = chat_history_limit
+    if resolved_limit is None and env_limit:
+        try:
+            resolved_limit = max(1, int(env_limit))
+        except ValueError:
+            resolved_limit = None
+    if resolved_limit is not None:
+        state.chat_history_limit = resolved_limit
     state.banner = "Starting runtime adapter..."
 
     def _startup_worker() -> None:
