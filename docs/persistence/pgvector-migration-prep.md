@@ -38,6 +38,9 @@ To enable efficient pgvector retrieval, ORBIT will likely need either:
 - a new pgvector-backed table/column for embeddings, or
 - a parallel derived table specifically for retrieval execution
 
+See also:
+- `docs/persistence/pgvector-derived-table-prep.md`
+
 Important rule:
 - canonical memory rows remain `memory_records`
 - embeddings remain derivative and rebuildable

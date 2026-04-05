@@ -32,6 +32,12 @@ A JSONB-first strategy allows the repository to:
 - `session_messages`
 - `managed_processes`
 
+## Future derived-table note
+
+For pgvector-backed retrieval execution, prefer a separate derived execution table rather than treating the current JSONB-first embedding rows as the final query shape.
+See:
+- `docs/persistence/pgvector-derived-table-prep.md`
+
 ## Query-critical columns
 
 Examples of explicit columns in the first version:

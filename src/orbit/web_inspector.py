@@ -740,11 +740,21 @@ class InspectorHandler(BaseHTTPRequestHandler):
                         continue
                     if snapshot_backend_filter and snapshot_backend_filter not in lowered_content:
                         continue
+                    parsed_content = None
+                    try:
+                        parsed_content = json.loads(content_text)
+                    except Exception:
+                        parsed_content = None
                     recent_probe_snapshots.append({
                         "context_artifact_id": artifact.context_artifact_id,
                         "created_at": artifact.created_at.isoformat() if hasattr(artifact.created_at, "isoformat") else str(artifact.created_at),
                         "source": artifact.source,
-                        "content": artifact.content,
+                        "backend": ((parsed_content or {}).get("backend_plan") or {}).get("backend") if isinstance(parsed_content, dict) else None,
+                        "strategy": ((parsed_content or {}).get("backend_plan") or {}).get("strategy") if isinstance(parsed_content, dict) else None,
+                        "query_text": ((parsed_content or {}).get("snapshot") or {}).get("query_text") if isinstance(parsed_content, dict) else None,
+                        "top_memory_ids": (parsed_content or {}).get("top_memory_ids") if isinstance(parsed_content, dict) else None,
+                        "weights": (parsed_content or {}).get("weights") if isinstance(parsed_content, dict) else None,
+                        "content": parsed_content if parsed_content is not None else artifact.content,
                     })
                 if len(recent_probe_snapshots) >= 10:
                     break
