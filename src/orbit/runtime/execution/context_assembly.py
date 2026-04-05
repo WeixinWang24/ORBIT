@@ -75,15 +75,17 @@ def _load_workspace_prompt(workspace_root: str | None) -> ContextFragment | None
         fragment_name="project_workspace",
         visibility_scope="runtime",
         content=content,
-        priority=90,
+        priority=40,
         metadata={
             "source_file": str(candidate),
             "content_sha1": hashlib.sha1(content.encode("utf-8")).hexdigest(),
+            "role": "supplemental_project_context_only",
+            "must_not_define": ["workspace_root", "runtime_mode", "mode_policy_profile"],
         },
     )
 
 
-def build_text_only_prompt_assembly_plan(*, backend_name: str, model: str, messages: list[ConversationMessage], workspace_root: str | None = None, memory_fragments: list[ContextFragment] | None = None) -> PromptAssemblyPlan:
+def build_text_only_prompt_assembly_plan(*, backend_name: str, model: str, messages: list[ConversationMessage], workspace_root: str | None = None, runtime_mode: str = "dev", memory_fragments: list[ContextFragment] | None = None) -> PromptAssemblyPlan:
     instruction_fragments = [
         ContextFragment(
             fragment_name="identity_charter",
@@ -93,16 +95,26 @@ def build_text_only_prompt_assembly_plan(*, backend_name: str, model: str, messa
             metadata={"origin": "backend_default"},
         ),
         ContextFragment(
+            fragment_name="runtime_workspace_truth",
+            visibility_scope="runtime",
+            content=(
+                f"Authoritative runtime truth: current runtime workspace root = {workspace_root or '(unset)'}; "
+                f"current runtime mode = {runtime_mode}. Treat these as authoritative runtime/governance facts, not as project prompt opinions."
+            ),
+            priority=95,
+            metadata={"workspace_root": workspace_root, "runtime_mode": runtime_mode, "authority": "runtime_truth"},
+        ),
+        ContextFragment(
             fragment_name="runtime_mode",
             visibility_scope="runtime",
-            content="Continue the conversation naturally using the supplied transcript.",
+            content=f"Continue the conversation naturally using the supplied transcript. Current runtime mode is {runtime_mode}.",
             priority=80,
-            metadata={"mode": "text_only"},
+            metadata={"mode": "text_only", "runtime_mode": runtime_mode},
         ),
     ]
     workspace_fragment = _load_workspace_prompt(workspace_root)
     if workspace_fragment is not None:
-        instruction_fragments.insert(1, workspace_fragment)
+        instruction_fragments.append(workspace_fragment)
     history_fragment = ContextFragment(
         fragment_name="history",
         visibility_scope="session",

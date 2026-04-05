@@ -10,6 +10,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from orbit.models.core import OrbitBaseModel, new_id
+from orbit.runtime.governance.protocol.mode import ModePolicyDescriptor, RuntimeMode
 
 
 class WorkspaceDescriptor(OrbitBaseModel):
@@ -83,6 +84,8 @@ class RunDescriptor(OrbitBaseModel):
     session_key: str
     conversation_id: str
     runtime_family: str = "dummy"
+    runtime_mode: RuntimeMode = "dev"
+    mode_policy: ModePolicyDescriptor = Field(default_factory=ModePolicyDescriptor)
     workspace: WorkspaceDescriptor
     agent: AgentDescriptor = Field(default_factory=AgentDescriptor)
     model: ModelDescriptor = Field(default_factory=ModelDescriptor)

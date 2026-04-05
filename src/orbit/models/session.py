@@ -9,12 +9,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
 from orbit.models.core import OrbitBaseModel, new_id
 
+
+
+RuntimeMode = Literal["dev", "evo"]
 
 
 def utc_now() -> datetime:
@@ -101,6 +104,7 @@ class ConversationSession(OrbitBaseModel):
     conversation_id: str
     backend_name: str
     model: str
+    runtime_mode: RuntimeMode = "dev"
     status: SessionStatus = SessionStatus.ACTIVE
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
