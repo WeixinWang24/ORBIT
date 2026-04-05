@@ -22,6 +22,7 @@ from orbit.models import (
     ConversationMessage,
     ConversationSession,
     ExecutionEvent,
+    ManagedProcess,
     Run,
     RunStep,
     Task,
@@ -69,6 +70,10 @@ class OrbitStore(ABC):
         """Persist a conversation session record."""
 
     @abstractmethod
+    def save_managed_process(self, process: ManagedProcess) -> None:
+        """Persist a managed process record."""
+
+    @abstractmethod
     def save_message(self, message: ConversationMessage) -> None:
         """Persist a conversation message record."""
 
@@ -83,6 +88,10 @@ class OrbitStore(ABC):
     @abstractmethod
     def list_sessions(self) -> list[ConversationSession]:
         """Return persisted sessions in a stable listing order."""
+
+    @abstractmethod
+    def list_managed_processes(self) -> list[ManagedProcess]:
+        """Return persisted managed processes in a stable listing order."""
 
     @abstractmethod
     def list_messages_for_session(self, session_id: str) -> list[ConversationMessage]:
@@ -129,5 +138,17 @@ class OrbitStore(ABC):
         """Return a task by id, or None if it does not exist."""
 
     @abstractmethod
+    def get_managed_process(self, process_id: str) -> ManagedProcess | None:
+        """Return a managed process by id, or None if it does not exist."""
+
+    @abstractmethod
     def get_session(self, session_id: str) -> ConversationSession | None:
         """Return a session by id, or None if it does not exist."""
+
+    @abstractmethod
+    def delete_session(self, session_id: str) -> None:
+        """Delete one session and its session-scoped persisted runtime artifacts."""
+
+    @abstractmethod
+    def delete_all_sessions(self) -> None:
+        """Delete all session/history state while preserving broader repo state."""

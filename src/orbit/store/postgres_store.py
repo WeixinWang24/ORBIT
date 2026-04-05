@@ -16,6 +16,7 @@ from orbit.models import (
     ConversationMessage,
     ConversationSession,
     ExecutionEvent,
+    ManagedProcess,
     Run,
     RunStep,
     Task,
@@ -33,6 +34,7 @@ CREATE TABLE IF NOT EXISTS approval_requests (approval_request_id TEXT PRIMARY K
 CREATE TABLE IF NOT EXISTS approval_decisions (approval_decision_id TEXT PRIMARY KEY, approval_request_id TEXT NOT NULL, decided_at TIMESTAMPTZ NOT NULL, data JSONB NOT NULL);
 CREATE TABLE IF NOT EXISTS context_artifacts (context_artifact_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, artifact_type TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, data JSONB NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions (session_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, backend_name TEXT NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, data JSONB NOT NULL);
+CREATE TABLE IF NOT EXISTS managed_processes (process_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, status TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL, data JSONB NOT NULL);
 CREATE TABLE IF NOT EXISTS session_messages (message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, turn_index INTEGER NOT NULL, created_at TIMESTAMPTZ NOT NULL, data JSONB NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_runs_task_id ON runs(task_id);
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);
@@ -42,6 +44,7 @@ CREATE INDEX IF NOT EXISTS idx_tool_invocations_run_id ON tool_invocations(run_i
 CREATE INDEX IF NOT EXISTS idx_approval_requests_run_id ON approval_requests(run_id);
 CREATE INDEX IF NOT EXISTS idx_context_artifacts_run_id ON context_artifacts(run_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);
+CREATE INDEX IF NOT EXISTS idx_managed_processes_session_updated_at ON managed_processes(session_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_session_messages_session_turn ON session_messages(session_id, turn_index, created_at);
 """
 
@@ -122,6 +125,14 @@ class PostgresStore(OrbitStore):
             cur.execute("INSERT INTO sessions (session_id, conversation_id, backend_name, model, status, created_at, updated_at, data) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (session_id) DO UPDATE SET conversation_id = EXCLUDED.conversation_id, backend_name = EXCLUDED.backend_name, model = EXCLUDED.model, status = EXCLUDED.status, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at, data = EXCLUDED.data", (session.session_id, session.conversation_id, session.backend_name, session.model, session.status, session.created_at, session.updated_at, self._payload(session)))
         self.conn.commit()
 
+    def save_managed_process(self, process: ManagedProcess) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO managed_processes (process_id, session_id, status, updated_at, data) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (process_id) DO UPDATE SET session_id = EXCLUDED.session_id, status = EXCLUDED.status, updated_at = EXCLUDED.updated_at, data = EXCLUDED.data",
+                (process.process_id, process.session_id, process.status, process.updated_at, self._payload(process)),
+            )
+        self.conn.commit()
+
     def save_message(self, message: ConversationMessage) -> None:
         with self.conn.cursor() as cur:
             cur.execute("INSERT INTO session_messages (message_id, session_id, role, turn_index, created_at, data) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (message_id) DO UPDATE SET session_id = EXCLUDED.session_id, role = EXCLUDED.role, turn_index = EXCLUDED.turn_index, created_at = EXCLUDED.created_at, data = EXCLUDED.data", (message.message_id, message.session_id, message.role, message.turn_index, message.created_at, self._payload(message)))
@@ -141,6 +152,11 @@ class PostgresStore(OrbitStore):
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT data FROM sessions ORDER BY updated_at DESC, created_at DESC")
             return [self._read_model(ConversationSession, row) for row in cur.fetchall()]
+
+    def list_managed_processes(self) -> list[ManagedProcess]:
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT data FROM managed_processes ORDER BY updated_at ASC, process_id ASC")
+            return [self._read_model(ManagedProcess, row) for row in cur.fetchall()]
 
     def list_messages_for_session(self, session_id: str) -> list[ConversationMessage]:
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -179,6 +195,11 @@ class PostgresStore(OrbitStore):
             row = cur.fetchone()
             return self._read_model(ToolInvocation, row) if row else None
 
+    def list_tool_invocations_for_run(self, run_id: str) -> list[ToolInvocation]:
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT data FROM tool_invocations WHERE run_id = %s ORDER BY requested_at ASC, tool_invocation_id ASC", (run_id,))
+            return [self._read_model(ToolInvocation, row) for row in cur.fetchall()]
+
     def get_latest_step_for_run(self, run_id: str) -> RunStep | None:
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT data FROM run_steps WHERE run_id = %s ORDER BY step_index DESC LIMIT 1", (run_id,))
@@ -197,8 +218,45 @@ class PostgresStore(OrbitStore):
             row = cur.fetchone()
             return self._read_model(Task, row) if row else None
 
+    def get_managed_process(self, process_id: str) -> ManagedProcess | None:
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT data FROM managed_processes WHERE process_id = %s", (process_id,))
+            row = cur.fetchone()
+            return self._read_model(ManagedProcess, row) if row else None
+
     def get_session(self, session_id: str) -> ConversationSession | None:
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT data FROM sessions WHERE session_id = %s", (session_id,))
             row = cur.fetchone()
             return self._read_model(ConversationSession, row) if row else None
+
+    def delete_session(self, session_id: str) -> None:
+        session = self.get_session(session_id)
+        if session is None:
+            return
+        run_id = session.conversation_id
+        with self.conn.cursor() as cur:
+            cur.execute("DELETE FROM session_messages WHERE session_id = %s", (session_id,))
+            cur.execute("DELETE FROM managed_processes WHERE session_id = %s", (session_id,))
+            cur.execute("DELETE FROM sessions WHERE session_id = %s", (session_id,))
+            cur.execute("DELETE FROM events WHERE run_id = %s", (run_id,))
+            cur.execute("DELETE FROM context_artifacts WHERE run_id = %s", (run_id,))
+            cur.execute("DELETE FROM tool_invocations WHERE run_id = %s", (run_id,))
+            cur.execute(
+                "DELETE FROM approval_decisions WHERE approval_request_id IN (SELECT approval_request_id FROM approval_requests WHERE run_id = %s)",
+                (run_id,),
+            )
+            cur.execute("DELETE FROM approval_requests WHERE run_id = %s", (run_id,))
+        self.conn.commit()
+
+    def delete_all_sessions(self) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute("DELETE FROM session_messages")
+            cur.execute("DELETE FROM managed_processes")
+            cur.execute("DELETE FROM sessions")
+            cur.execute("DELETE FROM events")
+            cur.execute("DELETE FROM context_artifacts")
+            cur.execute("DELETE FROM tool_invocations")
+            cur.execute("DELETE FROM approval_decisions")
+            cur.execute("DELETE FROM approval_requests")
+        self.conn.commit()

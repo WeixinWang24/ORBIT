@@ -10,10 +10,12 @@ ORBIT now has:
 
 ## Current default
 
-The default backend remains `sqlite` because:
-- SQLite is an acceptable bootstrap/default local backend in v0
-- notebook-first iteration speed currently matters more than forcing service setup
-- the local machine does not yet expose a ready PostgreSQL server/client toolchain to ORBIT commands
+The default backend is now `postgres` for the active persistence phase.
+
+Why this changed:
+- transcript/history and memory persistence are now treated as primary architecture work rather than distant migration work
+- the repository should evolve against the intended long-term persistence boundary now, not only after the phase ends
+- SQLite remains useful, but only as a bounded fallback when PostgreSQL is temporarily unavailable in local development
 
 ## Switching to PostgreSQL later
 
@@ -30,11 +32,11 @@ export ORBIT_PG_PASSWORD=orbit
 
 Then run ORBIT from the `Orbit` Conda environment.
 
-## Why the default has not switched yet
+## Fallback rule
 
-The code path is ready, but the local machine currently does not expose:
-- `psql`
-- `postgres`
-- `pg_ctl`
+If PostgreSQL is selected but cannot be reached at runtime, ORBIT currently falls back to SQLite automatically.
 
-So the repository should not pretend PostgreSQL is locally runnable before the actual service path exists.
+This fallback is intentional for the current phase:
+- PostgreSQL is the primary development target
+- SQLite preserves low-friction local bring-up, notebook demos, and temporary offline development
+- new persistence design should avoid SQLite-only assumptions even when fallback is exercised

@@ -28,6 +28,9 @@ A JSONB-first strategy allows the repository to:
 - `approval_requests`
 - `approval_decisions`
 - `context_artifacts`
+- `sessions`
+- `session_messages`
+- `managed_processes`
 
 ## Query-critical columns
 
