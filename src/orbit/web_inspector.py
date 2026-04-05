@@ -268,7 +268,7 @@ def _render_tool_calls_panel(tool_calls: list[dict]) -> str:
     return '<div class="panel-block"><h2 class="section-title">Tool Invocations</h2>' + ''.join(blocks) + '</div>'
 
 
-def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all", retrieval_weights: dict | None = None, weight_inputs: dict | None = None, backend_override: str = "", compare_results: dict | None = None, snapshot: dict | None = None) -> str:
+def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all", retrieval_weights: dict | None = None, weight_inputs: dict | None = None, backend_override: str = "", compare_results: dict | None = None, compare_summary: dict | None = None, snapshot: dict | None = None) -> str:
     records_html = []
     for record in memory_records:
         records_html.append(
@@ -332,12 +332,13 @@ def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[
         + (f'<div class="fragment-meta">weights={escape(json.dumps(retrieval_weights or {}, ensure_ascii=False))}</div>' if retrieval_weights else '')
         + (f'<div class="fragment-meta">snapshot={escape(json.dumps(snapshot or {}, ensure_ascii=False))}</div>' if snapshot else '')
         + retrieval_html
+        + (f'<div class="panel-block"><h2 class="section-title">Compare Summary</h2><pre>{escape(json.dumps(compare_summary, indent=2, ensure_ascii=False))}</pre></div>' if compare_summary else '')
         + (f'<div class="panel-block"><h2 class="section-title">Compare Backends</h2><pre>{escape(json.dumps(compare_results, indent=2, ensure_ascii=False))}</pre></div>' if compare_results else '')
         + '</div>'
     )
 
 
-def _render_main_panel(*, active_tab: str, transcript_items: list[str], payload_json: str, context_data: dict | None, tool_calls: list[dict], memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all", retrieval_weights: dict | None = None, weight_inputs: dict | None = None, backend_override: str = "", compare_results: dict | None = None, snapshot: dict | None = None) -> str:
+def _render_main_panel(*, active_tab: str, transcript_items: list[str], payload_json: str, context_data: dict | None, tool_calls: list[dict], memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all", retrieval_weights: dict | None = None, weight_inputs: dict | None = None, backend_override: str = "", compare_results: dict | None = None, compare_summary: dict | None = None, snapshot: dict | None = None) -> str:
     if active_tab == "payload":
         return f'<div class="panel-block"><pre>{escape(payload_json)}</pre></div>'
     if active_tab == "context":
@@ -357,12 +358,13 @@ def _render_main_panel(*, active_tab: str, transcript_items: list[str], payload_
             weight_inputs=weight_inputs,
             backend_override=backend_override,
             compare_results=compare_results,
+            compare_summary=compare_summary,
             snapshot=snapshot,
         )
     return ''.join(transcript_items)
 
 
-def _html_page(*, sessions, current_session, transcript, events, artifacts, metadata, tool_calls, active_tab: str, memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all", retrieval_weights: dict | None = None, weight_inputs: dict | None = None, backend_override: str = "", compare_results: dict | None = None, snapshot: dict | None = None):
+def _html_page(*, sessions, current_session, transcript, events, artifacts, metadata, tool_calls, active_tab: str, memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all", retrieval_weights: dict | None = None, weight_inputs: dict | None = None, backend_override: str = "", compare_results: dict | None = None, compare_summary: dict | None = None, snapshot: dict | None = None):
     def esc(x):
         return escape(str(x))
 
@@ -514,6 +516,7 @@ def _html_page(*, sessions, current_session, transcript, events, artifacts, meta
         weight_inputs=weight_inputs,
         backend_override=backend_override,
         compare_results=compare_results,
+        compare_summary=compare_summary,
         snapshot=snapshot,
     )
 
@@ -666,6 +669,7 @@ class InspectorHandler(BaseHTTPRequestHandler):
         retrieval_weights = dict(probe.get("weights", {}))
         snapshot = dict(probe.get("snapshot", {}))
         compare_results = None
+        compare_summary = None
         if compare_backends:
             compare_results = {
                 "application": memory_service.probe_memory_retrieval(
@@ -684,6 +688,20 @@ class InspectorHandler(BaseHTTPRequestHandler):
                     weights_override=weights_override,
                     backend_override="postgres",
                 ),
+            }
+            compare_summary = {
+                "application": {
+                    "backend": getattr(compare_results["application"].get("backend_plan"), "backend", None),
+                    "strategy": getattr(compare_results["application"].get("backend_plan"), "strategy", None),
+                    "top_memory_ids": [item.get("memory_id") for item in compare_results["application"].get("results", [])[:3]],
+                    "top_scores": [item.get("score") for item in compare_results["application"].get("results", [])[:3]],
+                },
+                "postgres": {
+                    "backend": getattr(compare_results["postgres"].get("backend_plan"), "backend", None),
+                    "strategy": getattr(compare_results["postgres"].get("backend_plan"), "strategy", None),
+                    "top_memory_ids": [item.get("memory_id") for item in compare_results["postgres"].get("results", [])[:3]],
+                    "top_scores": [item.get("score") for item in compare_results["postgres"].get("results", [])[:3]],
+                },
             }
         memory_records = [record.model_dump(mode="json") for record in memory_records_raw]
         memory_embeddings = [embedding.model_dump(mode="json") for embedding in memory_embeddings_raw]
@@ -723,6 +741,7 @@ class InspectorHandler(BaseHTTPRequestHandler):
             weight_inputs=weight_inputs,
             backend_override=backend_override,
             compare_results=compare_results,
+            compare_summary=compare_summary,
             snapshot=snapshot,
         ).encode("utf-8")
         self.send_response(200)

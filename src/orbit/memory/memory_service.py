@@ -21,6 +21,7 @@ from orbit.memory.extraction import extract_durable_candidates
 from orbit.memory.retrieval import default_retrieval_backend_plan
 from orbit.memory.weights import MemoryRetrievalWeights, default_memory_retrieval_weights
 from orbit.models import (
+    ContextArtifact,
     ConversationMessage,
     MemoryEmbedding,
     MemoryRecord,
@@ -253,6 +254,38 @@ class MemoryService:
             })
             if len(results) >= limit:
                 break
+        snapshot = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "query_text": query_text,
+            "scope": scope,
+            "limit": limit,
+            "backend_override": backend_override,
+        }
+        if session_id is not None:
+            session = self.store.get_session(session_id)
+            if session is not None:
+                artifact = ContextArtifact(
+                    run_id=session.conversation_id,
+                    artifact_type="memory_probe_snapshot",
+                    source="memory_service.probe_memory_retrieval",
+                    content=str({
+                        "backend_plan": {
+                            "backend": self._current_backend_plan(backend_override=backend_override).backend,
+                            "strategy": self._current_backend_plan(backend_override=backend_override).strategy,
+                        },
+                        "weights": {
+                            "semantic_weight": effective_weights.semantic_weight,
+                            "lexical_weight": effective_weights.lexical_weight,
+                            "durable_boost": effective_weights.durable_boost,
+                            "session_boost": effective_weights.session_boost,
+                            "salience_weight": effective_weights.salience_weight,
+                        },
+                        "snapshot": snapshot,
+                        "top_memory_ids": [result["memory_id"] for result in results[: min(len(results), 5)]],
+                    }),
+                )
+                self.store.save_context_artifact(artifact)
+                snapshot["context_artifact_id"] = artifact.context_artifact_id
         return {
             "backend_plan": self._current_backend_plan(backend_override=backend_override),
             "results": results,
@@ -263,13 +296,7 @@ class MemoryService:
                 "session_boost": effective_weights.session_boost,
                 "salience_weight": effective_weights.salience_weight,
             },
-            "snapshot": {
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "query_text": query_text,
-                "scope": scope,
-                "limit": limit,
-                "backend_override": backend_override,
-            },
+            "snapshot": snapshot,
         }
 
     def _current_backend_plan(self, backend_override: str | None = None):
