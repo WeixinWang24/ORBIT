@@ -201,7 +201,7 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
     def slash_help_text(self) -> str:
         return (
             "Available slash commands: /help /new /sessions /attach <session_id> "
-            "/inspect /chat /approvals /events /tools /artifacts /status /pending /approve /reject"
+            "/inspect /chat /approvals /events /tools /artifacts /status /pending /approve /reject /wipe-history"
         )
 
     def slash_help_page(self) -> str:
@@ -213,7 +213,10 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
                 "/help /new /sessions /attach <session_id> /detach",
                 "/chat /inspect /events /tools /artifacts /approvals /status",
                 "/pending /approve [note] /reject [note]",
-                "/show /state /clear /clear-all",
+                "/show /state /clear /clear-all /wipe-history",
+                "",
+                "/wipe-history clears ORBIT session/chat history from the SQLite store.",
+                "It does not clear the separate process runtime database.",
             ]
         )
 
@@ -273,6 +276,9 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             return False
         delete_all_fn()
         return True
+
+    def wipe_session_history(self) -> bool:
+        return self.clear_all_sessions()
 
     def _map_session_summary(self, session) -> InterfaceSession:
         return InterfaceSession(

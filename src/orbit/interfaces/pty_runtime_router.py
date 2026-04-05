@@ -191,6 +191,19 @@ def clear_all_runtime_sessions(state: RuntimeShellState, adapter: RuntimeCliAdap
     activate_chat(state, f"Deleted all sessions; new session {session.session_id} ready")
 
 
+def wipe_runtime_session_history(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> None:
+    ok = adapter.wipe_session_history()
+    if not ok:
+        session_id = current_session_id(state, adapter)
+        adapter.append_system_message(session_id, "Current store does not support wiping session history.", kind="clear_error")
+        activate_chat(state, "Wipe-history failed")
+        return
+    session = adapter.create_session()
+    state.selected_session = 0
+    state.active_session_id = session.session_id
+    activate_chat(state, f"Wiped ORBIT session history; new session {session.session_id} ready")
+
+
 def resolve_current_approval(state: RuntimeShellState, adapter: RuntimeCliAdapter, decision: str, note: str | None = None) -> None:
     session_id = current_session_id(state, adapter)
     before = adapter.get_pending_approval(session_id)
@@ -280,6 +293,9 @@ def route_slash_command(state: RuntimeShellState, adapter: RuntimeCliAdapter, te
         return
     if command == "/clear-all":
         clear_all_runtime_sessions(state, adapter)
+        return
+    if command == "/wipe-history":
+        wipe_runtime_session_history(state, adapter)
         return
     if command == "/pending":
         show_pending_approval(state, adapter)
