@@ -327,6 +327,7 @@ class MemoryService:
                 "pgvector_checked": pgvector_checked,
                 "pgvector_available": pgvector_available,
                 "execution_enabled": False,
+                "planned_sql_shape": getattr(PostgresMemoryRetrievalBackend, "planned_sql_shape", None),
             }
             backend_plan.notes = (
                 "Postgres backend selected from store type or override; current phase keeps this as an explainable stub until pgvector execution is enabled. "

@@ -34,6 +34,7 @@ class PostgresMemoryRetrievalBackend(MemoryRetrievalBackend):
 
     backend_name = "postgres"
     strategy_name = "pgvector_reserved_stub"
+    planned_sql_shape = "SELECT memory_id, 1 - (embedding <=> $query_vector) AS score FROM memory_embedding_vectors ORDER BY embedding <=> $query_vector LIMIT $k"
 
     def score(
         self,
