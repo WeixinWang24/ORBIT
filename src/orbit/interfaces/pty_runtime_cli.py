@@ -183,14 +183,18 @@ def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None, *, chat_history
                 _start_background_submit(state, runtime_adapter)
 
             if state.runtime_busy != last_busy_state:
+                # Structural transition (busy on/off): full repaint is correct here
+                # because the header gains/loses the busy banner line, changing the
+                # overall frame layout.
                 screen.invalidate()
                 last_busy_state = state.runtime_busy
 
-            if state.runtime_busy:
-                screen.invalidate()
-
+            # Streaming delta: consume the dirty flag but do NOT invalidate.
+            # The diff engine handles incremental streaming updates line-by-line
+            # without needing ERASE_SCREEN.  Setting has_streaming_update drives
+            # the render-loop timeout below so the next render fires immediately.
+            has_streaming_update = state.assistant_inflight_dirty
             if state.assistant_inflight_dirty:
-                screen.invalidate()
                 state.assistant_inflight_dirty = False
 
             if not state.runtime_busy and state.completed_submit_banner is not None:
@@ -203,7 +207,21 @@ def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None, *, chat_history
             screen.render(rendered.lines, width, height, force_full_repaint=False)
             if state.mode == CHAT_MODE:
                 _position_cursor_for_composer(rendered)
-            chunk = read_chunk(timeout_ms=50.0)
+
+            # Three-speed render cycle:
+            #   0 ms  — streaming token just arrived: skip the wait, loop back
+            #           immediately so the next diff fires without delay.
+            #  16 ms  — busy but no new token yet: tight poll (~60 fps) so we
+            #           catch the next token within one frame even if the dirty
+            #           flag is set just after we cleared it above.
+            #  50 ms  — idle: normal cadence, low CPU.
+            if has_streaming_update:
+                read_timeout_ms = 0.0
+            elif state.runtime_busy:
+                read_timeout_ms = 16.0
+            else:
+                read_timeout_ms = 50.0
+            chunk = read_chunk(timeout_ms=read_timeout_ms)
             _append_pty_input_debug(pty_input_debug_path, stage="raw", state=state, event=chunk)
             if not chunk:
                 debug_log("pty_runtime_cli:raw=<empty>")

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from . import termio as T
 from .composer_state import wrap_display_text
+from .markdown_render import render_markdown
 
 
 @dataclass
@@ -60,8 +61,20 @@ def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy:
             body.append("")
             continue
         body.append(color + label + T.RESET)
-        wrapped = wrap_display_text(msg.content, max(20, width - 4))
-        for ln in wrapped:
+        # Apply markdown rendering only for ordinary committed chat messages
+        # (message_kind is None).  Messages with an explicit kind tag carry
+        # special control semantics (errors, policy notices, system events)
+        # that should be presented as plain text without markdown
+        # interpretation.  Streaming / inflight text is handled separately
+        # below and stays on wrap_display_text() throughout.
+        content_width = max(20, width - 4)
+        if msg.message_kind is None and msg.role in ("user", "assistant"):
+            content_lines: tuple[str, ...] | list[str] = render_markdown(
+                msg.content, content_width
+            )
+        else:
+            content_lines = wrap_display_text(msg.content, content_width)
+        for ln in content_lines:
             body.append("  " + ln)
         body.append("")
 
