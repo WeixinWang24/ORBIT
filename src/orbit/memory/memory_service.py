@@ -14,7 +14,7 @@ import hashlib
 import re
 from typing import Iterable
 
-from orbit.memory.backend import ApplicationMemoryRetrievalBackend, MemoryRetrievalBackend
+from orbit.memory.backend import ApplicationMemoryRetrievalBackend, MemoryRetrievalBackend, PostgresMemoryRetrievalBackend
 from orbit.memory.embedding_service import EmbeddingService
 from orbit.memory.extraction import extract_durable_candidates
 from orbit.memory.retrieval import default_retrieval_backend_plan
@@ -45,7 +45,14 @@ class MemoryService:
     def __init__(self, *, store: OrbitStore, embedding_service: EmbeddingService | None = None, retrieval_backend: MemoryRetrievalBackend | None = None):
         self.store = store
         self.embedding_service = embedding_service or EmbeddingService()
-        self.retrieval_backend = retrieval_backend or ApplicationMemoryRetrievalBackend()
+        self.retrieval_backend = retrieval_backend or self._select_retrieval_backend()
+
+    def _select_retrieval_backend(self) -> MemoryRetrievalBackend:
+        """Select the current retrieval backend based on active store type."""
+        store_name = self.store.__class__.__name__.lower()
+        if "postgres" in store_name:
+            return PostgresMemoryRetrievalBackend()
+        return ApplicationMemoryRetrievalBackend()
 
     def capture_turn_memory(
         self,
@@ -198,6 +205,8 @@ class MemoryService:
             embedding_by_memory_id.setdefault(embedding.memory_id, embedding)
 
         backend_plan = default_retrieval_backend_plan()
+        backend_plan.backend = getattr(self.retrieval_backend, "backend_name", backend_plan.backend)
+        backend_plan.strategy = getattr(self.retrieval_backend, "strategy_name", backend_plan.strategy)
         query_vector = self.embedding_service.embed_text(query_text)
         for record in candidate_records:
             embedding = embedding_by_memory_id.get(record.memory_id)

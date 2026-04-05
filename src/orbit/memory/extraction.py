@@ -25,14 +25,21 @@ class DurableMemoryCandidate:
     strategy: str
 
 
+def _clean_summary_clause(value: str) -> str:
+    value = value.strip(" -:;,.\n\t")
+    value = re.sub(r"^(decision|lesson|takeaway|remember)\s*:\s*", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
+
+
 def _best_clause_for_markers(text: str, markers: list[str]) -> str:
-    clauses = [part.strip(" -:;,.\n\t") for part in re.split(r"[\n.!?;]+", text) if part.strip()]
+    clauses = [_clean_summary_clause(part) for part in re.split(r"[\n.!?;]+", text) if part.strip()]
     lowered_clauses = [clause.lower() for clause in clauses]
     for marker in markers:
         for clause, lowered in zip(clauses, lowered_clauses):
             if marker in lowered:
                 return clause
-    return text.strip()
+    return _clean_summary_clause(text)
 
 
 def extract_durable_candidates(*, user_text: str, assistant_text: str) -> list[DurableMemoryCandidate]:

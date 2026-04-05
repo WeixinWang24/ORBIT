@@ -30,6 +30,9 @@ class MemoryRetrievalBackend(ABC):
 class PostgresMemoryRetrievalBackend(MemoryRetrievalBackend):
     """Reserved PostgreSQL/pgvector retrieval backend stub for later phases."""
 
+    backend_name = "postgres"
+    strategy_name = "pgvector_reserved_stub"
+
     def score(
         self,
         *,
@@ -43,6 +46,9 @@ class PostgresMemoryRetrievalBackend(MemoryRetrievalBackend):
 
 class ApplicationMemoryRetrievalBackend(MemoryRetrievalBackend):
     """Current app-side hybrid retrieval backend."""
+
+    backend_name = "application"
+    strategy_name = "hybrid_embedding_lexical_v1"
 
     def score(
         self,

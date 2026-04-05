@@ -268,7 +268,7 @@ def _render_tool_calls_panel(tool_calls: list[dict]) -> str:
     return '<div class="panel-block"><h2 class="section-title">Tool Invocations</h2>' + ''.join(blocks) + '</div>'
 
 
-def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict]) -> str:
+def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all") -> str:
     records_html = []
     for record in memory_records:
         records_html.append(
@@ -307,17 +307,22 @@ def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[
         + '<input type="hidden" name="tab" value="memory" />'
         + f'<input type="hidden" name="session_id" value="{escape(str((memory_records[0].get("session_id") if memory_records else "") or ""))}" />'
         + f'<label class="fragment-meta">query <input name="memory_query" value="{escape(retrieval_query or "")}" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
-        + '<label class="fragment-meta">top-k <input name="memory_top_k" value="10" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
-        + '<label class="fragment-meta">scope <select name="memory_scope" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;"><option value="all">all</option><option value="durable">durable</option><option value="session">session</option></select></label>'
+        + f'<label class="fragment-meta">top-k <input name="memory_top_k" value="{memory_top_k}" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
+        + '<label class="fragment-meta">scope <select name="memory_scope" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;">'
+        + f'<option value="all"{" selected" if memory_scope == "all" else ""}>all</option>'
+        + f'<option value="durable"{" selected" if memory_scope == "durable" else ""}>durable</option>'
+        + f'<option value="session"{" selected" if memory_scope == "session" else ""}>session</option>'
+        + '</select></label>'
         + '<button type="submit" style="background:#121222; color:#00FFC6; border:1px solid rgba(0,255,198,.25); border-radius:8px; padding:8px 12px;">Run Probe</button>'
         + '</form>'
-        + f'<div class="fragment-meta">query={escape(retrieval_query or "")}</div>'
+        + f'<div class="fragment-meta">query={escape(retrieval_query or "")} · top_k={memory_top_k} · scope={escape(memory_scope)}</div>'
+        + (f'<div class="fragment-meta">backend={escape(str((backend_plan or {}).get("backend", "unknown")))} · strategy={escape(str((backend_plan or {}).get("strategy", "unknown")))} · notes={escape(str((backend_plan or {}).get("notes", "")))}</div>' if backend_plan else '')
         + retrieval_html
         + '</div>'
     )
 
 
-def _render_main_panel(*, active_tab: str, transcript_items: list[str], payload_json: str, context_data: dict | None, tool_calls: list[dict], memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict]) -> str:
+def _render_main_panel(*, active_tab: str, transcript_items: list[str], payload_json: str, context_data: dict | None, tool_calls: list[dict], memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all") -> str:
     if active_tab == "payload":
         return f'<div class="panel-block"><pre>{escape(payload_json)}</pre></div>'
     if active_tab == "context":
@@ -330,11 +335,14 @@ def _render_main_panel(*, active_tab: str, transcript_items: list[str], payload_
             memory_embeddings=memory_embeddings,
             retrieval_query=retrieval_query,
             retrieval_results=retrieval_results,
+            backend_plan=backend_plan,
+            memory_top_k=memory_top_k,
+            memory_scope=memory_scope,
         )
     return ''.join(transcript_items)
 
 
-def _html_page(*, sessions, current_session, transcript, events, artifacts, metadata, tool_calls, active_tab: str, memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict]):
+def _html_page(*, sessions, current_session, transcript, events, artifacts, metadata, tool_calls, active_tab: str, memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all"):
     def esc(x):
         return escape(str(x))
 
@@ -479,6 +487,9 @@ def _html_page(*, sessions, current_session, transcript, events, artifacts, meta
         memory_embeddings=memory_embeddings,
         retrieval_query=retrieval_query,
         retrieval_results=retrieval_results,
+        backend_plan=backend_plan,
+        memory_top_k=memory_top_k,
+        memory_scope=memory_scope,
     )
 
     summary_json = json.dumps(
@@ -581,6 +592,11 @@ class InspectorHandler(BaseHTTPRequestHandler):
             memory_top_k = max(1, min(int(query.get("memory_top_k", ["10"])[0]), 50))
         except Exception:
             memory_top_k = 10
+        backend_plan = {
+            "backend": getattr(memory_service.retrieval_backend, "backend_name", "unknown"),
+            "strategy": getattr(memory_service.retrieval_backend, "strategy_name", "unknown"),
+            "notes": "Selected from active store type by MemoryService.",
+        }
         retrieval_results = []
         if current_session and retrieval_query.strip():
             probe_query = retrieval_query.strip()
@@ -650,6 +666,9 @@ class InspectorHandler(BaseHTTPRequestHandler):
             memory_embeddings=memory_embeddings,
             retrieval_query=retrieval_query,
             retrieval_results=retrieval_results,
+            backend_plan=backend_plan,
+            memory_top_k=memory_top_k,
+            memory_scope=memory_scope,
         ).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
