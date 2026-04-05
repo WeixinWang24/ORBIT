@@ -14,8 +14,10 @@ import hashlib
 import re
 from typing import Iterable
 
-from orbit.memory.embedding_service import EmbeddingService, cosine_similarity
-from orbit.memory.retrieval import RetrievalScore, default_retrieval_backend_plan
+from orbit.memory.backend import ApplicationMemoryRetrievalBackend, MemoryRetrievalBackend
+from orbit.memory.embedding_service import EmbeddingService
+from orbit.memory.extraction import extract_durable_candidates
+from orbit.memory.retrieval import default_retrieval_backend_plan
 from orbit.models import (
     ConversationMessage,
     MemoryEmbedding,
@@ -40,9 +42,10 @@ def _tokenize(value: str) -> set[str]:
 class MemoryService:
     """Provide bounded first-slice memory extraction and retrieval."""
 
-    def __init__(self, *, store: OrbitStore, embedding_service: EmbeddingService | None = None):
+    def __init__(self, *, store: OrbitStore, embedding_service: EmbeddingService | None = None, retrieval_backend: MemoryRetrievalBackend | None = None):
         self.store = store
         self.embedding_service = embedding_service or EmbeddingService()
+        self.retrieval_backend = retrieval_backend or ApplicationMemoryRetrievalBackend()
 
     def capture_turn_memory(
         self,
@@ -100,9 +103,13 @@ class MemoryService:
         existing_rows = self.store.list_memory_embeddings(memory_id=record.memory_id, model_name=self.embedding_service.model_name)
         for existing in existing_rows:
             if existing.content_sha1 == content_sha1:
+                record.metadata["embedding_status"] = "dedupe_hit"
+                record.metadata["embedding_content_sha1"] = content_sha1
                 return existing
         embedding = self.embedding_service.embed_memory_record(record)
         self.store.save_memory_embedding(embedding)
+        record.metadata["embedding_status"] = "refreshed"
+        record.metadata["embedding_content_sha1"] = embedding.content_sha1
         return embedding
 
     def _maybe_make_durable_record(
@@ -124,6 +131,7 @@ class MemoryService:
         existing = self.store.list_memory_records(scope="durable", limit=200)
         for record in existing:
             if record.memory_type == memory_type and _normalize_text(record.summary_text) == normalized_summary:
+                record.metadata["promotion_dedupe"] = True
                 return record
         durable = MemoryRecord(
             scope=MemoryScope.DURABLE,
@@ -137,7 +145,7 @@ class MemoryService:
             tags=tags,
             salience=salience,
             confidence=confidence,
-            metadata={"promotion_strategy": "rule_based_v1"},
+            metadata={"promotion_strategy": "policy_v2", "promotion_dedupe": False},
         )
         self.store.save_memory_record(durable)
         self._upsert_embedding_for_record(durable)
@@ -156,68 +164,22 @@ class MemoryService:
         assistant_text = assistant_message.content.strip() if assistant_message is not None else ""
         source_message_id = assistant_message.message_id if assistant_message is not None else user_message.message_id if user_message is not None else None
 
-        if user_text:
-            lowered = user_text.lower()
-            if "i prefer" in lowered or "prefer " in lowered:
-                record = self._maybe_make_durable_record(
-                    session_id=session_id,
-                    run_id=run_id,
-                    source_message_id=source_message_id,
-                    memory_type=MemoryType.USER_PREFERENCE,
-                    summary_text=user_text,
-                    detail_text=user_text,
-                    tags=["user_preference", "rule_based"],
-                    salience=0.8,
-                    confidence=0.75,
-                )
-                if record is not None:
-                    promoted.append(record)
-            if "todo" in lowered or "remember to" in lowered or "need to" in lowered:
-                record = self._maybe_make_durable_record(
-                    session_id=session_id,
-                    run_id=run_id,
-                    source_message_id=source_message_id,
-                    memory_type=MemoryType.TODO,
-                    summary_text=user_text,
-                    detail_text=user_text,
-                    tags=["todo", "rule_based"],
-                    salience=0.85,
-                    confidence=0.7,
-                )
-                if record is not None:
-                    promoted.append(record)
-
-        candidate_text = assistant_text or user_text
-        lowered_candidate = candidate_text.lower()
-        if candidate_text:
-            if "decided" in lowered_candidate or "decision" in lowered_candidate or "we will" in lowered_candidate:
-                record = self._maybe_make_durable_record(
-                    session_id=session_id,
-                    run_id=run_id,
-                    source_message_id=source_message_id,
-                    memory_type=MemoryType.DECISION,
-                    summary_text=candidate_text,
-                    detail_text=candidate_text,
-                    tags=["decision", "rule_based"],
-                    salience=0.9,
-                    confidence=0.72,
-                )
-                if record is not None:
-                    promoted.append(record)
-            if "lesson" in lowered_candidate or "rule of thumb" in lowered_candidate or "remember:" in lowered_candidate:
-                record = self._maybe_make_durable_record(
-                    session_id=session_id,
-                    run_id=run_id,
-                    source_message_id=source_message_id,
-                    memory_type=MemoryType.LESSON,
-                    summary_text=candidate_text,
-                    detail_text=candidate_text,
-                    tags=["lesson", "rule_based"],
-                    salience=0.75,
-                    confidence=0.68,
-                )
-                if record is not None:
-                    promoted.append(record)
+        for candidate in extract_durable_candidates(user_text=user_text, assistant_text=assistant_text):
+            record = self._maybe_make_durable_record(
+                session_id=session_id,
+                run_id=run_id,
+                source_message_id=source_message_id,
+                memory_type=candidate.memory_type,
+                summary_text=candidate.summary_text,
+                detail_text=candidate.detail_text,
+                tags=candidate.tags,
+                salience=candidate.salience,
+                confidence=candidate.confidence,
+            )
+            if record is not None:
+                if isinstance(record.metadata, dict):
+                    record.metadata.setdefault("promotion_strategy", candidate.strategy)
+                promoted.append(record)
         return promoted
 
     def retrieve_memory_fragments(self, *, session_id: str | None, query_text: str, limit: int = DEFAULT_MEMORY_RETRIEVAL_TOP_K) -> list[ContextFragment]:
@@ -237,28 +199,17 @@ class MemoryService:
 
         backend_plan = default_retrieval_backend_plan()
         query_vector = self.embedding_service.embed_text(query_text)
-        query_tokens = _tokenize(query_text)
-        scored: list[RetrievalScore] = []
         for record in candidate_records:
             embedding = embedding_by_memory_id.get(record.memory_id)
             if embedding is None:
                 embedding = self._upsert_embedding_for_record(record)
                 embedding_by_memory_id[record.memory_id] = embedding
-            semantic_score = cosine_similarity(query_vector, embedding.vector)
-            lexical_tokens = _tokenize(record.summary_text + "\n" + record.detail_text + "\n" + " ".join(record.tags))
-            lexical_score = (len(query_tokens & lexical_tokens) / len(query_tokens)) if query_tokens else 0.0
-            hybrid_score = 0.8 * semantic_score + 0.2 * lexical_score
-            if hybrid_score <= 0:
-                continue
-            scored.append(
-                RetrievalScore(
-                    memory=record,
-                    hybrid_score=hybrid_score,
-                    semantic_score=semantic_score,
-                    lexical_score=lexical_score,
-                )
-            )
-        scored.sort(key=lambda item: item.hybrid_score, reverse=True)
+        scored = self.retrieval_backend.score(
+            query_text=query_text,
+            query_vector=query_vector,
+            records=candidate_records,
+            embeddings=embedding_by_memory_id,
+        )
 
         fragments: list[ContextFragment] = []
         seen_memory_ids: set[str] = set()

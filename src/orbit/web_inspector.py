@@ -274,7 +274,7 @@ def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[
         records_html.append(
             f'<div class="fragment-card">'
             f'<h3 class="fragment-title">{escape(str(record.get("memory_type", "memory")))} · {escape(str(record.get("memory_id", "unknown")))}</h3>'
-            f'<div class="fragment-meta">scope={escape(str(record.get("scope", "unknown")))} · session_id={escape(str(record.get("session_id", "")))} · updated_at={escape(str(record.get("updated_at", "")))}</div>'
+            f'<div class="fragment-meta">scope={escape(str(record.get("scope", "unknown")))} · session_id={escape(str(record.get("session_id", "")))} · updated_at={escape(str(record.get("updated_at", "")))} · promotion_strategy={escape(str((record.get("metadata") or {}).get("promotion_strategy", "")))} · embedding_status={escape(str((record.get("metadata") or {}).get("embedding_status", "")))}</div>'
             f'<pre>{escape(json.dumps(record, indent=2, ensure_ascii=False))}</pre>'
             f'</div>'
         )
