@@ -59,7 +59,9 @@ def _mutation_detail_html(tool_data: dict | None) -> str:
         )
     return ''.join(blocks)
 
-from orbit.settings import DEFAULT_DB_PATH, DEFAULT_WORKSPACE_ROOT
+from orbit.runtime.embedding_service import cosine_similarity
+from orbit.runtime.memory_service import MemoryService
+from orbit.settings import DEFAULT_DB_PATH, DEFAULT_INSPECTOR_HOST, DEFAULT_INSPECTOR_PORT, DEFAULT_WORKSPACE_ROOT
 from orbit.store.sqlite_store import SQLiteStore
 
 VIO_INSPIRED_CSS = """
@@ -267,17 +269,65 @@ def _render_tool_calls_panel(tool_calls: list[dict]) -> str:
     return '<div class="panel-block"><h2 class="section-title">Tool Invocations</h2>' + ''.join(blocks) + '</div>'
 
 
-def _render_main_panel(*, active_tab: str, transcript_items: list[str], payload_json: str, context_data: dict | None, tool_calls: list[dict]) -> str:
+def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict]) -> str:
+    records_html = []
+    for record in memory_records:
+        records_html.append(
+            f'<div class="fragment-card">'
+            f'<h3 class="fragment-title">{escape(str(record.get("memory_type", "memory")))} · {escape(str(record.get("memory_id", "unknown")))}</h3>'
+            f'<div class="fragment-meta">scope={escape(str(record.get("scope", "unknown")))} · session_id={escape(str(record.get("session_id", "")))} · updated_at={escape(str(record.get("updated_at", "")))}</div>'
+            f'<pre>{escape(json.dumps(record, indent=2, ensure_ascii=False))}</pre>'
+            f'</div>'
+        )
+    embeddings_html = []
+    for embedding in memory_embeddings:
+        embeddings_html.append(
+            f'<div class="fragment-card">'
+            f'<h3 class="fragment-title">embedding · {escape(str(embedding.get("memory_id", "unknown")))}</h3>'
+            f'<div class="fragment-meta">model={escape(str(embedding.get("model_name", "unknown")))} · dim={escape(str(embedding.get("embedding_dim", 0)))} · created_at={escape(str(embedding.get("created_at", "")))}</div>'
+            f'<pre>{escape(json.dumps(embedding, indent=2, ensure_ascii=False))}</pre>'
+            f'</div>'
+        )
+    retrieval_blocks = []
+    for result in retrieval_results:
+        retrieval_blocks.append(
+            f'<div class="fragment-card">'
+            f'<h3 class="fragment-title">retrieval · score={escape(str(result.get("score", 0.0)))}</h3>'
+            f'<div class="fragment-meta">memory_id={escape(str(result.get("memory_id", "unknown")))} · scope={escape(str(result.get("memory_scope", "unknown")))} · model={escape(str(result.get("embedding_model", "unknown")))}</div>'
+            f'<pre>{escape(json.dumps(result, indent=2, ensure_ascii=False))}</pre>'
+            f'</div>'
+        )
+    retrieval_html = ''.join(retrieval_blocks) if retrieval_blocks else '<div class="empty">No retrieval results for current query.</div>'
+    records_html_joined = ''.join(records_html) if records_html else '<div class="empty">No canonical memory records.</div>'
+    embeddings_html_joined = ''.join(embeddings_html) if embeddings_html else '<div class="empty">No memory embeddings.</div>'
+    return (
+        '<div class="panel-block"><h2 class="section-title">Canonical Memory Records</h2>' + records_html_joined + '</div>'
+        + '<div class="panel-block"><h2 class="section-title">Memory Embeddings</h2>' + embeddings_html_joined + '</div>'
+        + '<div class="panel-block"><h2 class="section-title">Retrieval Probe</h2>'
+        + f'<div class="fragment-meta">query={escape(retrieval_query or "")}</div>'
+        + retrieval_html
+        + '</div>'
+    )
+
+
+def _render_main_panel(*, active_tab: str, transcript_items: list[str], payload_json: str, context_data: dict | None, tool_calls: list[dict], memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict]) -> str:
     if active_tab == "payload":
         return f'<div class="panel-block"><pre>{escape(payload_json)}</pre></div>'
     if active_tab == "context":
         return _render_context_panel(context_data)
     if active_tab == "tool_calls":
         return _render_tool_calls_panel(tool_calls)
+    if active_tab == "memory":
+        return _render_memory_panel(
+            memory_records=memory_records,
+            memory_embeddings=memory_embeddings,
+            retrieval_query=retrieval_query,
+            retrieval_results=retrieval_results,
+        )
     return ''.join(transcript_items)
 
 
-def _html_page(*, sessions, current_session, transcript, events, artifacts, metadata, tool_calls, active_tab: str):
+def _html_page(*, sessions, current_session, transcript, events, artifacts, metadata, tool_calls, active_tab: str, memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict]):
     def esc(x):
         return escape(str(x))
 
@@ -404,11 +454,13 @@ def _html_page(*, sessions, current_session, transcript, events, artifacts, meta
     payload_tab_class = "tab active" if active_tab == "payload" else "tab"
     context_tab_class = "tab active" if active_tab == "context" else "tab"
     tool_calls_tab_class = "tab active" if active_tab == "tool_calls" else "tab"
+    memory_tab_class = "tab active" if active_tab == "memory" else "tab"
 
     transcript_href = f"/?session_id={esc(title)}&tab=transcript" if current_session_id else "/?tab=transcript"
     payload_href = f"/?session_id={esc(title)}&tab=payload" if current_session_id else "/?tab=payload"
     context_href = f"/?session_id={esc(title)}&tab=context" if current_session_id else "/?tab=context"
     tool_calls_href = f"/?session_id={esc(title)}&tab=tool_calls" if current_session_id else "/?tab=tool_calls"
+    memory_href = f"/?session_id={esc(title)}&tab=memory" if current_session_id else "/?tab=memory"
 
     main_panel_html = _render_main_panel(
         active_tab=active_tab,
@@ -416,6 +468,10 @@ def _html_page(*, sessions, current_session, transcript, events, artifacts, meta
         payload_json=payload_json,
         context_data=context_data,
         tool_calls=tool_calls,
+        memory_records=memory_records,
+        memory_embeddings=memory_embeddings,
+        retrieval_query=retrieval_query,
+        retrieval_results=retrieval_results,
     )
 
     summary_json = json.dumps(
@@ -462,6 +518,7 @@ def _html_page(*, sessions, current_session, transcript, events, artifacts, meta
         <a class=\"{payload_tab_class}\" href=\"{payload_href}\">Payload</a>
         <a class=\"{context_tab_class}\" href=\"{context_href}\">Context</a>
         <a class=\"{tool_calls_tab_class}\" href=\"{tool_calls_href}\">Tool Calls</a>
+        <a class=\"{memory_tab_class}\" href=\"{memory_href}\">Memory</a>
       </div>
       <div class=\"main-panel\">{main_panel_html}</div>
     </main>
@@ -490,7 +547,7 @@ class InspectorHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         session_id = query.get("session_id", [None])[0]
         active_tab = query.get("tab", ["transcript"])[0]
-        if active_tab not in {"transcript", "payload", "context", "tool_calls"}:
+        if active_tab not in {"transcript", "payload", "context", "tool_calls", "memory"}:
             active_tab = "transcript"
 
         current_session = None
@@ -504,6 +561,42 @@ class InspectorHandler(BaseHTTPRequestHandler):
         artifacts = store.list_context_for_run(current_session.conversation_id) if current_session else []
         tool_invocations = store.list_tool_invocations_for_run(current_session.conversation_id) if current_session else []
         tool_calls = [tool.model_dump(mode="json") for tool in tool_invocations]
+        memory_service = MemoryService(store=store)
+        memory_records_raw = store.list_memory_records(session_id=current_session.session_id, limit=200) if current_session else []
+        memory_embeddings_raw = []
+        if current_session:
+            memory_ids = [record.memory_id for record in memory_records_raw]
+            for memory_id in memory_ids:
+                memory_embeddings_raw.extend(store.list_memory_embeddings(memory_id=memory_id))
+        retrieval_query = query.get("memory_query", [""])[0]
+        retrieval_results = []
+        if current_session and retrieval_query.strip():
+            probe_query = retrieval_query.strip()
+            query_vector = memory_service.embedding_service.embed_text(probe_query)
+            latest_embedding_by_memory_id = {}
+            for embedding in memory_embeddings_raw:
+                latest_embedding_by_memory_id.setdefault(embedding.memory_id, embedding)
+            for record in memory_records_raw:
+                embedding = latest_embedding_by_memory_id.get(record.memory_id)
+                if embedding is None:
+                    embedding = memory_service._upsert_embedding_for_record(record)
+                    latest_embedding_by_memory_id[record.memory_id] = embedding
+                    memory_embeddings_raw.append(embedding)
+                score = cosine_similarity(query_vector, embedding.vector)
+                retrieval_results.append({
+                    "memory_id": record.memory_id,
+                    "memory_scope": str(record.scope),
+                    "memory_type": str(record.memory_type),
+                    "summary_text": record.summary_text,
+                    "detail_text": record.detail_text,
+                    "score": round(score, 6),
+                    "embedding_model": embedding.model_name,
+                    "embedding_dim": embedding.embedding_dim,
+                })
+            retrieval_results.sort(key=lambda item: item["score"], reverse=True)
+            retrieval_results = retrieval_results[:10]
+        memory_records = [record.model_dump(mode="json") for record in memory_records_raw]
+        memory_embeddings = [embedding.model_dump(mode="json") for embedding in memory_embeddings_raw]
         metadata = current_session.metadata if current_session is not None else {}
         if isinstance(metadata, dict) and isinstance(metadata.get("filesystem_read_state"), dict):
             metadata = dict(metadata)
@@ -529,6 +622,10 @@ class InspectorHandler(BaseHTTPRequestHandler):
             metadata=metadata,
             tool_calls=tool_calls,
             active_tab=active_tab,
+            memory_records=memory_records,
+            memory_embeddings=memory_embeddings,
+            retrieval_query=retrieval_query,
+            retrieval_results=retrieval_results,
         ).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -537,7 +634,7 @@ class InspectorHandler(BaseHTTPRequestHandler):
         self.wfile.write(html)
 
 
-def serve(host: str = "127.0.0.1", port: int = 8789, open_browser: bool = False) -> None:
+def serve(host: str = DEFAULT_INSPECTOR_HOST, port: int = DEFAULT_INSPECTOR_PORT, open_browser: bool = False) -> None:
     httpd = ThreadingHTTPServer((host, port), InspectorHandler)
     url = f"http://{host}:{port}"
     print(f"ORBIT inspector listening on {url}")
@@ -553,8 +650,8 @@ def serve(host: str = "127.0.0.1", port: int = 8789, open_browser: bool = False)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ORBIT local web inspector")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8789)
+    parser.add_argument("--host", default=DEFAULT_INSPECTOR_HOST)
+    parser.add_argument("--port", type=int, default=DEFAULT_INSPECTOR_PORT)
     parser.add_argument("--open", action="store_true", dest="open_browser")
     args = parser.parse_args()
     serve(host=args.host, port=args.port, open_browser=args.open_browser)

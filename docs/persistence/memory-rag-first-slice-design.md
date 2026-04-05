@@ -219,6 +219,20 @@ Optional later additions:
 Retrieved memory must enter ORBIT through the provider-agnostic context assembly layer.
 It should become auxiliary context fragments rather than transcript-visible messages.
 
+## Inspection and debug surface requirement
+
+This phase should preserve an explicit local inspection/debug surface rather than burying retrieval state inside runtime internals only.
+At minimum, the local inspection web UI/debug port should be able to show:
+- canonical memory records
+- derived memory embeddings
+- retrieval probe results for a supplied query
+- linkage between retrieved fragments and source memory ids
+
+Why this matters:
+- transcript/memory separation is easier to keep correct when both are inspectable
+- embedding quality/debugging needs visibility into scores and selected records
+- future compaction and retrieval tuning will otherwise become blind debugging work
+
 That means:
 - retrieval results should be inspectable
 - retrieval results should be attributed to source memory ids
