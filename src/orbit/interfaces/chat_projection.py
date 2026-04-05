@@ -36,27 +36,28 @@ def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy:
             continue
         label = msg.role.upper() if not msg.message_kind else f"{msg.role.upper()} [{msg.message_kind}]"
         color = accent_user if msg.role == "user" else accent_assistant if msg.role == "assistant" else accent_warning
-        body.append(color + label + T.RESET)
         if msg.message_kind == "tool_result":
             tool_name = None
             tool_ok = None
             if isinstance(msg.metadata, dict):
                 tool_name = msg.metadata.get("tool_name")
                 tool_ok = msg.metadata.get("tool_ok")
-            summary = f"tool={tool_name or 'unknown'}"
+            summary = f"TOOL [tool_result] tool={tool_name or 'unknown'}"
             if tool_ok is True:
                 summary += " status=ok"
             elif tool_ok is False:
                 summary += " status=error"
             compact = summary.replace("\n", " ")
-            max_width = max(20, width - 4)
+            max_width = max(20, width)
             if len(compact) > max_width:
                 compact = compact[: max(0, max_width - 1)] + "…"
-            body.append("  " + T.DIM + compact + T.RESET)
-        else:
-            wrapped = wrap_display_text(msg.content, max(20, width - 4))
-            for ln in wrapped:
-                body.append("  " + ln)
+            body.append(T.DIM + compact + T.RESET)
+            body.append("")
+            continue
+        body.append(color + label + T.RESET)
+        wrapped = wrap_display_text(msg.content, max(20, width - 4))
+        for ln in wrapped:
+            body.append("  " + ln)
         body.append("")
 
     pending = adapter.get_pending_approval(session_id)
