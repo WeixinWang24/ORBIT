@@ -299,25 +299,38 @@ def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[
     compare_summary_html = ''
     if compare_summary:
         delta = compare_summary.get('delta', {}) if isinstance(compare_summary, dict) else {}
+        ranked = []
+        for memory_id, payload in (delta.get('score_deltas', {}) or {}).items():
+            ranked.append((abs(float(payload.get('delta', 0.0) or 0.0)), memory_id, payload))
+        ranked.sort(reverse=True)
+        ranked_cards = []
+        for _abs_delta, memory_id, payload in ranked[:5]:
+            ranked_cards.append(
+                f'<div class="fragment-card">'
+                f'<h3 class="fragment-title">delta · {escape(str(memory_id))}</h3>'
+                f'<div class="fragment-meta">application={escape(str(payload.get("application_score")))} · postgres={escape(str(payload.get("postgres_score")))} · delta={escape(str(payload.get("delta")))}</div>'
+                f'</div>'
+            )
         compare_summary_html = (
             '<div class="panel-block"><h2 class="section-title">Compare Summary</h2>'
             f'<div class="fragment-card"><h3 class="fragment-title">Overlap</h3><div class="fragment-meta">{escape(json.dumps(delta.get("top_id_overlap", []), ensure_ascii=False))}</div></div>'
             f'<div class="fragment-card"><h3 class="fragment-title">Application Only</h3><div class="fragment-meta">{escape(json.dumps(delta.get("application_only", []), ensure_ascii=False))}</div></div>'
             f'<div class="fragment-card"><h3 class="fragment-title">Postgres Only</h3><div class="fragment-meta">{escape(json.dumps(delta.get("postgres_only", []), ensure_ascii=False))}</div></div>'
-            f'<pre>{escape(json.dumps(compare_summary, indent=2, ensure_ascii=False))}</pre>'
-            '</div>'
+            + ''.join(ranked_cards)
+            + f'<pre>{escape(json.dumps(compare_summary, indent=2, ensure_ascii=False))}</pre>'
+            + '</div>'
         )
     snapshots_html = ''
     if recent_probe_snapshots:
         cards = []
         for item in recent_probe_snapshots:
             cards.append(
-                f'<div class="fragment-card">'
-                f'<h3 class="fragment-title">snapshot · {escape(str(item.get("context_artifact_id", "unknown")))}</h3>'
+                f'<details class="fragment-card">'
+                f'<summary><span class="fragment-title">snapshot · {escape(str(item.get("context_artifact_id", "unknown")))}</span></summary>'
                 f'<div class="fragment-meta">created_at={escape(str(item.get("created_at", "")))} · backend={escape(str(item.get("backend", "")))} · strategy={escape(str(item.get("strategy", "")))} · query={escape(str(item.get("query_text", "")))}</div>'
                 f'<div class="fragment-meta">top_memory_ids={escape(json.dumps(item.get("top_memory_ids", []), ensure_ascii=False))}</div>'
                 f'<pre>{escape(json.dumps(item.get("content", {}), indent=2, ensure_ascii=False))}</pre>'
-                f'</div>'
+                f'</details>'
             )
         snapshots_html = '<div class="panel-block"><h2 class="section-title">Recent Probe Snapshots</h2>' + ''.join(cards) + '</div>'
     retrieval_html = ''.join(retrieval_blocks) if retrieval_blocks else '<div class="empty">No retrieval results for current query.</div>'
