@@ -738,6 +738,14 @@ class InspectorHandler(BaseHTTPRequestHandler):
             app_results = {item.get("memory_id"): item for item in compare_results["application"].get("results", [])}
             pg_results = {item.get("memory_id"): item for item in compare_results["postgres"].get("results", [])}
             overlap_ids = sorted(set(application_ids) & set(postgres_ids))
+            score_deltas = {
+                memory_id: {
+                    "application_score": app_results.get(memory_id, {}).get("score"),
+                    "postgres_score": pg_results.get(memory_id, {}).get("score"),
+                    "delta": round((app_results.get(memory_id, {}).get("score") or 0.0) - (pg_results.get(memory_id, {}).get("score") or 0.0), 6),
+                }
+                for memory_id in overlap_ids
+            }
             compare_summary = {
                 "application": {
                     "backend": getattr(compare_results["application"].get("backend_plan"), "backend", None),
@@ -755,15 +763,17 @@ class InspectorHandler(BaseHTTPRequestHandler):
                     "top_id_overlap": overlap_ids,
                     "application_only": [item for item in application_ids if item not in postgres_ids],
                     "postgres_only": [item for item in postgres_ids if item not in application_ids],
-                    "score_deltas": {
-                        memory_id: {
-                            "application_score": app_results.get(memory_id, {}).get("score"),
-                            "postgres_score": pg_results.get(memory_id, {}).get("score"),
-                            "delta": round((app_results.get(memory_id, {}).get("score") or 0.0) - (pg_results.get(memory_id, {}).get("score") or 0.0), 6),
-                        }
-                        for memory_id in overlap_ids
-                    },
+                    "score_deltas": score_deltas,
                 },
+                "export_rows": [
+                    {
+                        "memory_id": memory_id,
+                        "application_score": payload.get("application_score"),
+                        "postgres_score": payload.get("postgres_score"),
+                        "delta": payload.get("delta"),
+                    }
+                    for memory_id, payload in score_deltas.items()
+                ],
             }
         memory_records = [record.model_dump(mode="json") for record in memory_records_raw]
         memory_embeddings = [embedding.model_dump(mode="json") for embedding in memory_embeddings_raw]

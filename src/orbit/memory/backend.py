@@ -48,6 +48,13 @@ class PostgresMemoryRetrievalBackend(MemoryRetrievalBackend):
     ) -> list[RetrievalScore]:
         """Planned pgvector execution hook for future activation.
 
+        Inline roadmap for later activation:
+        1. verify pgvector capability and dimension compatibility
+        2. ensure `memory_embedding_vectors` derived table is populated
+        3. execute exact similarity SQL against pgvector column
+        4. map rows back into `RetrievalScore`
+        5. compare/rank against application backend during migration phase
+
         Current phase intentionally keeps this unimplemented while preserving a
         stable method seam for future server-side similarity execution.
         """

@@ -87,6 +87,9 @@ CREATE INDEX IF NOT EXISTS idx_memory_embedding_vectors_scope_session
     ON memory_embedding_vectors(scope, session_id, memory_type);
 ```
 
+SQL draft file:
+- `docs/persistence/sql/pgvector-memory-embedding-vectors.sql`
+
 Later optional filters:
 - `scope = 'durable'`
 - `scope = 'session' AND session_id = $session_id`
