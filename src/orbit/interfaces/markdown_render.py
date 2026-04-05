@@ -114,26 +114,24 @@ def _soften_code_block_background(lines: list[str]) -> list[str]:
     softened: list[str] = []
     code_block_like = False
     for ln in lines:
-        plain = _strip_ansi(ln).strip()
-        if plain.startswith("╭") or plain.startswith("╰") or plain.startswith("│"):
+        plain = _strip_ansi(ln)
+        stripped = plain.strip()
+        if stripped.startswith("╭") or stripped.startswith("╰") or stripped.startswith("│"):
             code_block_like = True
+        if code_block_like:
+            # Rich code blocks can carry nested per-token spans with their own
+            # bright backgrounds and syntax colours. For ORBIT's current dark
+            # terminal aesthetic, strip those inner spans entirely and repaint
+            # the whole code block line with one coherent muted style.
+            softened.append(MUTED_CODE_BG + MUTED_CODE_FG + plain + T.RESET)
+            continue
         updated = ln
         touched_bg = False
         for pattern in LIGHT_CODE_BG_PATTERNS:
             if pattern in updated:
                 updated = updated.replace(pattern, MUTED_CODE_BG)
                 touched_bg = True
-        if code_block_like:
-            # Force the container lines and nested content toward one coherent
-            # dark code-block style, even when Rich emits mixed span styles.
-            for fg_pattern in LIGHT_CODE_FG_PATTERNS:
-                if fg_pattern in updated:
-                    updated = updated.replace(fg_pattern, MUTED_CODE_FG)
-            if MUTED_CODE_BG not in updated:
-                updated = MUTED_CODE_BG + updated
-            if MUTED_CODE_FG not in updated:
-                updated = MUTED_CODE_FG + updated
-        elif touched_bg:
+        if touched_bg:
             for fg_pattern in LIGHT_CODE_FG_PATTERNS:
                 if fg_pattern in updated:
                     updated = updated.replace(fg_pattern, MUTED_CODE_FG)
