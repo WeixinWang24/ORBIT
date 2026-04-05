@@ -44,7 +44,19 @@ class PostgresMemoryRetrievalBackend(MemoryRetrievalBackend):
         embeddings: dict[str, MemoryEmbedding],
         weights: MemoryRetrievalWeights | None = None,
     ) -> list[RetrievalScore]:
-        return []
+        weights = weights or default_memory_retrieval_weights()
+        return [
+            RetrievalScore(
+                memory=record,
+                hybrid_score=0.0,
+                semantic_score=0.0,
+                lexical_score=0.0,
+                durable_boost=weights.durable_boost if str(record.scope) == "durable" else 0.0,
+                session_boost=weights.session_boost if str(record.scope) == "session" else 0.0,
+                salience_bonus=weights.salience_weight * float(getattr(record, "salience", 0.0) or 0.0),
+            )
+            for record in records[: min(len(records), 10)]
+        ]
 
 
 class ApplicationMemoryRetrievalBackend(MemoryRetrievalBackend):
@@ -75,9 +87,10 @@ class ApplicationMemoryRetrievalBackend(MemoryRetrievalBackend):
             semantic_score = cosine_similarity(query_vector, embedding.vector)
             lexical_tokens = _tokenize(record.summary_text + "\n" + record.detail_text + "\n" + " ".join(record.tags))
             lexical_score = (len(query_tokens & lexical_tokens) / len(query_tokens)) if query_tokens else 0.0
-            scope_boost = weights.durable_boost if str(record.scope) == "durable" else weights.session_boost
+            durable_boost = weights.durable_boost if str(record.scope) == "durable" else 0.0
+            session_boost = weights.session_boost if str(record.scope) == "session" else 0.0
             salience_bonus = weights.salience_weight * float(getattr(record, "salience", 0.0) or 0.0)
-            hybrid_score = (weights.semantic_weight * semantic_score) + (weights.lexical_weight * lexical_score) + scope_boost + salience_bonus
+            hybrid_score = (weights.semantic_weight * semantic_score) + (weights.lexical_weight * lexical_score) + durable_boost + session_boost + salience_bonus
             if hybrid_score <= 0:
                 continue
             scored.append(
@@ -86,6 +99,9 @@ class ApplicationMemoryRetrievalBackend(MemoryRetrievalBackend):
                     hybrid_score=hybrid_score,
                     semantic_score=semantic_score,
                     lexical_score=lexical_score,
+                    durable_boost=durable_boost,
+                    session_boost=session_boost,
+                    salience_bonus=salience_bonus,
                 )
             )
         scored.sort(key=lambda item: item.hybrid_score, reverse=True)

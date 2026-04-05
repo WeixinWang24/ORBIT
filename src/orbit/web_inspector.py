@@ -268,7 +268,7 @@ def _render_tool_calls_panel(tool_calls: list[dict]) -> str:
     return '<div class="panel-block"><h2 class="section-title">Tool Invocations</h2>' + ''.join(blocks) + '</div>'
 
 
-def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all") -> str:
+def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all", retrieval_weights: dict | None = None) -> str:
     records_html = []
     for record in memory_records:
         records_html.append(
@@ -292,7 +292,7 @@ def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[
         retrieval_blocks.append(
             f'<div class="fragment-card">'
             f'<h3 class="fragment-title">retrieval · hybrid={escape(str(result.get("score", 0.0)))}</h3>'
-            f'<div class="fragment-meta">memory_id={escape(str(result.get("memory_id", "unknown")))} · scope={escape(str(result.get("memory_scope", "unknown")))} · model={escape(str(result.get("embedding_model", "unknown")))} · semantic={escape(str(result.get("semantic_score", 0.0)))} · lexical={escape(str(result.get("lexical_score", 0.0)))}</div>'
+            f'<div class="fragment-meta">memory_id={escape(str(result.get("memory_id", "unknown")))} · scope={escape(str(result.get("memory_scope", "unknown")))} · model={escape(str(result.get("embedding_model", "unknown")))} · semantic={escape(str(result.get("semantic_score", 0.0)))} · lexical={escape(str(result.get("lexical_score", 0.0)))} · durable_boost={escape(str(result.get("durable_boost", 0.0)))} · session_boost={escape(str(result.get("session_boost", 0.0)))} · salience_bonus={escape(str(result.get("salience_bonus", 0.0)))}</div>'
             f'<pre>{escape(json.dumps(result, indent=2, ensure_ascii=False))}</pre>'
             f'</div>'
         )
@@ -317,12 +317,13 @@ def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[
         + '</form>'
         + f'<div class="fragment-meta">query={escape(retrieval_query or "")} · top_k={memory_top_k} · scope={escape(memory_scope)}</div>'
         + (f'<div class="fragment-meta">backend={escape(str((backend_plan or {}).get("backend", "unknown")))} · strategy={escape(str((backend_plan or {}).get("strategy", "unknown")))} · notes={escape(str((backend_plan or {}).get("notes", "")))}</div>' if backend_plan else '')
+        + (f'<div class="fragment-meta">weights={escape(json.dumps(retrieval_weights or {}, ensure_ascii=False))}</div>' if retrieval_weights else '')
         + retrieval_html
         + '</div>'
     )
 
 
-def _render_main_panel(*, active_tab: str, transcript_items: list[str], payload_json: str, context_data: dict | None, tool_calls: list[dict], memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all") -> str:
+def _render_main_panel(*, active_tab: str, transcript_items: list[str], payload_json: str, context_data: dict | None, tool_calls: list[dict], memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all", retrieval_weights: dict | None = None) -> str:
     if active_tab == "payload":
         return f'<div class="panel-block"><pre>{escape(payload_json)}</pre></div>'
     if active_tab == "context":
@@ -338,11 +339,12 @@ def _render_main_panel(*, active_tab: str, transcript_items: list[str], payload_
             backend_plan=backend_plan,
             memory_top_k=memory_top_k,
             memory_scope=memory_scope,
+            retrieval_weights=retrieval_weights,
         )
     return ''.join(transcript_items)
 
 
-def _html_page(*, sessions, current_session, transcript, events, artifacts, metadata, tool_calls, active_tab: str, memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all"):
+def _html_page(*, sessions, current_session, transcript, events, artifacts, metadata, tool_calls, active_tab: str, memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all", retrieval_weights: dict | None = None):
     def esc(x):
         return escape(str(x))
 
@@ -490,6 +492,7 @@ def _html_page(*, sessions, current_session, transcript, events, artifacts, meta
         backend_plan=backend_plan,
         memory_top_k=memory_top_k,
         memory_scope=memory_scope,
+        retrieval_weights=retrieval_weights,
     )
 
     summary_json = json.dumps(
@@ -605,6 +608,7 @@ class InspectorHandler(BaseHTTPRequestHandler):
             "notes": getattr(backend_plan_obj, "notes", ""),
         }
         retrieval_results = list(probe.get("results", []))
+        retrieval_weights = dict(probe.get("weights", {}))
         memory_records = [record.model_dump(mode="json") for record in memory_records_raw]
         memory_embeddings = [embedding.model_dump(mode="json") for embedding in memory_embeddings_raw]
         metadata = current_session.metadata if current_session is not None else {}
@@ -639,6 +643,7 @@ class InspectorHandler(BaseHTTPRequestHandler):
             backend_plan=backend_plan,
             memory_top_k=memory_top_k,
             memory_scope=memory_scope,
+            retrieval_weights=retrieval_weights,
         ).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")

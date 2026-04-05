@@ -17,6 +17,9 @@ class RetrievalScore:
     hybrid_score: float
     semantic_score: float
     lexical_score: float
+    durable_boost: float = 0.0
+    session_boost: float = 0.0
+    salience_bonus: float = 0.0
 
 
 @dataclass

@@ -236,6 +236,9 @@ class MemoryService:
                 "score": round(scored_item.hybrid_score, 6),
                 "semantic_score": round(scored_item.semantic_score, 6),
                 "lexical_score": round(scored_item.lexical_score, 6),
+                "durable_boost": round(scored_item.durable_boost, 6),
+                "session_boost": round(scored_item.session_boost, 6),
+                "salience_bonus": round(scored_item.salience_bonus, 6),
                 "embedding_model": self.embedding_service.model_name,
                 "promotion_strategy": record.metadata.get("promotion_strategy") if isinstance(record.metadata, dict) else None,
                 "retrieval_backend": getattr(self.retrieval_backend, "backend_name", "unknown"),
@@ -243,7 +246,17 @@ class MemoryService:
             })
             if len(results) >= limit:
                 break
-        return {"backend_plan": self._current_backend_plan(), "results": results}
+        return {
+            "backend_plan": self._current_backend_plan(),
+            "results": results,
+            "weights": {
+                "semantic_weight": self.retrieval_weights.semantic_weight,
+                "lexical_weight": self.retrieval_weights.lexical_weight,
+                "durable_boost": self.retrieval_weights.durable_boost,
+                "session_boost": self.retrieval_weights.session_boost,
+                "salience_weight": self.retrieval_weights.salience_weight,
+            },
+        }
 
     def _current_backend_plan(self):
         backend_plan = default_retrieval_backend_plan()
