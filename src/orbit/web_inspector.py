@@ -698,6 +698,9 @@ class InspectorHandler(BaseHTTPRequestHandler):
             }
             application_ids = [item.get("memory_id") for item in compare_results["application"].get("results", [])[:5]]
             postgres_ids = [item.get("memory_id") for item in compare_results["postgres"].get("results", [])[:5]]
+            app_results = {item.get("memory_id"): item for item in compare_results["application"].get("results", [])}
+            pg_results = {item.get("memory_id"): item for item in compare_results["postgres"].get("results", [])}
+            overlap_ids = sorted(set(application_ids) & set(postgres_ids))
             compare_summary = {
                 "application": {
                     "backend": getattr(compare_results["application"].get("backend_plan"), "backend", None),
@@ -712,9 +715,17 @@ class InspectorHandler(BaseHTTPRequestHandler):
                     "top_scores": [item.get("score") for item in compare_results["postgres"].get("results", [])[:3]],
                 },
                 "delta": {
-                    "top_id_overlap": sorted(set(application_ids) & set(postgres_ids)),
+                    "top_id_overlap": overlap_ids,
                     "application_only": [item for item in application_ids if item not in postgres_ids],
                     "postgres_only": [item for item in postgres_ids if item not in application_ids],
+                    "score_deltas": {
+                        memory_id: {
+                            "application_score": app_results.get(memory_id, {}).get("score"),
+                            "postgres_score": pg_results.get(memory_id, {}).get("score"),
+                            "delta": round((app_results.get(memory_id, {}).get("score") or 0.0) - (pg_results.get(memory_id, {}).get("score") or 0.0), 6),
+                        }
+                        for memory_id in overlap_ids
+                    },
                 },
             }
         memory_records = [record.model_dump(mode="json") for record in memory_records_raw]

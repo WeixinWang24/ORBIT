@@ -37,6 +37,22 @@ class PostgresMemoryRetrievalBackend(MemoryRetrievalBackend):
     execution_todo = "Enable pgvector-native derived embedding storage, exact similarity SQL, and capability-gated execution path."
     planned_sql_shape = "SELECT memory_id, 1 - (embedding <=> $query_vector) AS score FROM memory_embedding_vectors ORDER BY embedding <=> $query_vector LIMIT $k"
 
+    def _score_with_pgvector(
+        self,
+        *,
+        query_text: str,
+        query_vector: list[float],
+        records: list[MemoryRecord],
+        embeddings: dict[str, MemoryEmbedding],
+        weights: MemoryRetrievalWeights,
+    ) -> list[RetrievalScore]:
+        """Planned pgvector execution hook for future activation.
+
+        Current phase intentionally keeps this unimplemented while preserving a
+        stable method seam for future server-side similarity execution.
+        """
+        return []
+
     def score(
         self,
         *,
@@ -47,6 +63,15 @@ class PostgresMemoryRetrievalBackend(MemoryRetrievalBackend):
         weights: MemoryRetrievalWeights | None = None,
     ) -> list[RetrievalScore]:
         weights = weights or default_memory_retrieval_weights()
+        planned = self._score_with_pgvector(
+            query_text=query_text,
+            query_vector=query_vector,
+            records=records,
+            embeddings=embeddings,
+            weights=weights,
+        )
+        if planned:
+            return planned
         return [
             RetrievalScore(
                 memory=record,

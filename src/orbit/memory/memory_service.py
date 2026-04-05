@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import datetime, timezone
+import json
 from typing import Iterable
 
 from orbit.memory.backend import ApplicationMemoryRetrievalBackend, MemoryRetrievalBackend, PostgresMemoryRetrievalBackend
@@ -268,7 +269,7 @@ class MemoryService:
                     run_id=session.conversation_id,
                     artifact_type="memory_probe_snapshot",
                     source="memory_service.probe_memory_retrieval",
-                    content=str({
+                    content=json.dumps({
                         "backend_plan": {
                             "backend": self._current_backend_plan(backend_override=backend_override).backend,
                             "strategy": self._current_backend_plan(backend_override=backend_override).strategy,
@@ -282,7 +283,7 @@ class MemoryService:
                         },
                         "snapshot": snapshot,
                         "top_memory_ids": [result["memory_id"] for result in results[: min(len(results), 5)]],
-                    }),
+                    }, ensure_ascii=False),
                 )
                 self.store.save_context_artifact(artifact)
                 snapshot["context_artifact_id"] = artifact.context_artifact_id
