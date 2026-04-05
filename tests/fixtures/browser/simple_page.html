@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>ORBIT Browser Fixture</title>
+    <script>
+      function handlePrimaryAction() {
+        const status = document.getElementById('status');
+        status.textContent = 'Clicked!';
+        console.log('primary-action-clicked');
+      }
+      function handleInputChange(value) {
+        const mirror = document.getElementById('input-mirror');
+        mirror.textContent = value;
+        console.error('input-updated:' + value);
+      }
+    </script>
+  </head>
+  <body>
+    <h1>Browser Fixture</h1>
+    <a href="#next">Next Link</a>
+    <button aria-label="Primary Action" onclick="handlePrimaryAction()">Click Me</button>
+    <div id="status" data-orbit-observe="true">Idle</div>
+    <input placeholder="Type here" oninput="handleInputChange(this.value)" />
+    <div id="input-mirror" data-orbit-observe="true"></div>
+    <textarea placeholder="Longer text"></textarea>
+  </body>
+</html>
