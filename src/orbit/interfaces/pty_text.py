@@ -46,8 +46,8 @@ def wrap_text(text: str, width: int) -> list[str]:
 
 
 def divider(width: int) -> str:
-    """Return a purple horizontal divider spanning width."""
-    return T.FG_BRIGHT_MAGENTA + "─" * width + T.RESET
+    """Return a muted purple horizontal divider spanning width."""
+    return T.FG_MAGENTA + "─" * width + T.RESET
 
 
 def header_text(text: str, width: int) -> str:
