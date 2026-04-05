@@ -8,6 +8,10 @@ replaces older CLI entrypoints.
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
 from .adapter_protocol import RuntimeCliAdapter
 from .runtime_cli_state import (
     APPROVALS_MODE,
@@ -144,6 +148,146 @@ def show_current_session_state(state: RuntimeShellState, adapter: RuntimeCliAdap
         return
     adapter.append_system_message(session_id, str(payload), kind="session_state")
     activate_chat(state, "Session state loaded")
+
+
+def run_self_audit_entrypoint(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> None:
+    session_id = current_session_id(state, adapter)
+    payload = adapter.get_workbench_status()
+    runtime_mode = str(payload.get("runtime_mode") or "dev")
+    if runtime_mode != "evo":
+        adapter.append_system_message(
+            session_id,
+            "Self-audit entrypoint is not enabled in the current mode. Re-run in evo mode to perform implementation-grounded self-audit work.",
+            kind="self_audit_blocked",
+        )
+        activate_chat(state, "Self-audit requires evo mode")
+        return
+    workspace_root = Path(str(payload.get('workspace_root') or '.'))
+    key_paths = [
+        'src/orbit/runtime/core/session_manager.py',
+        'src/orbit/runtime/core/contracts.py',
+        'src/orbit/runtime/governance/protocol/mode.py',
+        'src/orbit/interfaces/runtime_adapter.py',
+    ]
+
+    grounding_records: list[dict[str, object]] = []
+
+    def _file_grounding_line(rel_path: str) -> list[str]:
+        target = workspace_root / rel_path
+        if not target.exists() or not target.is_file():
+            grounding_records.append({"path": rel_path, "exists": False})
+            return [f"    - {rel_path}: exists=False"]
+        stat = target.stat()
+        try:
+            content = target.read_text(encoding='utf-8')
+        except UnicodeDecodeError:
+            grounding_records.append({
+                "path": rel_path,
+                "exists": True,
+                "bytes": stat.st_size,
+                "text_decode": "utf8_failed",
+            })
+            return [f"    - {rel_path}: exists=True bytes={stat.st_size} text_decode=utf8_failed"]
+        lines = content.splitlines()
+        header = " | ".join(line.strip() for line in lines[:3] if line.strip())
+        header = header[:160] if header else "(no non-empty header lines)"
+        grounding_records.append({
+            "path": rel_path,
+            "exists": True,
+            "bytes": stat.st_size,
+            "lines": len(lines),
+            "header": header,
+        })
+        return [
+            f"    - {rel_path}: exists=True bytes={stat.st_size} lines={len(lines)}",
+            f"      header={header}",
+        ]
+    report_lines = [
+        "SELF-AUDIT BOOTSTRAP REPORT",
+        "",
+        "runtime:",
+        f"  runtime_mode={payload.get('runtime_mode')}",
+        f"  workspace_root={payload.get('workspace_root')}",
+        f"  mode_policy_profile={payload.get('mode_policy_profile')}",
+        f"  self_runtime_visibility={payload.get('self_runtime_visibility')}",
+        f"  self_modification_posture={payload.get('self_modification_posture')}",
+        "",
+        "inventory:",
+        f"  registered_tool_count={payload.get('registered_tool_count')}",
+        f"  session_count={payload.get('session_count')}",
+        f"  approval_count={payload.get('approval_count')}",
+        f"  native_list_available_tools_present={'native__list_available_tools' in set(payload.get('registered_tool_names', []))}",
+        "",
+        "build_state:",
+        f"  active_build_id={payload.get('active_build_id')}",
+        f"  candidate_build_id={payload.get('candidate_build_id')}",
+        f"  last_known_good_build_id={payload.get('last_known_good_build_id')}",
+        "",
+        "first_evidence_collection:",
+        "  key_runtime_paths:",
+    ]
+    for rel_path in key_paths:
+        report_lines.extend(_file_grounding_line(rel_path))
+    checklist_entries = [
+        "runtime/registry evidence collected",
+        "implementation-path evidence collected",
+        "design-intent evidence separated from runtime truth",
+        "derived observations labeled as derived",
+        "self-change remains read-heavy unless separately approved",
+    ]
+    report_lines += [
+        "",
+        "phase_a_evidence_checklist:",
+        "  - runtime/registry evidence collected",
+        "  - implementation-path evidence collected",
+        "  - design-intent evidence separated from runtime truth",
+        "  - derived observations labeled as derived",
+        "  - self-change remains read-heavy unless separately approved",
+        "",
+        "recommended_next_step:",
+        "  - use this report as the bootstrap state before implementation-grounded self-audit work",
+    ]
+    structured_payload = {
+        "artifact_type": "self_audit_bootstrap",
+        "schema_version": "v1",
+        "phase": "phase_a",
+        "report_kind": "self_audit_bootstrap",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "runtime": {
+            "runtime_mode": payload.get("runtime_mode"),
+            "workspace_root": payload.get("workspace_root"),
+            "mode_policy_profile": payload.get("mode_policy_profile"),
+            "self_runtime_visibility": payload.get("self_runtime_visibility"),
+            "self_modification_posture": payload.get("self_modification_posture"),
+        },
+        "inventory": {
+            "registered_tool_count": payload.get("registered_tool_count"),
+            "session_count": payload.get("session_count"),
+            "approval_count": payload.get("approval_count"),
+            "native_list_available_tools_present": "native__list_available_tools" in set(payload.get("registered_tool_names", [])),
+        },
+        "build_state": {
+            "active_build_id": payload.get("active_build_id"),
+            "candidate_build_id": payload.get("candidate_build_id"),
+            "last_known_good_build_id": payload.get("last_known_good_build_id"),
+        },
+        "first_evidence_collection": {
+            "source_paths": key_paths,
+            "key_runtime_paths": grounding_records,
+        },
+        "phase_a_evidence_checklist": checklist_entries,
+        "recommended_next_step": "use this report as the bootstrap state before implementation-grounded self-audit work",
+    }
+    structured_json = json.dumps(structured_payload, indent=2, ensure_ascii=False)
+    message_text = "\n".join(report_lines) + "\n\nSTRUCTURED_PAYLOAD_JSON\n" + structured_json
+    adapter.append_system_message(session_id, message_text, kind="self_audit_report")
+    adapter.append_context_artifact(
+        session_id,
+        artifact_type="self_audit_bootstrap",
+        content=structured_json,
+        source="self_audit_entrypoint",
+    )
+    activate_chat(state, "Self-audit bootstrap ready")
 
 
 def detach_current_session(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> None:
@@ -285,6 +429,9 @@ def route_slash_command(state: RuntimeShellState, adapter: RuntimeCliAdapter, te
         return
     if command == "/status":
         activate_status(state)
+        return
+    if command == "/self-audit":
+        run_self_audit_entrypoint(state, adapter)
         return
     if command == "/sessions":
         activate_sessions(state)

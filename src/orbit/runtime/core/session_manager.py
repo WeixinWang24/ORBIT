@@ -3,29 +3,159 @@
 from __future__ import annotations
 
 import json
+import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+_SESSION_MANAGER_IMPORT_TIMINGS: dict[str, float] = {}
+_t = time.perf_counter()
 from orbit.models import ContextArtifact, ConversationMessage, ConversationSession, ExecutionEvent, GovernedToolState, MessageRole, ToolInvocation, ToolInvocationStatus
+_SESSION_MANAGER_IMPORT_TIMINGS['models_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
 from orbit.models.core import new_id
+_SESSION_MANAGER_IMPORT_TIMINGS['models_core_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
 from orbit.runtime.core.contracts import RunDescriptor, WorkspaceDescriptor
+_SESSION_MANAGER_IMPORT_TIMINGS['runtime_core_contracts_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
+from orbit.runtime.governance.protocol.mode import ModePolicyDescriptor, RuntimeMode, build_mode_policy_snapshot
+_SESSION_MANAGER_IMPORT_TIMINGS['mode_protocol_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
 from orbit.runtime.core.events import RuntimeEventType
+_SESSION_MANAGER_IMPORT_TIMINGS['runtime_core_events_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
 from orbit.runtime.execution.continuation_context import build_rejection_continuation_context
-from orbit.memory import EmbeddingService, MemoryService
+_SESSION_MANAGER_IMPORT_TIMINGS['continuation_context_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_SESSION_MANAGER_IMPORT_TIMINGS['memory_ms'] = 'deferred'
+_t = time.perf_counter()
 from orbit.runtime.governance.tool_approval_policy import PolicyDecision, PolicyEvaluationInput, evaluate_tool_approval_policy
+_SESSION_MANAGER_IMPORT_TIMINGS['tool_approval_policy_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
-from orbit.runtime.mcp.bootstrap import bootstrap_local_filesystem_mcp_server, bootstrap_local_git_mcp_server
-from orbit.runtime.mcp.bash_bootstrap import bootstrap_local_bash_mcp_server
-from orbit.runtime.mcp.process_bootstrap import bootstrap_local_process_mcp_server
-from orbit.runtime.mcp.governance import resolve_filesystem_mcp_target_path
-from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
+_SESSION_MANAGER_IMPORT_TIMINGS['execution_plans_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_SESSION_MANAGER_IMPORT_TIMINGS['mcp_bootstrap_ms'] = 'deferred'
+_SESSION_MANAGER_IMPORT_TIMINGS['mcp_bash_bootstrap_ms'] = 'deferred'
+_SESSION_MANAGER_IMPORT_TIMINGS['mcp_process_bootstrap_ms'] = 'deferred'
+_SESSION_MANAGER_IMPORT_TIMINGS['mcp_pytest_bootstrap_ms'] = 'deferred'
+_SESSION_MANAGER_IMPORT_TIMINGS['mcp_browser_bootstrap_ms'] = 'deferred'
+_SESSION_MANAGER_IMPORT_TIMINGS['mcp_governance_ms'] = 'deferred'
+_SESSION_MANAGER_IMPORT_TIMINGS['mcp_registry_loader_ms'] = 'deferred'
+_t = time.perf_counter()
 from orbit.runtime.auth.storage.openai_store import OpenAIAuthStoreError
+_SESSION_MANAGER_IMPORT_TIMINGS['openai_store_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
 from orbit.store.base import OrbitStore
+_SESSION_MANAGER_IMPORT_TIMINGS['store_base_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
 from orbit.tools.base import ToolResult
+_SESSION_MANAGER_IMPORT_TIMINGS['tools_base_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
 from orbit.tools.registry import ToolRegistry
+_SESSION_MANAGER_IMPORT_TIMINGS['tools_registry_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+SESSION_MANAGER_IMPORT_PROFILE_TIMINGS = dict(_SESSION_MANAGER_IMPORT_TIMINGS)
 
 
 class SessionManager:
+    def _record_timing(self, key: str, started_at: float) -> None:
+        timings = self.metadata.setdefault('session_manager_profile_timings', {}) if isinstance(getattr(self, 'metadata', None), dict) else {}
+        timings[key] = round((time.perf_counter() - started_at) * 1000, 2)
+
+    def _mount_mcp_filesystem(self) -> None:
+        if getattr(self, '_mcp_filesystem_mounted', False):
+            return
+        t = time.perf_counter()
+        from orbit.runtime.mcp.bootstrap import bootstrap_local_filesystem_mcp_server
+        self._record_timing('mcp_filesystem_import_deferred_ms', t)
+        t = time.perf_counter()
+        bootstrap = bootstrap_local_filesystem_mcp_server(workspace_root=self.workspace_root)
+        from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
+        register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
+        self._record_timing('mcp_filesystem_ms', t)
+        self._mcp_filesystem_mounted = True
+
+    def _mount_mcp_git(self) -> None:
+        if getattr(self, '_mcp_git_mounted', False):
+            return
+        t = time.perf_counter()
+        from orbit.runtime.mcp.bootstrap import bootstrap_local_git_mcp_server
+        self._record_timing('mcp_git_import_deferred_ms', t)
+        t = time.perf_counter()
+        bootstrap = bootstrap_local_git_mcp_server(workspace_root=self.workspace_root)
+        from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
+        register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
+        self._record_timing('mcp_git_ms', t)
+        self._mcp_git_mounted = True
+
+    def _mount_mcp_bash(self) -> None:
+        if getattr(self, '_mcp_bash_mounted', False):
+            return
+        t = time.perf_counter()
+        from orbit.runtime.mcp.bash_bootstrap import bootstrap_local_bash_mcp_server
+        self._record_timing('mcp_bash_import_deferred_ms', t)
+        t = time.perf_counter()
+        bootstrap = bootstrap_local_bash_mcp_server(workspace_root=self.workspace_root)
+        from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
+        register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
+        self._record_timing('mcp_bash_ms', t)
+        self._mcp_bash_mounted = True
+
+    def _mount_mcp_process(self) -> None:
+        if getattr(self, '_mcp_process_mounted', False):
+            return
+        t = time.perf_counter()
+        from orbit.runtime.mcp.process_bootstrap import bootstrap_local_process_mcp_server
+        self._record_timing('mcp_process_import_deferred_ms', t)
+        t = time.perf_counter()
+        bootstrap = bootstrap_local_process_mcp_server(workspace_root=self.workspace_root)
+        from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
+        register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
+        self._record_timing('mcp_process_ms', t)
+        self._mcp_process_mounted = True
+
+    def _mount_mcp_pytest(self) -> None:
+        if getattr(self, '_mcp_pytest_mounted', False):
+            return
+        t = time.perf_counter()
+        from orbit.runtime.mcp.pytest_bootstrap import bootstrap_local_pytest_mcp_server
+        self._record_timing('mcp_pytest_import_deferred_ms', t)
+        t = time.perf_counter()
+        bootstrap = bootstrap_local_pytest_mcp_server(workspace_root=self.workspace_root)
+        from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
+        register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
+        self._record_timing('mcp_pytest_ms', t)
+        self._mcp_pytest_mounted = True
+
+    def _mount_mcp_browser(self) -> None:
+        if getattr(self, '_mcp_browser_mounted', False):
+            return
+        t = time.perf_counter()
+        from orbit.runtime.mcp.browser_bootstrap import bootstrap_local_browser_mcp_server
+        self._record_timing('mcp_browser_import_deferred_ms', t)
+        t = time.perf_counter()
+        bootstrap = bootstrap_local_browser_mcp_server(workspace_root=self.workspace_root)
+        from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
+        register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
+        self._record_timing('mcp_browser_ms', t)
+        self._mcp_browser_mounted = True
+
+    def _enable_memory_runtime(self) -> None:
+        if self.memory_service is not None:
+            return
+        t = time.perf_counter()
+        from orbit.memory import EmbeddingService, MemoryService
+        self._record_timing('memory_import_deferred_ms', t)
+        t = time.perf_counter()
+        self.embedding_service = EmbeddingService()
+        self._record_timing('embedding_service_init_ms', t)
+        t = time.perf_counter()
+        self.memory_service = MemoryService(store=self.store, embedding_service=self.embedding_service)
+        self._record_timing('memory_service_init_ms', t)
+        if hasattr(self.backend, 'memory_service'):
+            t = time.perf_counter()
+            self.backend.memory_service = self.memory_service
+            self._record_timing('backend_memory_service_bind_ms', t)
+
     """Manage linear conversation sessions for ORBIT.
 
     Current MVP single-turn contract:
@@ -46,36 +176,61 @@ class SessionManager:
         store: OrbitStore,
         backend,
         workspace_root: str,
+        runtime_mode: RuntimeMode = "dev",
         enable_mcp_filesystem: bool = False,
         enable_mcp_git: bool = False,
         enable_mcp_bash: bool = False,
         enable_mcp_process: bool = False,
+        enable_mcp_pytest: bool = False,
+        enable_mcp_browser: bool = False,
+        enable_memory: bool = False,
     ):
+        t0 = time.perf_counter()
         self.store = store
         self.backend = backend
         self.workspace_root = workspace_root
-        self.tool_registry = ToolRegistry(Path(workspace_root))
-        if enable_mcp_filesystem:
-            bootstrap = bootstrap_local_filesystem_mcp_server(workspace_root=workspace_root)
-            register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
-        if enable_mcp_git:
-            bootstrap = bootstrap_local_git_mcp_server(workspace_root=workspace_root)
-            register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
-        if enable_mcp_bash:
-            bootstrap = bootstrap_local_bash_mcp_server(workspace_root=workspace_root)
-            register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
-        if enable_mcp_process:
-            bootstrap = bootstrap_local_process_mcp_server(workspace_root=workspace_root)
-            register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
-        if hasattr(self.backend, "tool_registry"):
-            self.backend.tool_registry = self.tool_registry
-        self.embedding_service = EmbeddingService()
-        self.memory_service = MemoryService(store=self.store, embedding_service=self.embedding_service)
-        if hasattr(self.backend, "memory_service"):
-            self.backend.memory_service = self.memory_service
+        self.runtime_mode = runtime_mode
+        self.metadata = {**getattr(self, 'metadata', {}), 'session_manager_profile_timings': {}}
+        timings: dict[str, float] = self.metadata['session_manager_profile_timings']
 
-    def create_session(self, *, backend_name: str, model: str, conversation_id: str | None = None) -> ConversationSession:
-        session = ConversationSession(conversation_id=conversation_id or new_id(f"conversation_{backend_name}"), backend_name=backend_name, model=model)
+        t_registry = time.perf_counter()
+        self.tool_registry = ToolRegistry(Path(workspace_root))
+        timings['tool_registry_init_ms'] = round((time.perf_counter() - t_registry) * 1000, 2)
+
+        if enable_mcp_filesystem:
+            self._mount_mcp_filesystem()
+        if enable_mcp_git:
+            self._mount_mcp_git()
+        if enable_mcp_bash:
+            self._mount_mcp_bash()
+        if enable_mcp_process:
+            self._mount_mcp_process()
+        if enable_mcp_pytest:
+            self._mount_mcp_pytest()
+        if enable_mcp_browser:
+            self._mount_mcp_browser()
+        if hasattr(self.backend, "tool_registry"):
+            t = time.perf_counter()
+            self.backend.tool_registry = self.tool_registry
+            timings['backend_tool_registry_bind_ms'] = round((time.perf_counter() - t) * 1000, 2)
+        self.embedding_service = None
+        self.memory_service = None
+        if enable_memory:
+            self._enable_memory_runtime()
+        else:
+            timings['memory_enabled'] = False
+        timings['total_ms'] = round((time.perf_counter() - t0) * 1000, 2)
+        self.metadata = {**getattr(self, 'metadata', {}), 'session_manager_profile_timings': timings}
+
+    def create_session(self, *, backend_name: str, model: str, conversation_id: str | None = None, runtime_mode: RuntimeMode | None = None) -> ConversationSession:
+        effective_runtime_mode = runtime_mode or self.runtime_mode
+        session = ConversationSession(
+            conversation_id=conversation_id or new_id(f"conversation_{backend_name}"),
+            backend_name=backend_name,
+            model=model,
+            runtime_mode=effective_runtime_mode,
+            metadata={"mode_policy": build_mode_policy_snapshot(runtime_mode=effective_runtime_mode, workspace_root=self.workspace_root)},
+        )
         setattr(session, "_store", self.store)
         self.store.save_session(session)
         return session
@@ -928,6 +1083,7 @@ class SessionManager:
                 bootstrap = getattr(client, "bootstrap", None) if client is not None else None
                 server_args = getattr(bootstrap, "args", []) if bootstrap is not None else []
                 server_env = getattr(bootstrap, "env", {}) if bootstrap is not None else {}
+                from orbit.runtime.mcp.governance import resolve_filesystem_mcp_target_path
                 target = resolve_filesystem_mcp_target_path(
                     input_payload=tool_request.input_payload,
                     server_args=server_args,
@@ -1161,9 +1317,12 @@ class SessionManager:
         latest_user = next((message for message in reversed(messages) if message.role == MessageRole.USER), None)
         if latest_user is None:
             raise ValueError("cannot fallback to descriptor path without a user message")
+        mode_policy = session.metadata.get("mode_policy") if isinstance(session.metadata, dict) else None
         descriptor = RunDescriptor(
             session_key=f"session:{session.session_id}",
             conversation_id=session.conversation_id,
+            runtime_mode=session.runtime_mode,
+            mode_policy=ModePolicyDescriptor(**mode_policy) if isinstance(mode_policy, dict) else ModePolicyDescriptor(),
             workspace=WorkspaceDescriptor(cwd=self.workspace_root, writable_roots=[self.workspace_root]),
             user_input=latest_user.content,
         )

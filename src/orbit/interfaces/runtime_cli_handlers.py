@@ -55,6 +55,23 @@ def is_printable_text_key(event: ParsedKey) -> bool:
 
 def handle_chat_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event: ParsedKey) -> bool:
     name = event.name
+    if name in {"left", "right"}:
+        sessions = adapter.list_sessions()
+        if not sessions:
+            return False
+        current_index = 0
+        if state.active_session_id is not None:
+            for index, session in enumerate(sessions):
+                if session.session_id == state.active_session_id:
+                    current_index = index
+                    break
+        delta = -1 if name == "left" else 1
+        next_index = max(0, min(len(sessions) - 1, current_index + delta))
+        target = sessions[next_index]
+        state.selected_session = next_index
+        state.active_session_id = target.session_id
+        state.banner = f"Attached to {target.session_id}"
+        return True
     current_session = adapter.get_session(state.active_session_id) if state.active_session_id else None
     pending = adapter.get_pending_approval(current_session.session_id) if current_session is not None else None
     has_pending_approval = pending is not None
@@ -110,6 +127,10 @@ def handle_chat_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event: P
     if name == "enter":
         if state.runtime_busy and not has_pending_approval:
             state.banner = "Runtime busy; you can keep typing, but submit waits for the current turn to finish."
+            return True
+        if not state.warmup_done:
+            state.pending_warmup_submit = True
+            state.banner = "Warming up capabilities before first send..."
             return True
         state.banner = f"Submitting {len(state.composer.text.strip())} chars to active session..."
         submit_composer(state, adapter)

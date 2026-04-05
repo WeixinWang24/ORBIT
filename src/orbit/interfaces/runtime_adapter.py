@@ -2,15 +2,36 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
+import sys
+import time
 from typing import Any
 
-from orbit.runtime import SessionManager
+_MODULE_IMPORT_TIMINGS: dict[str, float] = {}
+_t = time.perf_counter()
+from orbit.runtime.core.session_manager import SESSION_MANAGER_IMPORT_PROFILE_TIMINGS, SessionManager
+_MODULE_IMPORT_TIMINGS['orbit_runtime_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
+from orbit.runtime.governance.build_state_store import BuildStateStore
+_MODULE_IMPORT_TIMINGS['build_state_store_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
+from orbit.runtime.governance.protocol.mode import RuntimeMode, mode_policy_summary, workspace_root_for_runtime_mode
+_MODULE_IMPORT_TIMINGS['mode_protocol_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
 from orbit.runtime.auth.storage.openai_store import OpenAIAuthStoreError
+_MODULE_IMPORT_TIMINGS['openai_auth_store_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
 from orbit.runtime.providers.openai_codex import OpenAICodexConfig, OpenAICodexExecutionBackend
-from orbit.settings import DEFAULT_WORKSPACE_ROOT, REPO_ROOT
+_MODULE_IMPORT_TIMINGS['openai_codex_provider_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
+from orbit.settings import REPO_ROOT
+_MODULE_IMPORT_TIMINGS['settings_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
 from orbit.store import create_default_store
+_MODULE_IMPORT_TIMINGS['store_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+RUNTIME_ADAPTER_IMPORT_PROFILE_TIMINGS = dict(_MODULE_IMPORT_TIMINGS)
+SESSION_MANAGER_IMPORT_PROFILE_TIMINGS = dict(SESSION_MANAGER_IMPORT_PROFILE_TIMINGS)
 
 from .adapter_protocol import RuntimeCliAdapter
 from .contracts import (
@@ -26,28 +47,51 @@ from .contracts import (
 @dataclass
 class RuntimeAdapterConfig:
     model: str = "gpt-5.4"
+    runtime_mode: RuntimeMode = "dev"
     enable_tools: bool = True
-    enable_mcp_filesystem: bool = True
-    enable_mcp_git: bool = True
-    enable_mcp_bash: bool = True
-    enable_mcp_process: bool = True
+    enable_mcp_filesystem: bool = False
+    enable_mcp_git: bool = False
+    enable_mcp_bash: bool = False
+    enable_mcp_process: bool = False
+    enable_mcp_pytest: bool = False
+    enable_mcp_browser: bool = False
+    enable_memory: bool = False
 
 
-def build_codex_session_manager(*, model: str, enable_tools: bool = False, enable_mcp_filesystem: bool = False, enable_mcp_git: bool = False, enable_mcp_bash: bool = False, enable_mcp_process: bool = False) -> SessionManager:
+def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev", enable_tools: bool = True, enable_mcp_filesystem: bool = False, enable_mcp_git: bool = False, enable_mcp_bash: bool = False, enable_mcp_process: bool = False, enable_mcp_pytest: bool = False, enable_mcp_browser: bool = False, enable_memory: bool = False) -> SessionManager:
+    t0 = time.perf_counter()
+    workspace_root = workspace_root_for_runtime_mode(runtime_mode)
+    t1 = time.perf_counter()
     backend = OpenAICodexExecutionBackend(
         config=OpenAICodexConfig(model=model, enable_tools=enable_tools),
         repo_root=REPO_ROOT,
-        workspace_root=DEFAULT_WORKSPACE_ROOT,
+        workspace_root=workspace_root,
     )
-    return SessionManager(
+    t2 = time.perf_counter()
+    manager = SessionManager(
         store=create_default_store(),
         backend=backend,
-        workspace_root=str(DEFAULT_WORKSPACE_ROOT),
+        workspace_root=str(workspace_root),
+        runtime_mode=runtime_mode,
         enable_mcp_filesystem=enable_mcp_filesystem,
         enable_mcp_git=enable_mcp_git,
         enable_mcp_bash=enable_mcp_bash,
         enable_mcp_process=enable_mcp_process,
+        enable_mcp_pytest=enable_mcp_pytest,
+        enable_mcp_browser=enable_mcp_browser,
+        enable_memory=enable_memory,
     )
+    t3 = time.perf_counter()
+    manager.metadata = {
+        **getattr(manager, 'metadata', {}),
+        "build_profile_timings": {
+            "workspace_select_ms": round((t1 - t0) * 1000, 2),
+            "backend_init_ms": round((t2 - t1) * 1000, 2),
+            "session_manager_init_ms": round((t3 - t2) * 1000, 2),
+            "total_ms": round((t3 - t0) * 1000, 2),
+        }
+    }
+    return manager
 
 
 def get_pending_session_approval(session_manager: SessionManager, session_id: str) -> dict | None:
@@ -74,32 +118,88 @@ def resolve_pending_session_approval(session_manager: SessionManager, session_id
 
 
 class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
+    def warmup_post_composer_capabilities(self) -> dict[str, float]:
+        t0 = time.perf_counter()
+        timings: dict[str, float] = {}
+        manager = self.session_manager
+
+        step = time.perf_counter()
+        manager._mount_mcp_filesystem()
+        timings['warmup_filesystem_ms'] = round((time.perf_counter() - step) * 1000, 2)
+
+        step = time.perf_counter()
+        manager._mount_mcp_git()
+        timings['warmup_git_ms'] = round((time.perf_counter() - step) * 1000, 2)
+
+        step = time.perf_counter()
+        manager._enable_memory_runtime()
+        timings['warmup_memory_ms'] = round((time.perf_counter() - step) * 1000, 2)
+
+        step = time.perf_counter()
+        manager._mount_mcp_bash()
+        timings['warmup_bash_ms'] = round((time.perf_counter() - step) * 1000, 2)
+
+        step = time.perf_counter()
+        manager._mount_mcp_process()
+        timings['warmup_process_ms'] = round((time.perf_counter() - step) * 1000, 2)
+
+        step = time.perf_counter()
+        manager._mount_mcp_pytest()
+        timings['warmup_pytest_ms'] = round((time.perf_counter() - step) * 1000, 2)
+
+        step = time.perf_counter()
+        manager._mount_mcp_browser()
+        timings['warmup_browser_ms'] = round((time.perf_counter() - step) * 1000, 2)
+
+        timings['warmup_total_ms'] = round((time.perf_counter() - t0) * 1000, 2)
+        self.startup_metrics.update(timings)
+        return timings
+
     """First real runtime adapter skeleton for the new CLI UI.
 
     The adapter mirrors the capability envelope of `cli_session.py` in a form
     that the PTY workbench can absorb gradually.
     """
 
-    def __init__(self, session_manager: SessionManager) -> None:
+    def __init__(self, session_manager: SessionManager, *, build_state_store: BuildStateStore | None = None, startup_metrics: dict[str, float] | None = None) -> None:
         self.session_manager = session_manager
+        self.build_state_store = build_state_store or BuildStateStore()
+        self.startup_metrics = startup_metrics or {}
 
     @classmethod
     def build(cls, config: RuntimeAdapterConfig | None = None) -> "SessionManagerRuntimeAdapter":
         config = config or RuntimeAdapterConfig()
+        t0 = time.perf_counter()
         session_manager = build_codex_session_manager(
             model=config.model,
+            runtime_mode=config.runtime_mode,
             enable_tools=config.enable_tools,
             enable_mcp_filesystem=config.enable_mcp_filesystem,
             enable_mcp_git=config.enable_mcp_git,
             enable_mcp_bash=config.enable_mcp_bash,
             enable_mcp_process=config.enable_mcp_process,
+            enable_mcp_pytest=config.enable_mcp_pytest,
+            enable_mcp_browser=config.enable_mcp_browser,
+            enable_memory=config.enable_memory,
         )
-        return cls(session_manager)
+        t1 = time.perf_counter()
+        build_state_store = BuildStateStore()
+        t2 = time.perf_counter()
+        return cls(
+            session_manager,
+            build_state_store=build_state_store,
+            startup_metrics={
+                'session_manager_build_ms': round((t1 - t0) * 1000, 2),
+                'build_state_store_init_ms': round((t2 - t1) * 1000, 2),
+                'runtime_adapter_build_total_ms': round((t2 - t0) * 1000, 2),
+            },
+        )
 
-    def create_session(self, *, backend_name: str = "openai-codex", model: str | None = None) -> InterfaceSession:
+    def create_session(self, *, backend_name: str = "openai-codex", model: str | None = None, runtime_mode: RuntimeMode | None = None) -> InterfaceSession:
         session = self.session_manager.create_session(
             backend_name=backend_name,
             model=model or getattr(self.session_manager.backend.config, "model", "gpt-5.4"),
+            runtime_mode=runtime_mode or self.session_manager.runtime_mode,
         )
         return self._map_session(session)
 
@@ -138,19 +238,32 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         session = self.session_manager.get_session(session_id)
         if session is None:
             return []
+        items: list[InterfaceArtifact] = []
         list_artifacts_fn = getattr(self.session_manager.store, "list_context_artifacts_for_run", None)
-        if not callable(list_artifacts_fn):
-            return []
-        artifacts = list_artifacts_fn(session.conversation_id)
-        return [
-            InterfaceArtifact(
-                session_id=session_id,
-                artifact_type=artifact.artifact_type,
-                source=artifact.source,
-                content=artifact.content,
+        if callable(list_artifacts_fn):
+            artifacts = list_artifacts_fn(session.conversation_id)
+            items.extend(
+                InterfaceArtifact(
+                    session_id=session_id,
+                    artifact_type=artifact.artifact_type,
+                    source=artifact.source,
+                    content=artifact.content,
+                )
+                for artifact in artifacts
             )
-            for artifact in artifacts
-        ]
+        metadata_items = session.metadata.get("interface_artifacts", []) if isinstance(session.metadata, dict) else []
+        if isinstance(metadata_items, list):
+            items.extend(
+                InterfaceArtifact(
+                    session_id=session_id,
+                    artifact_type=str(item.get("artifact_type") or "unknown_artifact"),
+                    source=str(item.get("source") or "interface_metadata"),
+                    content=str(item.get("content") or ""),
+                )
+                for item in metadata_items
+                if isinstance(item, dict)
+            )
+        return items
 
     def list_tool_calls(self, session_id: str) -> list[InterfaceToolCall]:
         session = self.session_manager.get_session(session_id)
@@ -201,7 +314,7 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
     def slash_help_text(self) -> str:
         return (
             "Available slash commands: /help /new /sessions /attach <session_id> "
-            "/i /chat /approvals /events /tools /artifacts /status /pending /approve /reject /wipe-history"
+            "/i /chat /approvals /events /tools /artifacts /status /self-audit /pending /approve /reject /wipe-history"
         )
 
     def slash_help_page(self) -> str:
@@ -211,7 +324,7 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
                 "",
                 "Slash commands",
                 "/help /new /sessions /attach <session_id> /detach",
-                "/chat /i /events /tools /artifacts /approvals /status",
+                "/chat /i /events /tools /artifacts /approvals /status /self-audit",
                 "/pending /approve [note] /reject [note]",
                 "/show /state /clear /clear-all /wipe-history",
                 "",
@@ -224,8 +337,22 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
     def get_workbench_status(self) -> dict[str, Any]:
         sessions = self.list_sessions()
         tool_names = sorted(tool.name for tool in self.session_manager.tool_registry.list_tools())
+        policy = mode_policy_summary(self.session_manager.runtime_mode)
+        activation = self.build_state_store.load_activation_pointer()
+        metadata = getattr(self.session_manager, 'metadata', {}) if hasattr(self.session_manager, 'metadata') else {}
+        profile_timings = metadata.get('build_profile_timings', {})
+        session_manager_profile_timings = metadata.get('session_manager_profile_timings', {})
         return {
             "adapter_kind": "session_manager_runtime",
+            "runtime_mode": self.session_manager.runtime_mode,
+            "workspace_root": self.session_manager.workspace_root,
+            **policy,
+            "build_profile_timings": profile_timings,
+            "session_manager_profile_timings": session_manager_profile_timings,
+            "startup_metrics": {},
+            "active_build_id": activation.active_build_id,
+            "candidate_build_id": activation.candidate_build_id,
+            "last_known_good_build_id": activation.last_known_good_build_id,
             "session_count": len(sessions),
             "approval_count": len(self.list_open_approvals()),
             "registered_tool_count": len(tool_names),
@@ -272,6 +399,25 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             return None
         return session.model_dump(mode="json")
 
+    def append_context_artifact(self, session_id: str, artifact_type: str, content: str, source: str):
+        artifact = self.session_manager.append_context_artifact_for_session(
+            session_id=session_id,
+            artifact_type=artifact_type,
+            content=content,
+            source=source,
+        )
+        session = self.session_manager.get_session(session_id)
+        if artifact is not None and session is not None and isinstance(session.metadata, dict):
+            session.metadata.setdefault("interface_artifacts", []).append(
+                {
+                    "artifact_type": artifact_type,
+                    "source": source,
+                    "content": content,
+                }
+            )
+            self.session_manager.store.save_session(session)
+        return artifact
+
     def clear_session(self, session_id: str) -> bool:
         delete_fn = getattr(self.session_manager.store, "delete_session", None)
         if not callable(delete_fn):
@@ -290,11 +436,17 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         return self.clear_all_sessions()
 
     def _map_session_summary(self, session) -> InterfaceSession:
+        policy = mode_policy_summary(session.runtime_mode)
         return InterfaceSession(
             session_id=session.session_id,
             conversation_id=session.conversation_id,
             backend_name=session.backend_name,
             model=session.model,
+            runtime_mode=session.runtime_mode,
+            workspace_root=self.session_manager.workspace_root,
+            mode_policy_profile=policy["mode_policy_profile"],
+            self_runtime_visibility=policy["self_runtime_visibility"],
+            self_modification_posture=policy["self_modification_posture"],
             updated_at=session.updated_at,
             message_count=0,
             last_message_preview="",
@@ -306,11 +458,17 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         last_message = messages[-1].content if messages else ""
         pending = self.get_pending_approval(session.session_id)
         status = "waiting_for_approval" if pending is not None else "active"
+        policy = mode_policy_summary(session.runtime_mode)
         return InterfaceSession(
             session_id=session.session_id,
             conversation_id=session.conversation_id,
             backend_name=session.backend_name,
             model=session.model,
+            runtime_mode=session.runtime_mode,
+            workspace_root=self.session_manager.workspace_root,
+            mode_policy_profile=policy["mode_policy_profile"],
+            self_runtime_visibility=policy["self_runtime_visibility"],
+            self_modification_posture=policy["self_modification_posture"],
             updated_at=session.updated_at,
             message_count=len(messages),
             last_message_preview=last_message[:120],

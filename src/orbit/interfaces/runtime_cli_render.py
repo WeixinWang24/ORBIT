@@ -120,7 +120,8 @@ def status_body_lines(state: RuntimeCliState, adapter: RuntimeCliAdapter, width:
     lines = [header_text("Status", width), divider(width)]
     session_id = current_session_id(state, adapter)
     payload = adapter.get_workbench_status()
-    status_lines = [
+
+    fixed_summary = [
         f"session={session_id}",
         f"active_session_id={state.active_session_id}",
         f"selected_session={state.selected_session}",
@@ -133,18 +134,56 @@ def status_body_lines(state: RuntimeCliState, adapter: RuntimeCliAdapter, width:
         f"pending_submit_session_id={state.pending_submit_session_id}",
         "",
         f"adapter_kind={payload.get('adapter_kind')}",
+        f"runtime_mode={payload.get('runtime_mode')}",
+        f"workspace_root={payload.get('workspace_root')}",
+        f"mode_policy_profile={payload.get('mode_policy_profile')}",
+        f"active_build_id={payload.get('active_build_id')}",
+        f"candidate_build_id={payload.get('candidate_build_id')}",
+        f"last_known_good_build_id={payload.get('last_known_good_build_id')}",
+    ]
+    for line in fixed_summary:
+        lines.extend(wrap_text(line, max(20, width - 2)))
+
+    details = [
+        divider(width),
+        ACCENT_PRIMARY + T.BOLD + "Scrollable details" + T.RESET,
         f"session_count={payload.get('session_count')}",
         f"approval_count={payload.get('approval_count')}",
         f"registered_tool_count={payload.get('registered_tool_count')}",
         "registered_tools:",
     ]
-    for line in status_lines:
+    build_profile = payload.get('build_profile_timings') or {}
+    if build_profile:
+        details.extend([
+            "",
+            "build_profile_timings:",
+            *(f"  {key}={value}" for key, value in build_profile.items()),
+        ])
+    session_manager_profile = payload.get('session_manager_profile_timings') or {}
+    if session_manager_profile:
+        details.extend([
+            "",
+            "session_manager_profile_timings:",
+            *(f"  {key}={value}" for key, value in session_manager_profile.items()),
+        ])
+    startup_metrics = state.startup_metrics or payload.get('startup_metrics') or {}
+    if startup_metrics:
+        details.extend(["", "startup_metrics:"])
+        for key, value in startup_metrics.items():
+            if key in {'pty_import_profile_timings', 'runtime_adapter_import_profile_timings', 'session_manager_import_profile_timings'} and isinstance(value, dict):
+                filtered = {nested_key: nested_value for nested_key, nested_value in value.items() if nested_value not in (0, 0.0, 'deferred')}
+                if not filtered:
+                    continue
+                details.append(f"  {key}:")
+                details.extend(f"    {nested_key}={nested_value}" for nested_key, nested_value in filtered.items())
+            else:
+                details.append(f"  {key}={value}")
+    for name in payload.get("registered_tool_names", []):
+        details.append(f"  - {name}")
+
+    lines.append(divider(width))
+    for line in details:
         lines.extend(wrap_text(line, max(20, width - 2)))
-    for name in payload.get("registered_tool_names", [])[:16]:
-        lines.extend(wrap_text(f"  - {name}", max(20, width - 2)))
-    remaining = len(payload.get("registered_tool_names", [])) - 16
-    if remaining > 0:
-        lines.extend(wrap_text(f"  ... (+{remaining} more)", max(20, width - 2)))
     lines.append(divider(width))
     lines.append(T.DIM + "Navigation: ↑↓ scroll · c back to chat · Ctrl+C quit" + T.RESET)
     return lines

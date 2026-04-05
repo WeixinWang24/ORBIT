@@ -66,3 +66,8 @@ class RuntimeCliState(RuntimeShellState):
     _submit_thread_started_at: float | None = None
     startup_loading: bool = True
     startup_error: str | None = None
+    startup_metrics: dict = field(default_factory=dict)
+    warmup_started: bool = False
+    warmup_done: bool = False
+    warmup_error: str | None = None
+    pending_warmup_submit: bool = False

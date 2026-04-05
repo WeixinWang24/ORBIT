@@ -8,20 +8,39 @@ Design rule:
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from pathlib import Path
 from datetime import datetime
 
+_MODULE_IMPORT_TIMINGS: dict[str, float] = {}
+_t = time.perf_counter()
 from .adapter_protocol import RuntimeCliAdapter
-from .runtime_adapter import RuntimeAdapterConfig, SessionManagerRuntimeAdapter
+_MODULE_IMPORT_TIMINGS['adapter_protocol_ms'] = round((time.perf_counter() - _t) * 1000, 2)
 from . import termio as T
+_MODULE_IMPORT_TIMINGS['runtime_adapter_ms'] = 'deferred'
+_t = time.perf_counter()
+_MODULE_IMPORT_TIMINGS['termio_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
 from .input import ControlToken, ParsedFocus, ParsedKey, ParsedMouse, SequenceToken, TextToken, parse_sequence, read_chunk, tokenize_input_chunk
+_MODULE_IMPORT_TIMINGS['input_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
 from .pty_debug import debug_log
+_MODULE_IMPORT_TIMINGS['pty_debug_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
 from .pty_primitives import ScreenBuffer, alt_screen, bracketed_paste, focus_events, mouse_tracking, raw_mode, terminal_size
+_MODULE_IMPORT_TIMINGS['pty_primitives_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
 from .runtime_cli_handlers import handle_approvals_key, handle_chat_key, handle_info_panel_key, handle_inspect_key, handle_sessions_key
+_MODULE_IMPORT_TIMINGS['runtime_cli_handlers_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
 from .runtime_cli_render import FrameRender, frame_lines
+_MODULE_IMPORT_TIMINGS['runtime_cli_render_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+_t = time.perf_counter()
 from .runtime_cli_state import APPROVALS_MODE, CHAT_MODE, HELP_MODE, INSPECT_MODE, RuntimeCliState, SESSIONS_MODE, STATUS_MODE
+_MODULE_IMPORT_TIMINGS['runtime_cli_state_ms'] = round((time.perf_counter() - _t) * 1000, 2)
+PTY_IMPORT_PROFILE_TIMINGS = dict(_MODULE_IMPORT_TIMINGS)
 
 PTY_INPUT_DEBUG_ENV = "ORBIT_PTY_INPUT_DEBUG"
 
@@ -49,8 +68,22 @@ def _append_pty_input_debug(path: Path | None, *, stage: str, state: RuntimeCliS
         pass
 
 
-def _build_default_adapter() -> RuntimeCliAdapter:
-    adapter = SessionManagerRuntimeAdapter.build(RuntimeAdapterConfig())
+def _build_default_adapter(*, runtime_mode: str = "dev") -> RuntimeCliAdapter:
+    adapter_import_started_at = time.perf_counter()
+    from .runtime_adapter import RUNTIME_ADAPTER_IMPORT_PROFILE_TIMINGS, SESSION_MANAGER_IMPORT_PROFILE_TIMINGS, RuntimeAdapterConfig, SessionManagerRuntimeAdapter
+    deferred_import_ms = round((time.perf_counter() - adapter_import_started_at) * 1000, 2)
+    debug_log(f"pty_runtime_cli:runtime_adapter_deferred_import_ms={deferred_import_ms}")
+    adapter_build_started_at = time.perf_counter()
+    adapter = SessionManagerRuntimeAdapter.build(RuntimeAdapterConfig(runtime_mode=runtime_mode))
+    debug_log(f"pty_runtime_cli:session_manager_runtime_adapter_build_ms={round((time.perf_counter() - adapter_build_started_at) * 1000, 2)}")
+    if hasattr(adapter, 'startup_metrics') and isinstance(adapter.startup_metrics, dict):
+        adapter.startup_metrics['runtime_adapter_deferred_import_ms'] = deferred_import_ms
+        heavy_runtime_adapter_imports = {k: v for k, v in RUNTIME_ADAPTER_IMPORT_PROFILE_TIMINGS.items() if isinstance(v, (int, float)) and v >= 50}
+        if heavy_runtime_adapter_imports:
+            adapter.startup_metrics['runtime_adapter_import_profile_timings'] = heavy_runtime_adapter_imports
+        heavy_session_manager_imports = {k: v for k, v in SESSION_MANAGER_IMPORT_PROFILE_TIMINGS.items() if isinstance(v, (int, float)) and v >= 50}
+        if heavy_session_manager_imports:
+            adapter.startup_metrics['session_manager_import_profile_timings'] = heavy_session_manager_imports
     debug_log("pty_runtime_cli:using_session_manager_runtime_adapter")
     return adapter
 
@@ -130,10 +163,18 @@ def _position_cursor_for_composer(rendered: FrameRender) -> None:
         pass
 
 
-def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None, *, chat_history_limit: int | None = None) -> None:
+def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None, *, runtime_mode: str = "dev", chat_history_limit: int | None = None, app_started_at: float | None = None, startup_metrics: dict | None = None) -> None:
     debug_log("pty_runtime_cli:start")
     runtime_adapter = adapter
     state = RuntimeCliState()
+    if startup_metrics:
+        state.startup_metrics.update(startup_metrics)
+    heavy_pty_imports = {k: v for k, v in PTY_IMPORT_PROFILE_TIMINGS.items() if isinstance(v, (int, float)) and v >= 50}
+    if heavy_pty_imports:
+        state.startup_metrics['pty_import_profile_timings'] = heavy_pty_imports
+    cli_started_at = time.perf_counter()
+    if app_started_at is not None:
+        state.startup_metrics['app_to_cli_entry_ms'] = round((cli_started_at - app_started_at) * 1000, 2)
     env_limit = os.environ.get("ORBIT_CLI_CHAT_HISTORY_LIMIT", "").strip()
     resolved_limit = chat_history_limit
     if resolved_limit is None and env_limit:
@@ -145,28 +186,71 @@ def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None, *, chat_history
         state.chat_history_limit = resolved_limit
     state.banner = "Starting runtime adapter..."
 
+    def _warmup_worker() -> None:
+        nonlocal runtime_adapter
+        if runtime_adapter is None or not hasattr(runtime_adapter, 'warmup_post_composer_capabilities'):
+            state.warmup_done = True
+            return
+        try:
+            state.warmup_started = True
+            warmup_started_at = time.perf_counter()
+            timings = runtime_adapter.warmup_post_composer_capabilities()
+            state.startup_metrics.update(timings)
+            state.startup_metrics['warmup_worker_total_ms'] = round((time.perf_counter() - warmup_started_at) * 1000, 2)
+            state.warmup_done = True
+            state.warmup_error = None
+            if state.pending_warmup_submit and state.composer.text.strip() and state.active_session_id:
+                state.banner = f"Submitting {len(state.composer.text.strip())} chars to active session..."
+                state.pending_submit_session_id = state.active_session_id
+                state.pending_submit_text = state.composer.text.strip()
+                state.runtime_busy = True
+                state.completed_submit_banner = None
+                state.completed_submit_error = None
+                state.composer.text = ""
+                state.pending_warmup_submit = False
+        except Exception as exc:
+            state.warmup_error = repr(exc)
+            state.warmup_done = True
+            state.pending_warmup_submit = False
+            debug_log(f"pty_runtime_cli:warmup_failed={exc!r}")
+
     def _startup_worker() -> None:
         nonlocal runtime_adapter
+        startup_started_at = time.perf_counter()
         try:
-            built = runtime_adapter or _build_default_adapter()
+            built = runtime_adapter or _build_default_adapter(runtime_mode=runtime_mode)
+            state.startup_metrics['adapter_build_ms'] = round((time.perf_counter() - startup_started_at) * 1000, 2)
+            if hasattr(built, 'startup_metrics') and isinstance(built.startup_metrics, dict):
+                state.startup_metrics.update(built.startup_metrics)
             runtime_adapter = built
+            sessions_started_at = time.perf_counter()
             sessions = built.list_sessions()
+            state.startup_metrics['list_sessions_ms'] = round((time.perf_counter() - sessions_started_at) * 1000, 2)
+            state.startup_metrics['build_profile_timings'] = getattr(getattr(built, 'session_manager', None), 'metadata', {}).get('build_profile_timings', {}) if hasattr(built, 'session_manager') else {}
+            state.startup_metrics['session_manager_profile_timings'] = getattr(getattr(built, 'session_manager', None), 'metadata', {}).get('session_manager_profile_timings', {}) if hasattr(built, 'session_manager') else {}
+            session_ready_started_at = time.perf_counter()
             if sessions:
+                attach_started_at = time.perf_counter()
                 initial_session = sessions[0]
                 state.active_session_id = initial_session.session_id
                 state.selected_session = 0
+                state.startup_metrics['initial_session_attach_ms'] = round((time.perf_counter() - attach_started_at) * 1000, 2)
                 state.banner = f"Attached to latest session {initial_session.session_id}"
             else:
+                create_started_at = time.perf_counter()
                 initial_session = built.create_session()
                 state.active_session_id = initial_session.session_id
                 state.selected_session = 0
+                state.startup_metrics['initial_session_create_ms'] = round((time.perf_counter() - create_started_at) * 1000, 2)
                 state.banner = f"Created new session {initial_session.session_id}"
+            state.startup_metrics['session_ready_ms'] = round((time.perf_counter() - session_ready_started_at) * 1000, 2)
             state.startup_error = None
         except Exception as exc:
             state.startup_error = repr(exc)
             state.banner = "Startup failed"
             debug_log(f"pty_runtime_cli:startup_failed={exc!r}")
         finally:
+            state.startup_metrics['startup_worker_total_ms'] = round((time.perf_counter() - startup_started_at) * 1000, 2)
             state.startup_loading = False
 
     threading.Thread(target=_startup_worker, name="orbit-pty-startup", daemon=True).start()
@@ -178,6 +262,7 @@ def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None, *, chat_history
 
     last_busy_state = False
     with raw_mode(), alt_screen(), bracketed_paste(), focus_events():
+        first_render_done = False
         while True:
             if state.runtime_busy and state._submit_thread_started_at is None and runtime_adapter is not None:
                 _start_background_submit(state, runtime_adapter)
@@ -205,6 +290,15 @@ def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None, *, chat_history
             width, height = terminal_size()
             rendered = frame_lines(state, runtime_adapter)
             screen.render(rendered.lines, width, height, force_full_repaint=False)
+            if not first_render_done:
+                state.startup_metrics['browse_runtime_cli_entry_to_first_frame_ms'] = round((time.perf_counter() - cli_started_at) * 1000, 2)
+                if app_started_at is not None:
+                    state.startup_metrics['app_main_to_first_frame_ms'] = round((time.perf_counter() - app_started_at) * 1000, 2)
+                first_render_done = True
+            if runtime_adapter is not None and not state.startup_loading and 'composer_unlocked_ms' not in state.startup_metrics:
+                state.startup_metrics['composer_unlocked_ms'] = round((time.perf_counter() - cli_started_at) * 1000, 2)
+                if not state.warmup_started and not state.warmup_done:
+                    threading.Thread(target=_warmup_worker, name="orbit-pty-warmup", daemon=True).start()
             if state.mode == CHAT_MODE:
                 _position_cursor_for_composer(rendered)
 
@@ -228,6 +322,8 @@ def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None, *, chat_history
                 continue
             debug_log(f"pty_runtime_cli:raw={chunk!r}")
 
+            if runtime_adapter is not None and not state.startup_loading and 'composer_unlocked_ms' not in state.startup_metrics:
+                state.startup_metrics['composer_unlocked_ms'] = round((time.perf_counter() - cli_started_at) * 1000, 2)
             if runtime_adapter is None or state.startup_loading:
                 continue
 
