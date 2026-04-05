@@ -257,6 +257,14 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             note=note,
         )
 
+    def reauthorize_tool_path(self, session_id: str, tool_name: str, note: str | None = None, source: str = "runtime_cli"):
+        return self.session_manager.reauthorize_tool_path(
+            session_id=session_id,
+            tool_name=tool_name,
+            note=note,
+            source=source,
+        )
+
     def get_session_state_payload(self, session_id: str) -> dict[str, Any] | None:
         session = self.session_manager.get_session(session_id)
         if session is None:

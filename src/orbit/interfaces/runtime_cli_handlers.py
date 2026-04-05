@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .adapter_protocol import RuntimeCliAdapter
 from .input import ParsedKey
-from .pty_runtime_router import activate_chat, activate_approvals, activate_help, activate_inspect, activate_sessions, attach_current_session, cycle_inspect_tab, hop_inspect_session, resolve_current_approval, submit_composer
+from .pty_runtime_router import activate_chat, activate_approvals, activate_help, activate_inspect, activate_sessions, attach_current_session, cycle_inspect_tab, hop_inspect_session, resolve_current_approval, resolve_current_approval_via_picker, submit_composer
 from .runtime_cli_state import INSPECT_TRANSCRIPT_TAB, RETURN_TO_CHAT_BANNER, RuntimeCliState
 
 
@@ -55,12 +55,24 @@ def is_printable_text_key(event: ParsedKey) -> bool:
 
 def handle_chat_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event: ParsedKey) -> bool:
     name = event.name
+    current_session = adapter.get_session(state.active_session_id) if state.active_session_id else None
+    pending = adapter.get_pending_approval(current_session.session_id) if current_session is not None else None
+    has_pending_approval = pending is not None
+    composer_has_text = bool(state.composer.text.strip())
+
+    if has_pending_approval and not composer_has_text:
+        if name == "enter":
+            resolve_current_approval_via_picker(state, adapter)
+            reset_scroll(state)
+            return True
+        if name in {"up", "k"}:
+            state.approval_picker_index = max(0, state.approval_picker_index - 1)
+            return True
+        if name in {"down", "j"}:
+            state.approval_picker_index = min(2, state.approval_picker_index + 1)
+            return True
+
     if name == "enter":
-        current_session = adapter.get_session(state.active_session_id) if state.active_session_id else None
-        has_pending_approval = False
-        if current_session is not None:
-            pending = adapter.get_pending_approval(current_session.session_id)
-            has_pending_approval = pending is not None
         if state.runtime_busy and not has_pending_approval:
             state.banner = "Runtime busy; you can keep typing, but submit waits for the current turn to finish."
             return True

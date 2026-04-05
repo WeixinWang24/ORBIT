@@ -59,6 +59,7 @@ class RuntimeCliState(RuntimeShellState):
     assistant_inflight_dirty: bool = False
     completed_submit_banner: str | None = None
     completed_submit_error: str | None = None
+    approval_picker_index: int = 0
     _submit_thread_started_at: float | None = None
     startup_loading: bool = True
     startup_error: str | None = None

@@ -238,6 +238,30 @@ def resolve_current_approval(state: RuntimeShellState, adapter: RuntimeCliAdapte
     activate_chat(state, f"Approval {decision}d")
 
 
+def resolve_current_approval_via_picker(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> bool:
+    session_id = current_session_id(state, adapter)
+    pending = adapter.get_pending_approval(session_id)
+    if pending is None:
+        activate_chat(state, "No pending approval")
+        return False
+
+    index = getattr(state, "approval_picker_index", 0)
+    if index <= 0:
+        resolve_current_approval(state, adapter, "approve")
+        return True
+    if index == 1:
+        adapter.reauthorize_tool_path(
+            session_id,
+            pending.tool_name,
+            note="approved similar tool path for this session via chat approval picker",
+            source="chat_approval_picker",
+        )
+        resolve_current_approval(state, adapter, "approve")
+        return True
+    resolve_current_approval(state, adapter, "reject")
+    return True
+
+
 def route_slash_command(state: RuntimeShellState, adapter: RuntimeCliAdapter, text: str) -> None:
     parts = text.strip().split(maxsplit=1)
     command = parts[0].lower()

@@ -22,7 +22,7 @@ class ChatProjection:
     assistant_inflight_text: str | None = None
 
 
-def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy: bool, pending_submit_session_id: str | None, pending_submit_text: str, submit_started_at: float | None, assistant_inflight_text: str | None, accent_user: str, accent_assistant: str, accent_warning: str, accent_muted: str) -> ChatProjection:
+def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy: bool, pending_submit_session_id: str | None, pending_submit_text: str, submit_started_at: float | None, assistant_inflight_text: str | None, accent_user: str, accent_assistant: str, accent_warning: str, accent_muted: str, approval_picker_index: int = 0) -> ChatProjection:
     lines: list[str] = []
     body: list[str] = []
     for msg in adapter.list_messages(session_id):
@@ -45,6 +45,31 @@ def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy:
             wrapped = wrap_display_text(msg.content, max(20, width - 4))
         for ln in wrapped:
             body.append("  " + ln)
+        body.append("")
+
+    pending = adapter.get_pending_approval(session_id)
+    if pending is not None:
+        options = [
+            "approve once",
+            "approve similar for this session",
+            "deny",
+        ]
+        body.append(accent_warning + "ASSISTANT [approval_picker]" + T.RESET)
+        body.extend("  " + ln for ln in wrap_display_text(
+            f"Approval required for {pending.tool_name} (side_effect_class={pending.side_effect_class}).",
+            max(20, width - 4),
+        ))
+        body.extend("  " + ln for ln in wrap_display_text(
+            "Use ↑/↓ to choose and Enter to confirm.",
+            max(20, width - 4),
+        ))
+        for idx, option in enumerate(options):
+            prefix = "▶ " if idx == max(0, min(approval_picker_index, len(options) - 1)) else "  "
+            line = prefix + option
+            if idx == max(0, min(approval_picker_index, len(options) - 1)):
+                body.append("  " + accent_warning + T.INVERSE + line + T.RESET)
+            else:
+                body.append("  " + accent_muted + line + T.RESET)
         body.append("")
 
     if assistant_inflight_text:
