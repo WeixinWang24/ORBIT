@@ -79,6 +79,17 @@ def _strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
 
 
+def _normalize_emoji_for_terminal(text: str) -> str:
+    """Reduce known terminal-width troublemakers in markdown-rendered text.
+
+    Some emoji/glyph presentation sequences render wider in the terminal than
+    the upstream wrapping logic expects, especially when variation selectors
+    are involved.  This can produce clipped right halves (observed with ✅).
+    For the markdown path, prefer a more stable text presentation.
+    """
+    return text.replace("\ufe0f", "")
+
+
 def _soften_code_block_background(lines: list[str]) -> list[str]:
     softened: list[str] = []
     for ln in lines:
@@ -134,6 +145,8 @@ def render_markdown(text: str, width: int) -> tuple[str, ...]:
     """
     if not text or not text.strip():
         return ("",)
+
+    text = _normalize_emoji_for_terminal(text)
 
     buf = io.StringIO()
     console = Console(
