@@ -82,10 +82,14 @@ ORBIT now applies the readiness layer to real execution for:
 - `native__replace_all_in_file`
 - `native__replace_block_in_file`
 - `native__apply_exact_hunk`
+- MCP-hosted `write_file`
 - MCP-hosted `replace_in_file`
+- MCP-hosted `replace_all_in_file`
+- MCP-hosted `replace_block_in_file`
+- MCP-hosted `apply_exact_hunk`
 
 Current invariant:
-- approval remains necessary for grounded mutation tools such as `native__write_file`, `native__replace_in_file`, `native__replace_all_in_file`, `native__replace_block_in_file`, and `native__apply_exact_hunk`
+- approval remains necessary for grounded mutation tools such as `native__write_file`, `native__replace_in_file`, `native__replace_all_in_file`, `native__replace_block_in_file`, `native__apply_exact_hunk`, and their MCP-hosted canonical counterparts
 - approval does not bypass grounding checks
 - insufficient or stale grounding produces an explicit visible tool failure
 - successful execution still requires both approval and fresh full-read grounding
@@ -124,12 +128,13 @@ This layered failure model is important because grounded mutation safety is not 
 This note describes what ORBIT currently does, not what it has already generalized.
 
 Current boundaries:
-- grounded mutation now covers `native__write_file`, `native__replace_in_file`, the first multi-hit edit-family path `native__replace_all_in_file`, the first exact block-level patch-style path `native__replace_block_in_file`, the first context-anchored exact hunk path `native__apply_exact_hunk`, and the first migrated MCP-hosted mutation capability `replace_in_file`
-- richer edit/diff-style mutation families are not yet grounded-aware beyond exact block replacement, exact single-hunk application, and the first migrated MCP `replace_in_file` capability
+- grounded mutation now covers `native__write_file`, `native__replace_in_file`, `native__replace_all_in_file`, `native__replace_block_in_file`, `native__apply_exact_hunk`, and the current MCP-hosted canonical mutation family: `write_file`, `replace_in_file`, `replace_all_in_file`, `replace_block_in_file`, `apply_exact_hunk`
+- richer edit/diff-style mutation families are not yet grounded-aware beyond whole-file write, exact single-match replace, multi-hit replace-all, exact block replacement, and exact single-hunk application
 - hash-based freshness evidence is not yet implemented
 - range-aware grounding identity is not yet implemented
 - ORBIT does not yet auto-recover by forcing a reread when grounding is stale
 - non-read filesystem tools still do not contribute mutation grounding
+- native mutation tools remain present as a transitional deprecate-but-keep path while MCP-hosted capability parity stabilizes
 
 ---
 

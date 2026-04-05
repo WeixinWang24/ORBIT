@@ -5,6 +5,7 @@ This note defines the intended layering for MCP integration inside ORBIT.
 
 It is written after:
 - validating the first Python-first filesystem MCP capability family on the active SessionManager mainline
+- extending the MCP read surface to include a first read-only git capability family (`git_status`, `git_diff`, `git_log`, `git_show`)
 - hardening the current SessionManager/governance/tool runtime boundaries
 - absorbing external lessons about tool runtime design, capability adaptation, and hook/permission invariants
 

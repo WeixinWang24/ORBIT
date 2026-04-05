@@ -186,16 +186,15 @@ This makes it an ideal first MCP-hosted mutation family member.
 - adapt MCP `replace_in_file` through the existing MCP adapter path
 - ensure runtime-local grounding gate applies identically to native and MCP variants
 
-Current implementation progress:
-- the filesystem MCP server now exposes canonical `replace_in_file`
-- ORBIT MCP governance now classifies `replace_in_file` as a permission-authority mutation tool
-- runtime-local grounding gating now applies to both native `native__replace_in_file` and MCP-hosted `replace_in_file`
-- MCP semantic failure is now normalized into ORBIT's layered mutation failure model instead of being treated as unconditional success
+Status: completed.
 
 ### Phase M3 — contract and behavior alignment
 - verify native and MCP variants return aligned structured mutation result shapes
 - align inspection projection across native and MCP variants
 - ensure tests cover both variants under shared runtime policy expectations
+
+Status: in active consolidation.
+Current behavior is now aligned across native and MCP-hosted variants for the current mutation family, including shared grounding-readiness gating and layered semantic failure handling.
 
 ### Phase M4 — family expansion
 After the first migrated capability is stable, migrate additional family members in this likely order:
@@ -204,6 +203,17 @@ After the first migrated capability is stable, migrate additional family members
 3. `apply_exact_hunk`
 4. future `apply_exact_multi_hunk`
 5. only later, richer diff/multi-hunk families if still justified
+
+Status: current first migration wave completed.
+The filesystem MCP server now exposes the canonical grounded mutation family members:
+- `write_file`
+- `replace_in_file`
+- `replace_all_in_file`
+- `replace_block_in_file`
+- `apply_exact_hunk`
+
+ORBIT runtime now applies the same grounding-aware mutation boundary to both native and MCP-hosted variants of this family.
+Native tools remain present during the transition as a deprecate-but-keep compatibility path rather than being removed immediately.
 
 ---
 
@@ -241,6 +251,11 @@ During migration, ORBIT should allow a transitional period where:
 
 The goal is not immediate deletion of native tools.
 The goal is to make reusable mutation semantics MCP-hosted without destabilizing current runtime behavior.
+
+Current deprecation signaling stance:
+- native mutation tools should be treated as compatibility-only runtime surfaces
+- active provider-facing tool exposure should prefer canonical MCP names
+- new default caller paths should not prefer native mutation names unless a compatibility-specific test or legacy scaffold explicitly requires them
 
 ---
 
