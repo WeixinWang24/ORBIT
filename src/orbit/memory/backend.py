@@ -9,6 +9,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from orbit.memory.retrieval import RetrievalScore
+from orbit.memory.weights import MemoryRetrievalWeights, default_memory_retrieval_weights
 from orbit.models import MemoryEmbedding, MemoryRecord
 
 
@@ -23,6 +24,7 @@ class MemoryRetrievalBackend(ABC):
         query_vector: list[float],
         records: list[MemoryRecord],
         embeddings: dict[str, MemoryEmbedding],
+        weights: MemoryRetrievalWeights | None = None,
     ) -> list[RetrievalScore]:
         """Return scored memory candidates in backend-specific order."""
 
@@ -40,6 +42,7 @@ class PostgresMemoryRetrievalBackend(MemoryRetrievalBackend):
         query_vector: list[float],
         records: list[MemoryRecord],
         embeddings: dict[str, MemoryEmbedding],
+        weights: MemoryRetrievalWeights | None = None,
     ) -> list[RetrievalScore]:
         return []
 
@@ -57,10 +60,12 @@ class ApplicationMemoryRetrievalBackend(MemoryRetrievalBackend):
         query_vector: list[float],
         records: list[MemoryRecord],
         embeddings: dict[str, MemoryEmbedding],
+        weights: MemoryRetrievalWeights | None = None,
     ) -> list[RetrievalScore]:
         from orbit.memory.memory_service import _tokenize
         from orbit.memory.embedding_service import cosine_similarity
 
+        weights = weights or default_memory_retrieval_weights()
         query_tokens = _tokenize(query_text)
         scored: list[RetrievalScore] = []
         for record in records:
@@ -70,7 +75,9 @@ class ApplicationMemoryRetrievalBackend(MemoryRetrievalBackend):
             semantic_score = cosine_similarity(query_vector, embedding.vector)
             lexical_tokens = _tokenize(record.summary_text + "\n" + record.detail_text + "\n" + " ".join(record.tags))
             lexical_score = (len(query_tokens & lexical_tokens) / len(query_tokens)) if query_tokens else 0.0
-            hybrid_score = 0.8 * semantic_score + 0.2 * lexical_score
+            scope_boost = weights.durable_boost if str(record.scope) == "durable" else weights.session_boost
+            salience_bonus = weights.salience_weight * float(getattr(record, "salience", 0.0) or 0.0)
+            hybrid_score = (weights.semantic_weight * semantic_score) + (weights.lexical_weight * lexical_score) + scope_boost + salience_bonus
             if hybrid_score <= 0:
                 continue
             scored.append(

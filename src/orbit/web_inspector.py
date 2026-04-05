@@ -59,7 +59,7 @@ def _mutation_detail_html(tool_data: dict | None) -> str:
         )
     return ''.join(blocks)
 
-from orbit.memory import MemoryService, cosine_similarity
+from orbit.memory import MemoryService
 from orbit.settings import DEFAULT_DB_PATH, DEFAULT_INSPECTOR_HOST, DEFAULT_INSPECTOR_PORT, DEFAULT_WORKSPACE_ROOT
 from orbit.store.sqlite_store import SQLiteStore
 
@@ -592,49 +592,19 @@ class InspectorHandler(BaseHTTPRequestHandler):
             memory_top_k = max(1, min(int(query.get("memory_top_k", ["10"])[0]), 50))
         except Exception:
             memory_top_k = 10
+        probe = memory_service.probe_memory_retrieval(
+            session_id=current_session.session_id if current_session else None,
+            query_text=retrieval_query,
+            limit=memory_top_k,
+            scope=memory_scope,
+        )
+        backend_plan_obj = probe.get("backend_plan")
         backend_plan = {
-            "backend": getattr(memory_service.retrieval_backend, "backend_name", "unknown"),
-            "strategy": getattr(memory_service.retrieval_backend, "strategy_name", "unknown"),
-            "notes": "Selected from active store type by MemoryService.",
+            "backend": getattr(backend_plan_obj, "backend", "unknown"),
+            "strategy": getattr(backend_plan_obj, "strategy", "unknown"),
+            "notes": getattr(backend_plan_obj, "notes", ""),
         }
-        retrieval_results = []
-        if current_session and retrieval_query.strip():
-            probe_query = retrieval_query.strip()
-            query_vector = memory_service.embedding_service.embed_text(probe_query)
-            latest_embedding_by_memory_id = {}
-            for embedding in memory_embeddings_raw:
-                latest_embedding_by_memory_id.setdefault(embedding.memory_id, embedding)
-            filtered_memory_records = memory_records_raw
-            if memory_scope == "durable":
-                filtered_memory_records = [record for record in memory_records_raw if str(record.scope) == "durable"]
-            elif memory_scope == "session":
-                filtered_memory_records = [record for record in memory_records_raw if str(record.scope) == "session"]
-            for record in filtered_memory_records:
-                embedding = latest_embedding_by_memory_id.get(record.memory_id)
-                if embedding is None:
-                    embedding = memory_service._upsert_embedding_for_record(record)
-                    latest_embedding_by_memory_id[record.memory_id] = embedding
-                    memory_embeddings_raw.append(embedding)
-                score = cosine_similarity(query_vector, embedding.vector)
-                lexical_tokens = set(part for part in retrieval_query.lower().split() if part) & set(part for part in (record.summary_text + ' ' + record.detail_text + ' ' + ' '.join(record.tags)).lower().split() if part)
-                lexical_score = (len(lexical_tokens) / len(set(part for part in retrieval_query.lower().split() if part))) if retrieval_query.strip() else 0.0
-                hybrid_score = 0.8 * score + 0.2 * lexical_score
-                retrieval_results.append({
-                    "memory_id": record.memory_id,
-                    "memory_scope": str(record.scope),
-                    "memory_type": str(record.memory_type),
-                    "summary_text": record.summary_text,
-                    "detail_text": record.detail_text,
-                    "score": round(hybrid_score, 6),
-                    "semantic_score": round(score, 6),
-                    "lexical_score": round(lexical_score, 6),
-                    "embedding_model": embedding.model_name,
-                    "embedding_dim": embedding.embedding_dim,
-                    "promotion_strategy": record.metadata.get("promotion_strategy") if isinstance(record.metadata, dict) else None,
-                    "retrieval_backend": "application",
-                })
-            retrieval_results.sort(key=lambda item: item["score"], reverse=True)
-            retrieval_results = retrieval_results[:memory_top_k]
+        retrieval_results = list(probe.get("results", []))
         memory_records = [record.model_dump(mode="json") for record in memory_records_raw]
         memory_embeddings = [embedding.model_dump(mode="json") for embedding in memory_embeddings_raw]
         metadata = current_session.metadata if current_session is not None else {}

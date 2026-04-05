@@ -18,6 +18,7 @@ from orbit.memory.backend import ApplicationMemoryRetrievalBackend, MemoryRetrie
 from orbit.memory.embedding_service import EmbeddingService
 from orbit.memory.extraction import extract_durable_candidates
 from orbit.memory.retrieval import default_retrieval_backend_plan
+from orbit.memory.weights import MemoryRetrievalWeights, default_memory_retrieval_weights
 from orbit.models import (
     ConversationMessage,
     MemoryEmbedding,
@@ -42,10 +43,11 @@ def _tokenize(value: str) -> set[str]:
 class MemoryService:
     """Provide bounded first-slice memory extraction and retrieval."""
 
-    def __init__(self, *, store: OrbitStore, embedding_service: EmbeddingService | None = None, retrieval_backend: MemoryRetrievalBackend | None = None):
+    def __init__(self, *, store: OrbitStore, embedding_service: EmbeddingService | None = None, retrieval_backend: MemoryRetrievalBackend | None = None, retrieval_weights: MemoryRetrievalWeights | None = None):
         self.store = store
         self.embedding_service = embedding_service or EmbeddingService()
         self.retrieval_backend = retrieval_backend or self._select_retrieval_backend()
+        self.retrieval_weights = retrieval_weights or default_memory_retrieval_weights()
 
     def _select_retrieval_backend(self) -> MemoryRetrievalBackend:
         """Select the current retrieval backend based on active store type."""
@@ -189,24 +191,22 @@ class MemoryService:
                 promoted.append(record)
         return promoted
 
-    def retrieve_memory_fragments(self, *, session_id: str | None, query_text: str, limit: int = DEFAULT_MEMORY_RETRIEVAL_TOP_K) -> list[ContextFragment]:
-        """Return retrieval-oriented context fragments for the current query."""
+    def probe_memory_retrieval(self, *, session_id: str | None, query_text: str, limit: int = DEFAULT_MEMORY_RETRIEVAL_TOP_K, scope: str = "all") -> dict:
+        """Return a structured retrieval probe for runtime and inspector use."""
         if not query_text.strip():
-            return []
+            return {"backend_plan": self._current_backend_plan(), "results": []}
         candidate_records: list[MemoryRecord] = []
-        candidate_records.extend(self.store.list_memory_records(scope="durable", limit=200))
-        if session_id is not None:
+        if scope in {"all", "durable"}:
+            candidate_records.extend(self.store.list_memory_records(scope="durable", limit=200))
+        if scope in {"all", "session"} and session_id is not None:
             candidate_records.extend(self.store.list_memory_records(scope="session", session_id=session_id, limit=200))
         if not candidate_records:
-            return []
+            return {"backend_plan": self._current_backend_plan(), "results": []}
 
         embedding_by_memory_id: dict[str, MemoryEmbedding] = {}
         for embedding in self.store.list_memory_embeddings(model_name=self.embedding_service.model_name):
             embedding_by_memory_id.setdefault(embedding.memory_id, embedding)
 
-        backend_plan = default_retrieval_backend_plan()
-        backend_plan.backend = getattr(self.retrieval_backend, "backend_name", backend_plan.backend)
-        backend_plan.strategy = getattr(self.retrieval_backend, "strategy_name", backend_plan.strategy)
         query_vector = self.embedding_service.embed_text(query_text)
         for record in candidate_records:
             embedding = embedding_by_memory_id.get(record.memory_id)
@@ -218,39 +218,68 @@ class MemoryService:
             query_vector=query_vector,
             records=candidate_records,
             embeddings=embedding_by_memory_id,
+            weights=self.retrieval_weights,
         )
-
-        fragments: list[ContextFragment] = []
+        results = []
         seen_memory_ids: set[str] = set()
         for scored_item in scored:
-            hybrid_score = scored_item.hybrid_score
-            semantic_score = scored_item.semantic_score
-            lexical_score = scored_item.lexical_score
             record = scored_item.memory
             if record.memory_id in seen_memory_ids:
                 continue
             seen_memory_ids.add(record.memory_id)
+            results.append({
+                "memory_id": record.memory_id,
+                "memory_scope": str(record.scope),
+                "memory_type": str(record.memory_type),
+                "summary_text": record.summary_text,
+                "detail_text": record.detail_text,
+                "score": round(scored_item.hybrid_score, 6),
+                "semantic_score": round(scored_item.semantic_score, 6),
+                "lexical_score": round(scored_item.lexical_score, 6),
+                "embedding_model": self.embedding_service.model_name,
+                "promotion_strategy": record.metadata.get("promotion_strategy") if isinstance(record.metadata, dict) else None,
+                "retrieval_backend": getattr(self.retrieval_backend, "backend_name", "unknown"),
+                "retrieval_strategy": getattr(self.retrieval_backend, "strategy_name", "unknown"),
+            })
+            if len(results) >= limit:
+                break
+        return {"backend_plan": self._current_backend_plan(), "results": results}
+
+    def _current_backend_plan(self):
+        backend_plan = default_retrieval_backend_plan()
+        backend_plan.backend = getattr(self.retrieval_backend, "backend_name", backend_plan.backend)
+        backend_plan.strategy = getattr(self.retrieval_backend, "strategy_name", backend_plan.strategy)
+        if backend_plan.backend == "postgres":
+            backend_plan.notes = "Postgres backend selected from store type; current phase keeps this as an explainable stub until pgvector execution is enabled."
+        else:
+            backend_plan.notes = "Application backend selected from store type; scoring uses weighted semantic + lexical + scope/salience bonuses."
+        return backend_plan
+
+    def retrieve_memory_fragments(self, *, session_id: str | None, query_text: str, limit: int = DEFAULT_MEMORY_RETRIEVAL_TOP_K) -> list[ContextFragment]:
+        """Return retrieval-oriented context fragments for the current query."""
+        probe = self.probe_memory_retrieval(session_id=session_id, query_text=query_text, limit=limit, scope="all")
+        backend_plan = probe["backend_plan"]
+        fragments: list[ContextFragment] = []
+        for result in probe["results"]:
             fragments.append(
                 ContextFragment(
-                    fragment_name=f"memory:{record.memory_type}:{record.memory_id}",
+                    fragment_name=f"memory:{result['memory_type']}:{result['memory_id']}",
                     visibility_scope="memory_retrieval",
-                    content=record.summary_text if record.summary_text.strip() else record.detail_text,
+                    content=result["summary_text"] if str(result["summary_text"]).strip() else result["detail_text"],
                     priority=55,
                     metadata={
-                        "memory_id": record.memory_id,
-                        "memory_scope": record.scope,
-                        "memory_type": record.memory_type,
+                        "memory_id": result["memory_id"],
+                        "memory_scope": result["memory_scope"],
+                        "memory_type": result["memory_type"],
                         "retrieval_mode": "hybrid_embedding_lexical_v1",
                         "query_text": query_text,
-                        "score": round(hybrid_score, 6),
-                        "semantic_score": round(semantic_score, 6),
-                        "lexical_score": round(lexical_score, 6),
-                        "embedding_model": self.embedding_service.model_name,
+                        "score": result["score"],
+                        "semantic_score": result["semantic_score"],
+                        "lexical_score": result["lexical_score"],
+                        "embedding_model": result["embedding_model"],
                         "retrieval_backend": backend_plan.backend,
                         "retrieval_strategy": backend_plan.strategy,
                     },
                 )
             )
-            if len(fragments) >= limit:
-                break
         return fragments
