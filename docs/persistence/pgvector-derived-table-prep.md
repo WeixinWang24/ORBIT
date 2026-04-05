@@ -44,6 +44,9 @@ Likely population path:
 3. insert/update matching rows in `memory_embedding_vectors`
 4. use `content_sha1` for dedupe / rebuild checks
 
+See implementation-oriented follow-up:
+- `docs/persistence/pgvector-derived-table-implementation-notes.md`
+
 ## Query shape
 
 Initial exact-similarity shape can remain simple:

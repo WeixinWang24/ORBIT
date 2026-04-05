@@ -296,6 +296,30 @@ def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[
             f'<pre>{escape(json.dumps(result, indent=2, ensure_ascii=False))}</pre>'
             f'</div>'
         )
+    compare_summary_html = ''
+    if compare_summary:
+        delta = compare_summary.get('delta', {}) if isinstance(compare_summary, dict) else {}
+        compare_summary_html = (
+            '<div class="panel-block"><h2 class="section-title">Compare Summary</h2>'
+            f'<div class="fragment-card"><h3 class="fragment-title">Overlap</h3><div class="fragment-meta">{escape(json.dumps(delta.get("top_id_overlap", []), ensure_ascii=False))}</div></div>'
+            f'<div class="fragment-card"><h3 class="fragment-title">Application Only</h3><div class="fragment-meta">{escape(json.dumps(delta.get("application_only", []), ensure_ascii=False))}</div></div>'
+            f'<div class="fragment-card"><h3 class="fragment-title">Postgres Only</h3><div class="fragment-meta">{escape(json.dumps(delta.get("postgres_only", []), ensure_ascii=False))}</div></div>'
+            f'<pre>{escape(json.dumps(compare_summary, indent=2, ensure_ascii=False))}</pre>'
+            '</div>'
+        )
+    snapshots_html = ''
+    if recent_probe_snapshots:
+        cards = []
+        for item in recent_probe_snapshots:
+            cards.append(
+                f'<div class="fragment-card">'
+                f'<h3 class="fragment-title">snapshot · {escape(str(item.get("context_artifact_id", "unknown")))}</h3>'
+                f'<div class="fragment-meta">created_at={escape(str(item.get("created_at", "")))} · backend={escape(str(item.get("backend", "")))} · strategy={escape(str(item.get("strategy", "")))} · query={escape(str(item.get("query_text", "")))}</div>'
+                f'<div class="fragment-meta">top_memory_ids={escape(json.dumps(item.get("top_memory_ids", []), ensure_ascii=False))}</div>'
+                f'<pre>{escape(json.dumps(item.get("content", {}), indent=2, ensure_ascii=False))}</pre>'
+                f'</div>'
+            )
+        snapshots_html = '<div class="panel-block"><h2 class="section-title">Recent Probe Snapshots</h2>' + ''.join(cards) + '</div>'
     retrieval_html = ''.join(retrieval_blocks) if retrieval_blocks else '<div class="empty">No retrieval results for current query.</div>'
     records_html_joined = ''.join(records_html) if records_html else '<div class="empty">No canonical memory records.</div>'
     embeddings_html_joined = ''.join(embeddings_html) if embeddings_html else '<div class="empty">No memory embeddings.</div>'
@@ -334,9 +358,9 @@ def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[
         + (f'<div class="fragment-meta">weights={escape(json.dumps(retrieval_weights or {}, ensure_ascii=False))}</div>' if retrieval_weights else '')
         + (f'<div class="fragment-meta">snapshot={escape(json.dumps(snapshot or {}, ensure_ascii=False))}</div>' if snapshot else '')
         + retrieval_html
-        + (f'<div class="panel-block"><h2 class="section-title">Compare Summary</h2><pre>{escape(json.dumps(compare_summary, indent=2, ensure_ascii=False))}</pre></div>' if compare_summary else '')
+        + compare_summary_html
         + (f'<div class="panel-block"><h2 class="section-title">Compare Backends</h2><pre>{escape(json.dumps(compare_results, indent=2, ensure_ascii=False))}</pre></div>' if compare_results else '')
-        + (f'<div class="panel-block"><h2 class="section-title">Recent Probe Snapshots</h2><pre>{escape(json.dumps(recent_probe_snapshots or [], indent=2, ensure_ascii=False))}</pre></div>' if recent_probe_snapshots else '')
+        + snapshots_html
         + '</div>'
     )
 
