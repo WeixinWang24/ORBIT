@@ -301,11 +301,19 @@ def submit_composer(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> Non
     if not text:
         state.banner = "Composer is empty"
         return
+    session_id = current_session_id(state, adapter)
+    pending = adapter.get_pending_approval(session_id)
+    if pending is not None and not text.startswith("/"):
+        activate_approvals(state)
+        state.banner = (
+            f"Pending approval for {pending.tool_name}. Use /approve or /reject, "
+            "or press a/r in the approvals panel."
+        )
+        return
     if text.startswith("/"):
         route_slash_command(state, adapter, text)
         state.composer.text = ""
         return
-    session_id = current_session_id(state, adapter)
     state.pending_submit_session_id = session_id
     state.pending_submit_text = text
     state.runtime_busy = True

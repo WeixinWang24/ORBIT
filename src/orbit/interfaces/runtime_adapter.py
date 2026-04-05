@@ -176,6 +176,17 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
 
     def send_user_message(self, session_id: str, text: str, on_assistant_partial_text=None) -> list[InterfaceMessage]:
         self.session_manager.run_session_turn(session_id=session_id, user_input=text, on_assistant_partial_text=on_assistant_partial_text)
+        pending = self.get_pending_approval(session_id)
+        if pending is not None:
+            self.append_system_message(
+                session_id,
+                (
+                    f"Pending approval: {pending.tool_name} "
+                    f"(approval_request_id={pending.approval_request_id}, side_effect={pending.side_effect_class}).\n"
+                    "Use /approve or /reject in chat, or open the approvals panel and press a/r."
+                ),
+                kind="approval_guidance",
+            )
         return self.list_messages(session_id)
 
     def append_system_message(self, session_id: str, text: str, *, kind: str = "system") -> InterfaceMessage:
