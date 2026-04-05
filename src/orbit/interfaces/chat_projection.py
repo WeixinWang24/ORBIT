@@ -30,6 +30,7 @@ def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy:
         "approval_guidance",
         "structured_reauthorization",
         "approval_decision",
+        "approval_result",
     }
     messages = adapter.list_messages(session_id)
     if chat_history_limit > 0:
