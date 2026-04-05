@@ -58,7 +58,8 @@ def _build_default_adapter() -> RuntimeCliAdapter:
 def _start_background_submit(state: RuntimeCliState, adapter: RuntimeCliAdapter) -> None:
     session_id = state.pending_submit_session_id
     text = state.pending_submit_text
-    if not session_id or not text:
+    approval_resolution = getattr(state, "_pending_approval_resolution", None)
+    if not session_id or (not text and approval_resolution is None):
         state.runtime_busy = False
         return
 
@@ -70,13 +71,28 @@ def _start_background_submit(state: RuntimeCliState, adapter: RuntimeCliAdapter)
         try:
             state.assistant_inflight_text = ""
             state.assistant_inflight_dirty = True
-            adapter.send_user_message(
-                session_id,
-                text,
-                on_assistant_partial_text=_handle_partial_text,
-            )
-            state.completed_submit_banner = f"Submitted to {session_id}"
-            state.completed_submit_error = None
+            if approval_resolution is not None:
+                decision = approval_resolution.get("decision")
+                reauth_tool_name = approval_resolution.get("reauth_tool_name")
+                reauth_note = approval_resolution.get("reauth_note")
+                if decision == "approve" and isinstance(reauth_tool_name, str) and reauth_tool_name:
+                    adapter.reauthorize_tool_path(
+                        session_id,
+                        reauth_tool_name,
+                        note=reauth_note,
+                        source="chat_approval_picker",
+                    )
+                adapter.resolve_pending_approval(session_id, decision, reauth_note if decision == "reject" else None)
+                state.completed_submit_banner = "Approval resolved"
+                state.completed_submit_error = None
+            else:
+                adapter.send_user_message(
+                    session_id,
+                    text,
+                    on_assistant_partial_text=_handle_partial_text,
+                )
+                state.completed_submit_banner = f"Submitted to {session_id}"
+                state.completed_submit_error = None
         except Exception as exc:
             try:
                 adapter.append_system_message(
@@ -94,6 +110,10 @@ def _start_background_submit(state: RuntimeCliState, adapter: RuntimeCliAdapter)
             state.pending_submit_session_id = None
             state.assistant_inflight_text = None
             state.assistant_inflight_dirty = True
+            state.approval_action_pending = False
+            state.approval_action_label = None
+            if hasattr(state, "_pending_approval_resolution"):
+                delattr(state, "_pending_approval_resolution")
             state._submit_thread_started_at = None
 
     state._submit_thread_started_at = time.time()
@@ -120,11 +140,18 @@ def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None) -> None:
         nonlocal runtime_adapter
         try:
             built = runtime_adapter or _build_default_adapter()
-            initial_session = built.create_session()
             runtime_adapter = built
-            state.active_session_id = initial_session.session_id
-            state.selected_session = 0
-            state.banner = f"Created new session {initial_session.session_id}"
+            sessions = built.list_sessions()
+            if sessions:
+                initial_session = sessions[0]
+                state.active_session_id = initial_session.session_id
+                state.selected_session = 0
+                state.banner = f"Attached to latest session {initial_session.session_id}"
+            else:
+                initial_session = built.create_session()
+                state.active_session_id = initial_session.session_id
+                state.selected_session = 0
+                state.banner = f"Created new session {initial_session.session_id}"
             state.startup_error = None
         except Exception as exc:
             state.startup_error = repr(exc)

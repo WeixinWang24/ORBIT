@@ -22,7 +22,7 @@ class ChatProjection:
     assistant_inflight_text: str | None = None
 
 
-def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy: bool, pending_submit_session_id: str | None, pending_submit_text: str, submit_started_at: float | None, assistant_inflight_text: str | None, accent_user: str, accent_assistant: str, accent_warning: str, accent_muted: str, approval_picker_index: int = 0) -> ChatProjection:
+def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy: bool, pending_submit_session_id: str | None, pending_submit_text: str, submit_started_at: float | None, assistant_inflight_text: str | None, accent_user: str, accent_assistant: str, accent_warning: str, accent_muted: str, approval_picker_index: int = 0, approval_action_pending: bool = False, approval_action_label: str | None = None) -> ChatProjection:
     lines: list[str] = []
     body: list[str] = []
     for msg in adapter.list_messages(session_id):
@@ -54,19 +54,23 @@ def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy:
             "approve similar for this session",
             "deny",
         ]
+        selected_index = max(0, min(approval_picker_index, len(options) - 1))
         body.append(accent_warning + "ASSISTANT [approval_picker]" + T.RESET)
         body.extend("  " + ln for ln in wrap_display_text(
             f"Approval required for {pending.tool_name} (side_effect_class={pending.side_effect_class}).",
             max(20, width - 4),
         ))
-        body.extend("  " + ln for ln in wrap_display_text(
-            "Use ↑/↓ to choose and Enter to confirm.",
-            max(20, width - 4),
-        ))
+        if approval_action_pending and approval_action_label:
+            body.extend("  " + ln for ln in wrap_display_text(approval_action_label, max(20, width - 4)))
+        else:
+            body.extend("  " + ln for ln in wrap_display_text(
+                "Use ↑/↓ to choose and Enter to confirm.",
+                max(20, width - 4),
+            ))
         for idx, option in enumerate(options):
-            prefix = "▶ " if idx == max(0, min(approval_picker_index, len(options) - 1)) else "  "
+            prefix = "▶ " if idx == selected_index else "  "
             line = prefix + option
-            if idx == max(0, min(approval_picker_index, len(options) - 1)):
+            if idx == selected_index:
                 body.append("  " + accent_warning + T.INVERSE + line + T.RESET)
             else:
                 body.append("  " + accent_muted + line + T.RESET)

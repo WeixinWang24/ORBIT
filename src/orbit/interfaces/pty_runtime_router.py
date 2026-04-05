@@ -44,8 +44,8 @@ def current_session_id(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> 
                 state.selected_session = index
                 return session.session_id
 
-    state.selected_session = min(state.selected_session, len(sessions) - 1)
-    session_id = sessions[state.selected_session].session_id
+    state.selected_session = 0
+    session_id = sessions[0].session_id
     state.active_session_id = session_id
     return session_id
 
@@ -238,28 +238,23 @@ def resolve_current_approval(state: RuntimeShellState, adapter: RuntimeCliAdapte
     activate_chat(state, f"Approval {decision}d")
 
 
-def resolve_current_approval_via_picker(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> bool:
+def resolve_current_approval_via_picker(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> tuple[str, str | None, str | None] | None:
     session_id = current_session_id(state, adapter)
     pending = adapter.get_pending_approval(session_id)
     if pending is None:
         activate_chat(state, "No pending approval")
-        return False
+        return None
 
     index = getattr(state, "approval_picker_index", 0)
     if index <= 0:
-        resolve_current_approval(state, adapter, "approve")
-        return True
+        return ("approve", None, None)
     if index == 1:
-        adapter.reauthorize_tool_path(
-            session_id,
+        return (
+            "approve",
             pending.tool_name,
-            note="approved similar tool path for this session via chat approval picker",
-            source="chat_approval_picker",
+            "approved similar tool path for this session via chat approval picker",
         )
-        resolve_current_approval(state, adapter, "approve")
-        return True
-    resolve_current_approval(state, adapter, "reject")
-    return True
+    return ("reject", None, None)
 
 
 def route_slash_command(state: RuntimeShellState, adapter: RuntimeCliAdapter, text: str) -> None:

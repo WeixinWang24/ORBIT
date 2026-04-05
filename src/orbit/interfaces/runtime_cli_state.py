@@ -60,6 +60,8 @@ class RuntimeCliState(RuntimeShellState):
     completed_submit_banner: str | None = None
     completed_submit_error: str | None = None
     approval_picker_index: int = 0
+    approval_action_pending: bool = False
+    approval_action_label: str | None = None
     _submit_thread_started_at: float | None = None
     startup_loading: bool = True
     startup_error: str | None = None

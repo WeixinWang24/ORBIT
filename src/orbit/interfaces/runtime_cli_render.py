@@ -88,6 +88,8 @@ def chat_body_lines(state: RuntimeCliState, adapter: RuntimeCliAdapter, width: i
         accent_warning=ACCENT_WARNING,
         accent_muted=ACCENT_MUTED,
         approval_picker_index=state.approval_picker_index,
+        approval_action_pending=state.approval_action_pending,
+        approval_action_label=state.approval_action_label,
     )
     return projection.lines
 

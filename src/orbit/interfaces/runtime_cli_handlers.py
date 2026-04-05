@@ -60,9 +60,32 @@ def handle_chat_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event: P
     has_pending_approval = pending is not None
     composer_has_text = bool(state.composer.text.strip())
 
-    if has_pending_approval and not composer_has_text:
+    if has_pending_approval:
         if name == "enter":
-            resolve_current_approval_via_picker(state, adapter)
+            if composer_has_text and state.composer.text.strip().startswith("/"):
+                state.banner = f"Submitting {len(state.composer.text.strip())} chars to active session..."
+                submit_composer(state, adapter)
+                reset_scroll(state)
+                return True
+            selection = resolve_current_approval_via_picker(state, adapter)
+            if selection is None:
+                reset_scroll(state)
+                return True
+            decision, reauth_tool_name, reauth_note = selection
+            state.approval_action_pending = True
+            state.approval_action_label = "Approving..." if decision == "approve" else "Denying..."
+            state.banner = state.approval_action_label
+            state.pending_submit_session_id = current_session.session_id if current_session is not None else None
+            state.pending_submit_text = ""
+            state.runtime_busy = True
+            state.completed_submit_banner = None
+            state.completed_submit_error = None
+            state.composer.text = ""
+            setattr(state, "_pending_approval_resolution", {
+                "decision": decision,
+                "reauth_tool_name": reauth_tool_name,
+                "reauth_note": reauth_note,
+            })
             reset_scroll(state)
             return True
         if name in {"up", "k"}:
@@ -70,6 +93,14 @@ def handle_chat_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event: P
             return True
         if name in {"down", "j"}:
             state.approval_picker_index = min(2, state.approval_picker_index + 1)
+            return True
+        if composer_has_text and not state.composer.text.strip().startswith("/") and name in {"backspace"}:
+            state.composer.backspace()
+            return False
+        if composer_has_text and not state.composer.text.strip().startswith("/"):
+            # keep picker focus semantics; free typing only matters for slash commands here
+            if is_printable_text_key(event):
+                state.composer.insert_text(name)
             return True
 
     if name == "enter":
