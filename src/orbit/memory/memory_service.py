@@ -191,7 +191,7 @@ class MemoryService:
                 promoted.append(record)
         return promoted
 
-    def probe_memory_retrieval(self, *, session_id: str | None, query_text: str, limit: int = DEFAULT_MEMORY_RETRIEVAL_TOP_K, scope: str = "all") -> dict:
+    def probe_memory_retrieval(self, *, session_id: str | None, query_text: str, limit: int = DEFAULT_MEMORY_RETRIEVAL_TOP_K, scope: str = "all", weights_override: MemoryRetrievalWeights | None = None) -> dict:
         """Return a structured retrieval probe for runtime and inspector use."""
         if not query_text.strip():
             return {"backend_plan": self._current_backend_plan(), "results": []}
@@ -213,12 +213,13 @@ class MemoryService:
             if embedding is None:
                 embedding = self._upsert_embedding_for_record(record)
                 embedding_by_memory_id[record.memory_id] = embedding
+        effective_weights = weights_override or self.retrieval_weights
         scored = self.retrieval_backend.score(
             query_text=query_text,
             query_vector=query_vector,
             records=candidate_records,
             embeddings=embedding_by_memory_id,
-            weights=self.retrieval_weights,
+            weights=effective_weights,
         )
         results = []
         seen_memory_ids: set[str] = set()
@@ -250,11 +251,11 @@ class MemoryService:
             "backend_plan": self._current_backend_plan(),
             "results": results,
             "weights": {
-                "semantic_weight": self.retrieval_weights.semantic_weight,
-                "lexical_weight": self.retrieval_weights.lexical_weight,
-                "durable_boost": self.retrieval_weights.durable_boost,
-                "session_boost": self.retrieval_weights.session_boost,
-                "salience_weight": self.retrieval_weights.salience_weight,
+                "semantic_weight": effective_weights.semantic_weight,
+                "lexical_weight": effective_weights.lexical_weight,
+                "durable_boost": effective_weights.durable_boost,
+                "session_boost": effective_weights.session_boost,
+                "salience_weight": effective_weights.salience_weight,
             },
         }
 
@@ -263,7 +264,11 @@ class MemoryService:
         backend_plan.backend = getattr(self.retrieval_backend, "backend_name", backend_plan.backend)
         backend_plan.strategy = getattr(self.retrieval_backend, "strategy_name", backend_plan.strategy)
         if backend_plan.backend == "postgres":
-            backend_plan.notes = "Postgres backend selected from store type; current phase keeps this as an explainable stub until pgvector execution is enabled."
+            has_connection = hasattr(self.store, "conn")
+            backend_plan.notes = (
+                "Postgres backend selected from store type; current phase keeps this as an explainable stub until pgvector execution is enabled. "
+                + ("Connection object present; pgvector capability not yet probed/used." if has_connection else "No live Postgres connection object exposed for pgvector preflight.")
+            )
         else:
             backend_plan.notes = "Application backend selected from store type; scoring uses weighted semantic + lexical + scope/salience bonuses."
         return backend_plan

@@ -313,6 +313,11 @@ def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[
         + f'<option value="durable"{" selected" if memory_scope == "durable" else ""}>durable</option>'
         + f'<option value="session"{" selected" if memory_scope == "session" else ""}>session</option>'
         + '</select></label>'
+        + '<label class="fragment-meta">semantic weight <input name="semantic_weight" value="" placeholder="default" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
+        + '<label class="fragment-meta">lexical weight <input name="lexical_weight" value="" placeholder="default" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
+        + '<label class="fragment-meta">durable boost <input name="durable_boost" value="" placeholder="default" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
+        + '<label class="fragment-meta">session boost <input name="session_boost" value="" placeholder="default" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
+        + '<label class="fragment-meta">salience weight <input name="salience_weight" value="" placeholder="default" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
         + '<button type="submit" style="background:#121222; color:#00FFC6; border:1px solid rgba(0,255,198,.25); border-radius:8px; padding:8px 12px;">Run Probe</button>'
         + '</form>'
         + f'<div class="fragment-meta">query={escape(retrieval_query or "")} · top_k={memory_top_k} · scope={escape(memory_scope)}</div>'
@@ -595,11 +600,39 @@ class InspectorHandler(BaseHTTPRequestHandler):
             memory_top_k = max(1, min(int(query.get("memory_top_k", ["10"])[0]), 50))
         except Exception:
             memory_top_k = 10
+
+        def _float_or_none(name: str):
+            raw = query.get(name, [""])[0].strip()
+            if not raw:
+                return None
+            try:
+                return float(raw)
+            except Exception:
+                return None
+
+        override_values = {
+            "semantic_weight": _float_or_none("semantic_weight"),
+            "lexical_weight": _float_or_none("lexical_weight"),
+            "durable_boost": _float_or_none("durable_boost"),
+            "session_boost": _float_or_none("session_boost"),
+            "salience_weight": _float_or_none("salience_weight"),
+        }
+        weights_override = None
+        if any(value is not None for value in override_values.values()):
+            weights_override = memory_service.retrieval_weights.__class__(
+                semantic_weight=override_values["semantic_weight"] if override_values["semantic_weight"] is not None else memory_service.retrieval_weights.semantic_weight,
+                lexical_weight=override_values["lexical_weight"] if override_values["lexical_weight"] is not None else memory_service.retrieval_weights.lexical_weight,
+                durable_boost=override_values["durable_boost"] if override_values["durable_boost"] is not None else memory_service.retrieval_weights.durable_boost,
+                session_boost=override_values["session_boost"] if override_values["session_boost"] is not None else memory_service.retrieval_weights.session_boost,
+                salience_weight=override_values["salience_weight"] if override_values["salience_weight"] is not None else memory_service.retrieval_weights.salience_weight,
+            )
+
         probe = memory_service.probe_memory_retrieval(
             session_id=current_session.session_id if current_session else None,
             query_text=retrieval_query,
             limit=memory_top_k,
             scope=memory_scope,
+            weights_override=weights_override,
         )
         backend_plan_obj = probe.get("backend_plan")
         backend_plan = {
