@@ -25,7 +25,15 @@ class ChatProjection:
 def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy: bool, pending_submit_session_id: str | None, pending_submit_text: str, submit_started_at: float | None, assistant_inflight_text: str | None, accent_user: str, accent_assistant: str, accent_warning: str, accent_muted: str, approval_picker_index: int = 0, approval_action_pending: bool = False, approval_action_label: str | None = None) -> ChatProjection:
     lines: list[str] = []
     body: list[str] = []
+    hidden_kinds = {
+        "approval_request",
+        "approval_guidance",
+        "structured_reauthorization",
+        "approval_decision",
+    }
     for msg in adapter.list_messages(session_id):
+        if msg.message_kind in hidden_kinds:
+            continue
         label = msg.role.upper() if not msg.message_kind else f"{msg.role.upper()} [{msg.message_kind}]"
         color = accent_user if msg.role == "user" else accent_assistant if msg.role == "assistant" else accent_warning
         body.append(color + label + T.RESET)
@@ -40,11 +48,15 @@ def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy:
                 summary += " status=ok"
             elif tool_ok is False:
                 summary += " status=error"
-            wrapped = wrap_display_text(summary, max(20, width - 4))
+            compact = summary.replace("\n", " ")
+            max_width = max(20, width - 4)
+            if len(compact) > max_width:
+                compact = compact[: max(0, max_width - 1)] + "…"
+            body.append("  " + T.DIM + compact + T.RESET)
         else:
             wrapped = wrap_display_text(msg.content, max(20, width - 4))
-        for ln in wrapped:
-            body.append("  " + ln)
+            for ln in wrapped:
+                body.append("  " + ln)
         body.append("")
 
     pending = adapter.get_pending_approval(session_id)
@@ -65,6 +77,10 @@ def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy:
         else:
             body.extend("  " + ln for ln in wrap_display_text(
                 "Use ↑/↓ to choose and Enter to confirm.",
+                max(20, width - 4),
+            ))
+            body.extend("  " + ln for ln in wrap_display_text(
+                "‘approve similar for this session’ grants structured reauthorization for this tool in the current session.",
                 max(20, width - 4),
             ))
         for idx, option in enumerate(options):

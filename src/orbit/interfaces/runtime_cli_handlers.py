@@ -62,6 +62,8 @@ def handle_chat_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event: P
 
     if has_pending_approval:
         if name == "enter":
+            if state.approval_action_pending:
+                return True
             if composer_has_text and state.composer.text.strip().startswith("/"):
                 state.banner = f"Submitting {len(state.composer.text.strip())} chars to active session..."
                 submit_composer(state, adapter)
@@ -87,6 +89,8 @@ def handle_chat_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event: P
                 "reauth_note": reauth_note,
             })
             reset_scroll(state)
+            return True
+        if state.approval_action_pending:
             return True
         if name in {"up", "k"}:
             state.approval_picker_index = max(0, state.approval_picker_index - 1)
