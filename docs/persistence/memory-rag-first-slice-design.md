@@ -167,7 +167,11 @@ The active implementation has now moved beyond placeholder recent-memory selecti
 Current retrieval mode is:
 - local embedding generation via sentence-transformers
 - embedding persistence per `MemoryRecord`
-- application-side cosine similarity over stored vectors
+- hash-based embedding refresh/dedupe behavior
+- rule-based first-slice promotion from session summary into durable memory candidates
+- application-side hybrid scoring:
+  - cosine semantic similarity
+  - lightweight lexical overlap
 - retrieval projection into `auxiliary_context_fragments`
 
 This is intentionally a first real semantic retrieval step, not yet the final retrieval architecture.
