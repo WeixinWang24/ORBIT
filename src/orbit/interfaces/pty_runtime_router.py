@@ -305,6 +305,7 @@ def submit_composer(state: RuntimeShellState, adapter: RuntimeCliAdapter) -> Non
     pending = adapter.get_pending_approval(session_id)
     if pending is not None and not text.startswith("/"):
         activate_approvals(state)
+        state.composer.text = ""
         state.banner = (
             f"Pending approval for {pending.tool_name}. Use /approve or /reject, "
             "or press a/r in the approvals panel."

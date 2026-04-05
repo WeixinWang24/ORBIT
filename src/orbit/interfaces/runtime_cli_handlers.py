@@ -56,7 +56,12 @@ def is_printable_text_key(event: ParsedKey) -> bool:
 def handle_chat_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event: ParsedKey) -> bool:
     name = event.name
     if name == "enter":
-        if state.runtime_busy:
+        current_session = adapter.get_session(state.active_session_id) if state.active_session_id else None
+        has_pending_approval = False
+        if current_session is not None:
+            pending = adapter.get_pending_approval(current_session.session_id)
+            has_pending_approval = pending is not None
+        if state.runtime_busy and not has_pending_approval:
             state.banner = "Runtime busy; you can keep typing, but submit waits for the current turn to finish."
             return True
         state.banner = f"Submitting {len(state.composer.text.strip())} chars to active session..."
