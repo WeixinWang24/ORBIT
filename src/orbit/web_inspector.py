@@ -324,6 +324,8 @@ def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[
         + f'<label class="fragment-meta">durable boost <input name="durable_boost" value="{escape(str((weight_inputs or {}).get("durable_boost", "")))}" placeholder="default" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
         + f'<label class="fragment-meta">session boost <input name="session_boost" value="{escape(str((weight_inputs or {}).get("session_boost", "")))}" placeholder="default" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
         + f'<label class="fragment-meta">salience weight <input name="salience_weight" value="{escape(str((weight_inputs or {}).get("salience_weight", "")))}" placeholder="default" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
+        + '<label class="fragment-meta">snapshot query filter <input name="snapshot_query" value="" placeholder="optional" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
+        + '<label class="fragment-meta">snapshot backend filter <input name="snapshot_backend" value="" placeholder="application/postgres" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
         + '<button type="submit" style="background:#121222; color:#00FFC6; border:1px solid rgba(0,255,198,.25); border-radius:8px; padding:8px 12px;">Run Probe</button>'
         + '</form>'
         + f'<div class="fragment-meta">query={escape(retrieval_query or "")} · top_k={memory_top_k} · scope={escape(memory_scope)}</div>'
@@ -643,6 +645,8 @@ class InspectorHandler(BaseHTTPRequestHandler):
         weight_inputs = {key: query.get(key, [""])[0] for key in override_values.keys()}
         backend_override = query.get("memory_backend", [""])[0].strip()
         compare_backends = query.get("compare_backends", [""])[0].strip() == "1"
+        snapshot_query_filter = query.get("snapshot_query", [""])[0].strip().lower()
+        snapshot_backend_filter = query.get("snapshot_backend", [""])[0].strip().lower()
         weights_override = None
         if any(value is not None for value in override_values.values()):
             weights_override = memory_service.retrieval_weights.__class__(
@@ -719,6 +723,12 @@ class InspectorHandler(BaseHTTPRequestHandler):
         if current_session:
             for artifact in reversed(artifacts):
                 if artifact.artifact_type == "memory_probe_snapshot":
+                    content_text = artifact.content or ""
+                    lowered_content = content_text.lower()
+                    if snapshot_query_filter and snapshot_query_filter not in lowered_content:
+                        continue
+                    if snapshot_backend_filter and snapshot_backend_filter not in lowered_content:
+                        continue
                     recent_probe_snapshots.append({
                         "context_artifact_id": artifact.context_artifact_id,
                         "created_at": artifact.created_at.isoformat() if hasattr(artifact.created_at, "isoformat") else str(artifact.created_at),

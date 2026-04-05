@@ -34,6 +34,7 @@ class PostgresMemoryRetrievalBackend(MemoryRetrievalBackend):
 
     backend_name = "postgres"
     strategy_name = "pgvector_reserved_stub"
+    execution_todo = "Enable pgvector-native derived embedding storage, exact similarity SQL, and capability-gated execution path."
     planned_sql_shape = "SELECT memory_id, 1 - (embedding <=> $query_vector) AS score FROM memory_embedding_vectors ORDER BY embedding <=> $query_vector LIMIT $k"
 
     def score(
