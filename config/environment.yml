@@ -14,4 +14,5 @@ dependencies:
       - transformers
       - sentence-transformers
       - huggingface_hub
+      - playwright>=1.52,<2
       - -e .

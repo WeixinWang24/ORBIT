@@ -113,3 +113,22 @@ class ContextArtifact(OrbitBaseModel):
     content: str
     source: str
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class ManagedProcess(OrbitBaseModel):
+    process_id: str = Field(default_factory=lambda: new_id("proc"))
+    session_id: str
+    command: str
+    cwd: str
+    status: str = "running"
+    pid: int | None = None
+    started_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    ended_at: datetime | None = None
+    exit_code: int | None = None
+    stdout_path: str
+    stderr_path: str
+    status_path: str | None = None
+    stdout_offset: int = 0
+    stderr_offset: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)

@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_STATE_DIR = REPO_ROOT / ".orbit"
+DEFAULT_STATE_DIR = Path(os.getenv("ORBIT_STATE_DIR", str(REPO_ROOT / ".orbit")))
 DEFAULT_DB_PATH = DEFAULT_STATE_DIR / "orbit.db"
 DEFAULT_WORKSPACE_ROOT = REPO_ROOT / "workspace"
 
