@@ -34,6 +34,11 @@
   - persistence interfaces and implementations
 - `src/orbit/tools/`
   - tool registry and tool implementations
+- `src/mcp_servers/`
+  - `system/core/filesystem/` — workspace-scoped filesystem MCP server assets
+  - `system/core/git/` — workspace-scoped read-only git MCP server assets
+  - `system/core/bash/` — workspace-scoped bash MCP server assets
+  - `system/core/process/` — workspace-scoped managed-process MCP server assets
 
 ## Current posture
 

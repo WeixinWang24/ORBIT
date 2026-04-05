@@ -15,6 +15,11 @@ class InterfaceSession(OrbitBaseModel):
     conversation_id: str
     backend_name: str
     model: str
+    runtime_mode: str = "dev"
+    workspace_root: str = ""
+    mode_policy_profile: str = "dev-default"
+    self_runtime_visibility: str = "workspace_only"
+    self_modification_posture: str = "not_enabled"
     updated_at: datetime
     message_count: int = 0
     last_message_preview: str = ""

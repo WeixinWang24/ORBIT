@@ -513,6 +513,9 @@ Key helpers:
 ### Recommendation
 Build all new terminal UX, session control, and approval-flow work on the runtime-first PTY CLI and its adapter/router layers rather than reviving removed legacy entrypoints.
 
+A recent carryover checklist for lessons learned during governed MCP CLI debugging now lives at:
+- `docs/pty-runtime-cli-migration-carryover-checklist-2026-04-04.md`
+
 ---
 
 ## Historical note

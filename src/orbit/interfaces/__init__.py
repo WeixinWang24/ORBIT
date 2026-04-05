@@ -1,13 +1,12 @@
-"""Isolated interface layer for ORBIT Web UI and CLI surfaces.
+"""ORBIT interface layer.
 
-This package exists to let interface work proceed independently from the
-currently active runtime / MCP / tool-capability implementation work.
+Current CLI direction is now centered on the raw PTY runtime workbench, with:
+- `pty_runtime_cli.py` as the runtime-first terminal mainline
+- `pty_workbench.py` retained as the interaction/display reference surface
+- `input.py` / `termio.py` / `pty_debug.py` as the terminal substrate
 
-Current posture:
-- use adapter-shaped boundaries
-- support mock-driven Web UI and CLI development
-- avoid coupling first-wave interface work directly into SessionManager or the
-  existing web inspector implementation
+Older mock/fallback surfaces may remain temporarily during cleanup, but should
+not be treated as the terminal UX authority.
 """
 
 from .contracts import (
