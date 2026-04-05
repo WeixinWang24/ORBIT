@@ -62,11 +62,18 @@ from . import termio as T
 
 
 LIGHT_CODE_BG_PATTERNS = (
+    "\x1b[40m",
     "\x1b[47m",
     "\x1b[107m",
     "\x1b[48;2;248;248;248m",
     "\x1b[48;2;250;250;250m",
     "\x1b[48;5;255m",
+)
+LIGHT_CODE_FG_PATTERNS = (
+    T.FG_DEFAULT,
+    T.FG_BLACK,
+    T.FG_BRIGHT_BLACK,
+    T.fg_rgb(0, 0, 0),
 )
 MUTED_CODE_BG = T.bg_rgb(58, 58, 62)
 MUTED_CODE_FG = T.fg_rgb(214, 214, 214)
@@ -85,19 +92,32 @@ def _normalize_emoji_for_terminal(text: str) -> str:
     Some emoji/glyph presentation sequences render wider in the terminal than
     the upstream wrapping logic expects, especially when variation selectors
     are involved.  This can produce clipped right halves (observed with ✅).
-    For the markdown path, prefer a more stable text presentation.
+    Be conservative: remove variation selectors, but preserve common status
+    symbols in readable text form when the terminal might otherwise fall back
+    to odd glyphs.
     """
-    return text.replace("\ufe0f", "")
+    return (
+        text.replace("\ufe0f", "")
+            .replace("✅", "[OK]")
+            .replace("☑", "[DONE]")
+    )
 
 
 def _soften_code_block_background(lines: list[str]) -> list[str]:
     softened: list[str] = []
     for ln in lines:
         updated = ln
+        touched_bg = False
         for pattern in LIGHT_CODE_BG_PATTERNS:
-            updated = updated.replace(pattern, MUTED_CODE_BG)
-        if MUTED_CODE_BG in updated and T.FG_DEFAULT in updated:
-            updated = updated.replace(T.FG_DEFAULT, MUTED_CODE_FG)
+            if pattern in updated:
+                updated = updated.replace(pattern, MUTED_CODE_BG)
+                touched_bg = True
+        if touched_bg:
+            for fg_pattern in LIGHT_CODE_FG_PATTERNS:
+                if fg_pattern in updated:
+                    updated = updated.replace(fg_pattern, MUTED_CODE_FG)
+            if MUTED_CODE_FG not in updated:
+                updated = MUTED_CODE_FG + updated
         softened.append(updated)
     return softened
 
