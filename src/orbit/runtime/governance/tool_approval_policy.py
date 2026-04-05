@@ -95,14 +95,24 @@ def _evaluate_permission_authority(ctx: PolicyEvaluationInput) -> PolicyDecision
 
 
 def _evaluate_system_environment(ctx: PolicyEvaluationInput) -> PolicyDecision:
-    if ctx.environment_status in {"stale", "unknown"}:
+    if ctx.environment_status == "stale":
         return PolicyDecision(
             policy_group="system_environment",
             outcome="recheck_environment",
             scope="turn",
             reauthorization_required=False,
             reason="environment_not_fresh",
-            explanation=f"The current environment state for {ctx.tool_name} is not fresh enough; recheck environment conditions before proceeding.",
+            explanation=f"The current environment state for {ctx.tool_name} is stale; refresh or recheck environment conditions before proceeding.",
+        )
+
+    if ctx.environment_status == "unknown":
+        return PolicyDecision(
+            policy_group="system_environment",
+            outcome="recheck_environment",
+            scope="turn",
+            reauthorization_required=False,
+            reason="environment_target_unknown",
+            explanation=f"ORBIT could not determine the target path or environment context for {ctx.tool_name}; provide an explicit valid path or recheck the tool input before proceeding.",
         )
 
     if ctx.environment_status == "denied":

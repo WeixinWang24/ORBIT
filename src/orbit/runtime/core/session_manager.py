@@ -893,7 +893,12 @@ class SessionManager:
         if check_kind == "path_exists":
             path = tool_request.input_payload.get("path")
             if not path:
-                return "unknown"
+                tool = self.tool_registry.get(tool_request.tool_name)
+                if getattr(tool, "tool_source", None) == "mcp" and getattr(tool, "original_name", None) in {"list_directory", "list_directory_with_sizes", "directory_tree", "search_files"}:
+                    path = "."
+                    tool_request.input_payload["path"] = path
+                else:
+                    return "unknown"
 
             tool = self.tool_registry.get(tool_request.tool_name)
             if getattr(tool, "tool_source", None) == "mcp" and getattr(tool, "original_name", None) in {"read_file", "list_directory", "list_directory_with_sizes", "directory_tree", "search_files", "get_file_info"}:
