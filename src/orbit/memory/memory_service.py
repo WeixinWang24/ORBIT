@@ -329,6 +329,7 @@ class MemoryService:
                 "pgvector_available": pgvector_available,
                 "execution_enabled": False,
                 "planned_sql_shape": getattr(PostgresMemoryRetrievalBackend, "planned_sql_shape", None),
+                "sql_draft_path": getattr(PostgresMemoryRetrievalBackend, "sql_draft_path", None),
                 "execution_todo": getattr(PostgresMemoryRetrievalBackend, "execution_todo", None),
             }
             backend_plan.notes = (

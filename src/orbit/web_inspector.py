@@ -317,6 +317,7 @@ def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[
             f'<div class="fragment-card"><h3 class="fragment-title">Application Only</h3><div class="fragment-meta">{escape(json.dumps(delta.get("application_only", []), ensure_ascii=False))}</div></div>'
             f'<div class="fragment-card"><h3 class="fragment-title">Postgres Only</h3><div class="fragment-meta">{escape(json.dumps(delta.get("postgres_only", []), ensure_ascii=False))}</div></div>'
             + ''.join(ranked_cards)
+            + f'<div class="fragment-card"><h3 class="fragment-title">Export Rows</h3><pre>{escape(json.dumps(compare_summary.get("export_rows", []), indent=2, ensure_ascii=False))}</pre></div>'
             + f'<pre>{escape(json.dumps(compare_summary, indent=2, ensure_ascii=False))}</pre>'
             + '</div>'
         )
