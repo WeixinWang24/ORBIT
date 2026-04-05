@@ -11,6 +11,7 @@ from orbit.models.core import new_id
 from orbit.runtime.core.contracts import RunDescriptor, WorkspaceDescriptor
 from orbit.runtime.core.events import RuntimeEventType
 from orbit.runtime.execution.continuation_context import build_rejection_continuation_context
+from orbit.runtime.embedding_service import EmbeddingService
 from orbit.runtime.memory_service import MemoryService
 from orbit.runtime.governance.tool_approval_policy import PolicyDecision, PolicyEvaluationInput, evaluate_tool_approval_policy
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
@@ -69,7 +70,8 @@ class SessionManager:
             register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
         if hasattr(self.backend, "tool_registry"):
             self.backend.tool_registry = self.tool_registry
-        self.memory_service = MemoryService(store=self.store)
+        self.embedding_service = EmbeddingService()
+        self.memory_service = MemoryService(store=self.store, embedding_service=self.embedding_service)
         if hasattr(self.backend, "memory_service"):
             self.backend.memory_service = self.memory_service
 

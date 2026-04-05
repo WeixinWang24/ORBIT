@@ -157,10 +157,21 @@ Important rule:
 1. user turn arrives
 2. ORBIT determines whether memory retrieval is needed
 3. query text is embedded locally
-4. retrieve top-k memory candidates from durable memory embeddings
+4. retrieve top-k memory candidates from stored memory embeddings
 5. optional symbolic/rule filtering by tags, scope, recency, confidence
 6. retrieved memory results are inserted into context assembly as auxiliary context fragments
 7. transcript remains canonical; retrieval results are contextual aids, not rewritten history
+
+### Current implementation checkpoint
+The active implementation has now moved beyond placeholder recent-memory selection.
+Current retrieval mode is:
+- local embedding generation via sentence-transformers
+- embedding persistence per `MemoryRecord`
+- application-side cosine similarity over stored vectors
+- retrieval projection into `auxiliary_context_fragments`
+
+This is intentionally a first real semantic retrieval step, not yet the final retrieval architecture.
+It keeps Postgres/SQLite schema stable while deferring vector-extension decisions.
 
 ### First retrieval target
 Only durable memory records.

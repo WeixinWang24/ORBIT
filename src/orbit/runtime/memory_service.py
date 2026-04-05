@@ -13,20 +13,24 @@ from typing import Iterable
 
 from orbit.models import (
     ConversationMessage,
+    MemoryEmbedding,
     MemoryRecord,
     MemoryScope,
     MemorySourceKind,
     MemoryType,
 )
+from orbit.runtime.embedding_service import EmbeddingService, cosine_similarity
 from orbit.runtime.execution.context_assembly import ContextFragment
+from orbit.settings import DEFAULT_MEMORY_RETRIEVAL_TOP_K
 from orbit.store.base import OrbitStore
 
 
 class MemoryService:
     """Provide bounded first-slice memory extraction and retrieval."""
 
-    def __init__(self, *, store: OrbitStore):
+    def __init__(self, *, store: OrbitStore, embedding_service: EmbeddingService | None = None):
         self.store = store
+        self.embedding_service = embedding_service or EmbeddingService()
 
     def capture_turn_memory(
         self,
@@ -71,9 +75,16 @@ class MemoryService:
             },
         )
         self.store.save_memory_record(record)
+        self._upsert_embedding_for_record(record)
         return [record]
 
-    def retrieve_memory_fragments(self, *, session_id: str | None, query_text: str, limit: int = 5) -> list[ContextFragment]:
+    def _upsert_embedding_for_record(self, record: MemoryRecord) -> MemoryEmbedding:
+        """Create and persist the current embedding row for one memory record."""
+        embedding = self.embedding_service.embed_memory_record(record)
+        self.store.save_memory_embedding(embedding)
+        return embedding
+
+    def retrieve_memory_fragments(self, *, session_id: str | None, query_text: str, limit: int = DEFAULT_MEMORY_RETRIEVAL_TOP_K) -> list[ContextFragment]:
         """Return retrieval-oriented context fragments for the current query.
 
         Current first slice uses recent durable memory first, then session memory,
@@ -83,13 +94,36 @@ class MemoryService:
         """
         if not query_text.strip():
             return []
-        records: list[MemoryRecord] = []
-        records.extend(self.store.list_memory_records(scope="durable", limit=limit))
-        if len(records) < limit and session_id is not None:
-            remaining = limit - len(records)
-            records.extend(self.store.list_memory_records(scope="session", session_id=session_id, limit=remaining))
+        candidate_records: list[MemoryRecord] = []
+        candidate_records.extend(self.store.list_memory_records(scope="durable", limit=200))
+        if session_id is not None:
+            candidate_records.extend(self.store.list_memory_records(scope="session", session_id=session_id, limit=200))
+        if not candidate_records:
+            return []
+
+        embedding_by_memory_id: dict[str, MemoryEmbedding] = {}
+        for embedding in self.store.list_memory_embeddings(model_name=self.embedding_service.model_name):
+            embedding_by_memory_id.setdefault(embedding.memory_id, embedding)
+
+        query_vector = self.embedding_service.embed_text(query_text)
+        scored: list[tuple[float, MemoryRecord]] = []
+        for record in candidate_records:
+            embedding = embedding_by_memory_id.get(record.memory_id)
+            if embedding is None:
+                embedding = self._upsert_embedding_for_record(record)
+                embedding_by_memory_id[record.memory_id] = embedding
+            score = cosine_similarity(query_vector, embedding.vector)
+            if score <= 0:
+                continue
+            scored.append((score, record))
+        scored.sort(key=lambda item: item[0], reverse=True)
+
         fragments: list[ContextFragment] = []
-        for record in records[:limit]:
+        seen_memory_ids: set[str] = set()
+        for score, record in scored:
+            if record.memory_id in seen_memory_ids:
+                continue
+            seen_memory_ids.add(record.memory_id)
             fragments.append(
                 ContextFragment(
                     fragment_name=f"memory:{record.memory_type}:{record.memory_id}",
@@ -100,9 +134,13 @@ class MemoryService:
                         "memory_id": record.memory_id,
                         "memory_scope": record.scope,
                         "memory_type": record.memory_type,
-                        "retrieval_mode": "pre_embedding_first_slice",
+                        "retrieval_mode": "local_embedding_cosine_v1",
                         "query_text": query_text,
+                        "score": round(score, 6),
+                        "embedding_model": self.embedding_service.model_name,
                     },
                 )
             )
+            if len(fragments) >= limit:
+                break
         return fragments
