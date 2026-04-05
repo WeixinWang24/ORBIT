@@ -27,6 +27,7 @@ class RetrievalBackendPlan:
     backend: str
     strategy: str
     notes: str
+    capabilities: dict | None = None
 
 
 def default_retrieval_backend_plan() -> RetrievalBackendPlan:
@@ -41,4 +42,5 @@ def default_retrieval_backend_plan() -> RetrievalBackendPlan:
         backend="application",
         strategy="hybrid_embedding_lexical_v1",
         notes="App-side scoring today; explicit adapter seam reserved for future PostgreSQL/pgvector execution.",
+        capabilities=None,
     )

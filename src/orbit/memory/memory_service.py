@@ -191,7 +191,7 @@ class MemoryService:
                 promoted.append(record)
         return promoted
 
-    def probe_memory_retrieval(self, *, session_id: str | None, query_text: str, limit: int = DEFAULT_MEMORY_RETRIEVAL_TOP_K, scope: str = "all", weights_override: MemoryRetrievalWeights | None = None) -> dict:
+    def probe_memory_retrieval(self, *, session_id: str | None, query_text: str, limit: int = DEFAULT_MEMORY_RETRIEVAL_TOP_K, scope: str = "all", weights_override: MemoryRetrievalWeights | None = None, backend_override: str | None = None) -> dict:
         """Return a structured retrieval probe for runtime and inspector use."""
         if not query_text.strip():
             return {"backend_plan": self._current_backend_plan(), "results": []}
@@ -214,7 +214,12 @@ class MemoryService:
                 embedding = self._upsert_embedding_for_record(record)
                 embedding_by_memory_id[record.memory_id] = embedding
         effective_weights = weights_override or self.retrieval_weights
-        scored = self.retrieval_backend.score(
+        retrieval_backend = self.retrieval_backend
+        if backend_override == "application":
+            retrieval_backend = ApplicationMemoryRetrievalBackend()
+        elif backend_override == "postgres":
+            retrieval_backend = PostgresMemoryRetrievalBackend()
+        scored = retrieval_backend.score(
             query_text=query_text,
             query_vector=query_vector,
             records=candidate_records,
@@ -242,13 +247,13 @@ class MemoryService:
                 "salience_bonus": round(scored_item.salience_bonus, 6),
                 "embedding_model": self.embedding_service.model_name,
                 "promotion_strategy": record.metadata.get("promotion_strategy") if isinstance(record.metadata, dict) else None,
-                "retrieval_backend": getattr(self.retrieval_backend, "backend_name", "unknown"),
-                "retrieval_strategy": getattr(self.retrieval_backend, "strategy_name", "unknown"),
+                "retrieval_backend": getattr(retrieval_backend, "backend_name", "unknown"),
+                "retrieval_strategy": getattr(retrieval_backend, "strategy_name", "unknown"),
             })
             if len(results) >= limit:
                 break
         return {
-            "backend_plan": self._current_backend_plan(),
+            "backend_plan": self._current_backend_plan(backend_override=backend_override),
             "results": results,
             "weights": {
                 "semantic_weight": effective_weights.semantic_weight,
@@ -259,18 +264,36 @@ class MemoryService:
             },
         }
 
-    def _current_backend_plan(self):
+    def _current_backend_plan(self, backend_override: str | None = None):
         backend_plan = default_retrieval_backend_plan()
-        backend_plan.backend = getattr(self.retrieval_backend, "backend_name", backend_plan.backend)
-        backend_plan.strategy = getattr(self.retrieval_backend, "strategy_name", backend_plan.strategy)
+        backend_name = backend_override or getattr(self.retrieval_backend, "backend_name", backend_plan.backend)
+        strategy_name = getattr(self.retrieval_backend, "strategy_name", backend_plan.strategy)
+        if backend_override == "application":
+            strategy_name = ApplicationMemoryRetrievalBackend.strategy_name
+        elif backend_override == "postgres":
+            strategy_name = PostgresMemoryRetrievalBackend.strategy_name
+        backend_plan.backend = backend_name
+        backend_plan.strategy = strategy_name
         if backend_plan.backend == "postgres":
             has_connection = hasattr(self.store, "conn")
+            backend_plan.capabilities = {
+                "has_connection": has_connection,
+                "pgvector_checked": False,
+                "pgvector_available": False,
+                "execution_enabled": False,
+            }
             backend_plan.notes = (
-                "Postgres backend selected from store type; current phase keeps this as an explainable stub until pgvector execution is enabled. "
+                "Postgres backend selected from store type or override; current phase keeps this as an explainable stub until pgvector execution is enabled. "
                 + ("Connection object present; pgvector capability not yet probed/used." if has_connection else "No live Postgres connection object exposed for pgvector preflight.")
             )
         else:
-            backend_plan.notes = "Application backend selected from store type; scoring uses weighted semantic + lexical + scope/salience bonuses."
+            backend_plan.capabilities = {
+                "has_connection": hasattr(self.store, "conn"),
+                "pgvector_checked": False,
+                "pgvector_available": False,
+                "execution_enabled": True,
+            }
+            backend_plan.notes = "Application backend selected from store type or override; scoring uses weighted semantic + lexical + scope/salience bonuses."
         return backend_plan
 
     def retrieve_memory_fragments(self, *, session_id: str | None, query_text: str, limit: int = DEFAULT_MEMORY_RETRIEVAL_TOP_K) -> list[ContextFragment]:

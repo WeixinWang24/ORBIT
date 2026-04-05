@@ -268,7 +268,7 @@ def _render_tool_calls_panel(tool_calls: list[dict]) -> str:
     return '<div class="panel-block"><h2 class="section-title">Tool Invocations</h2>' + ''.join(blocks) + '</div>'
 
 
-def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all", retrieval_weights: dict | None = None) -> str:
+def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all", retrieval_weights: dict | None = None, weight_inputs: dict | None = None, backend_override: str = "") -> str:
     records_html = []
     for record in memory_records:
         records_html.append(
@@ -313,22 +313,28 @@ def _render_memory_panel(*, memory_records: list[dict], memory_embeddings: list[
         + f'<option value="durable"{" selected" if memory_scope == "durable" else ""}>durable</option>'
         + f'<option value="session"{" selected" if memory_scope == "session" else ""}>session</option>'
         + '</select></label>'
-        + '<label class="fragment-meta">semantic weight <input name="semantic_weight" value="" placeholder="default" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
-        + '<label class="fragment-meta">lexical weight <input name="lexical_weight" value="" placeholder="default" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
-        + '<label class="fragment-meta">durable boost <input name="durable_boost" value="" placeholder="default" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
-        + '<label class="fragment-meta">session boost <input name="session_boost" value="" placeholder="default" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
-        + '<label class="fragment-meta">salience weight <input name="salience_weight" value="" placeholder="default" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
+        + '<label class="fragment-meta">backend override <select name="memory_backend" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;">'
+        + f'<option value=""{" selected" if not backend_override else ""}>default</option>'
+        + f'<option value="application"{" selected" if backend_override == "application" else ""}>application</option>'
+        + f'<option value="postgres"{" selected" if backend_override == "postgres" else ""}>postgres</option>'
+        + '</select></label>'
+        + f'<label class="fragment-meta">semantic weight <input name="semantic_weight" value="{escape(str((weight_inputs or {}).get("semantic_weight", "")))}" placeholder="default" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
+        + f'<label class="fragment-meta">lexical weight <input name="lexical_weight" value="{escape(str((weight_inputs or {}).get("lexical_weight", "")))}" placeholder="default" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
+        + f'<label class="fragment-meta">durable boost <input name="durable_boost" value="{escape(str((weight_inputs or {}).get("durable_boost", "")))}" placeholder="default" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
+        + f'<label class="fragment-meta">session boost <input name="session_boost" value="{escape(str((weight_inputs or {}).get("session_boost", "")))}" placeholder="default" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
+        + f'<label class="fragment-meta">salience weight <input name="salience_weight" value="{escape(str((weight_inputs or {}).get("salience_weight", "")))}" placeholder="default" style="width:100%; margin-top:4px; background:#121222; color:#BFE8FF; border:1px solid rgba(0,255,198,.18); border-radius:8px; padding:8px;" /></label>'
         + '<button type="submit" style="background:#121222; color:#00FFC6; border:1px solid rgba(0,255,198,.25); border-radius:8px; padding:8px 12px;">Run Probe</button>'
         + '</form>'
         + f'<div class="fragment-meta">query={escape(retrieval_query or "")} · top_k={memory_top_k} · scope={escape(memory_scope)}</div>'
         + (f'<div class="fragment-meta">backend={escape(str((backend_plan or {}).get("backend", "unknown")))} · strategy={escape(str((backend_plan or {}).get("strategy", "unknown")))} · notes={escape(str((backend_plan or {}).get("notes", "")))}</div>' if backend_plan else '')
+        + (f'<div class="fragment-meta">capabilities={escape(json.dumps((backend_plan or {}).get("capabilities", {}), ensure_ascii=False))}</div>' if backend_plan else '')
         + (f'<div class="fragment-meta">weights={escape(json.dumps(retrieval_weights or {}, ensure_ascii=False))}</div>' if retrieval_weights else '')
         + retrieval_html
         + '</div>'
     )
 
 
-def _render_main_panel(*, active_tab: str, transcript_items: list[str], payload_json: str, context_data: dict | None, tool_calls: list[dict], memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all", retrieval_weights: dict | None = None) -> str:
+def _render_main_panel(*, active_tab: str, transcript_items: list[str], payload_json: str, context_data: dict | None, tool_calls: list[dict], memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all", retrieval_weights: dict | None = None, weight_inputs: dict | None = None, backend_override: str = "") -> str:
     if active_tab == "payload":
         return f'<div class="panel-block"><pre>{escape(payload_json)}</pre></div>'
     if active_tab == "context":
@@ -345,11 +351,13 @@ def _render_main_panel(*, active_tab: str, transcript_items: list[str], payload_
             memory_top_k=memory_top_k,
             memory_scope=memory_scope,
             retrieval_weights=retrieval_weights,
+            weight_inputs=weight_inputs,
+            backend_override=backend_override,
         )
     return ''.join(transcript_items)
 
 
-def _html_page(*, sessions, current_session, transcript, events, artifacts, metadata, tool_calls, active_tab: str, memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all", retrieval_weights: dict | None = None):
+def _html_page(*, sessions, current_session, transcript, events, artifacts, metadata, tool_calls, active_tab: str, memory_records: list[dict], memory_embeddings: list[dict], retrieval_query: str, retrieval_results: list[dict], backend_plan: dict | None = None, memory_top_k: int = 10, memory_scope: str = "all", retrieval_weights: dict | None = None, weight_inputs: dict | None = None, backend_override: str = ""):
     def esc(x):
         return escape(str(x))
 
@@ -498,6 +506,8 @@ def _html_page(*, sessions, current_session, transcript, events, artifacts, meta
         memory_top_k=memory_top_k,
         memory_scope=memory_scope,
         retrieval_weights=retrieval_weights,
+        weight_inputs=weight_inputs,
+        backend_override=backend_override,
     )
 
     summary_json = json.dumps(
@@ -617,6 +627,8 @@ class InspectorHandler(BaseHTTPRequestHandler):
             "session_boost": _float_or_none("session_boost"),
             "salience_weight": _float_or_none("salience_weight"),
         }
+        weight_inputs = {key: query.get(key, [""])[0] for key in override_values.keys()}
+        backend_override = query.get("memory_backend", [""])[0].strip()
         weights_override = None
         if any(value is not None for value in override_values.values()):
             weights_override = memory_service.retrieval_weights.__class__(
@@ -633,12 +645,14 @@ class InspectorHandler(BaseHTTPRequestHandler):
             limit=memory_top_k,
             scope=memory_scope,
             weights_override=weights_override,
+            backend_override=backend_override or None,
         )
         backend_plan_obj = probe.get("backend_plan")
         backend_plan = {
             "backend": getattr(backend_plan_obj, "backend", "unknown"),
             "strategy": getattr(backend_plan_obj, "strategy", "unknown"),
             "notes": getattr(backend_plan_obj, "notes", ""),
+            "capabilities": getattr(backend_plan_obj, "capabilities", None),
         }
         retrieval_results = list(probe.get("results", []))
         retrieval_weights = dict(probe.get("weights", {}))
@@ -677,6 +691,8 @@ class InspectorHandler(BaseHTTPRequestHandler):
             memory_top_k=memory_top_k,
             memory_scope=memory_scope,
             retrieval_weights=retrieval_weights,
+            weight_inputs=weight_inputs,
+            backend_override=backend_override,
         ).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
