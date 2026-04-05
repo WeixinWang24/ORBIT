@@ -10,4 +10,8 @@ dependencies:
   - typer
   - rich
   - pip:
+      - torch
+      - transformers
+      - sentence-transformers
+      - huggingface_hub
       - -e .

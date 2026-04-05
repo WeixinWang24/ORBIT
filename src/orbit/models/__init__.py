@@ -3,6 +3,7 @@ from .core import (
     ApprovalRequest,
     ContextArtifact,
     ExecutionEvent,
+    ManagedProcess,
     OrbitBaseModel,
     Run,
     RunStep,
@@ -17,6 +18,13 @@ from .enums import (
     StepType,
     TaskStatus,
     ToolInvocationStatus,
+)
+from .memory import (
+    MemoryEmbedding,
+    MemoryRecord,
+    MemoryScope,
+    MemorySourceKind,
+    MemoryType,
 )
 from .session import (
     ConversationMessage,
@@ -36,6 +44,12 @@ __all__ = [
     "ConversationSession",
     "GovernedToolState",
     "ExecutionEvent",
+    "ManagedProcess",
+    "MemoryEmbedding",
+    "MemoryRecord",
+    "MemoryScope",
+    "MemorySourceKind",
+    "MemoryType",
     "MessageRole",
     "OrbitBaseModel",
     "Run",

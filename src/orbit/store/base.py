@@ -23,6 +23,8 @@ from orbit.models import (
     ConversationSession,
     ExecutionEvent,
     ManagedProcess,
+    MemoryEmbedding,
+    MemoryRecord,
     Run,
     RunStep,
     Task,
@@ -78,6 +80,14 @@ class OrbitStore(ABC):
         """Persist a conversation message record."""
 
     @abstractmethod
+    def save_memory_record(self, record: MemoryRecord) -> None:
+        """Persist a durable or session-scoped memory record."""
+
+    @abstractmethod
+    def save_memory_embedding(self, embedding: MemoryEmbedding) -> None:
+        """Persist a derived embedding row for a memory record."""
+
+    @abstractmethod
     def list_tasks(self) -> list[Task]:
         """Return persisted tasks in a stable listing order."""
 
@@ -96,6 +106,14 @@ class OrbitStore(ABC):
     @abstractmethod
     def list_messages_for_session(self, session_id: str) -> list[ConversationMessage]:
         """Return messages for a session in stable chronological order."""
+
+    @abstractmethod
+    def list_memory_records(self, *, scope: str | None = None, session_id: str | None = None, limit: int | None = None) -> list[MemoryRecord]:
+        """Return memory records in stable retrieval/listing order."""
+
+    @abstractmethod
+    def list_memory_embeddings(self, *, memory_id: str | None = None, model_name: str | None = None) -> list[MemoryEmbedding]:
+        """Return stored embedding rows for memory records."""
 
     @abstractmethod
     def list_events_for_run(self, run_id: str) -> list[ExecutionEvent]:
@@ -144,6 +162,10 @@ class OrbitStore(ABC):
     @abstractmethod
     def get_session(self, session_id: str) -> ConversationSession | None:
         """Return a session by id, or None if it does not exist."""
+
+    @abstractmethod
+    def get_memory_record(self, memory_id: str) -> MemoryRecord | None:
+        """Return a memory record by id, or None if it does not exist."""
 
     @abstractmethod
     def delete_session(self, session_id: str) -> None:

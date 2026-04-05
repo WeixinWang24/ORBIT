@@ -13,6 +13,8 @@ from orbit.models import (
     ConversationSession,
     ExecutionEvent,
     ManagedProcess,
+    MemoryEmbedding,
+    MemoryRecord,
     Run,
     RunStep,
     Task,
@@ -32,6 +34,8 @@ CREATE TABLE IF NOT EXISTS context_artifacts (context_artifact_id TEXT PRIMARY K
 CREATE TABLE IF NOT EXISTS sessions (session_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, updated_at TEXT NOT NULL, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS managed_processes (process_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, updated_at TEXT NOT NULL, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS session_messages (message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS memory_records (memory_id TEXT PRIMARY KEY, scope TEXT NOT NULL, session_id TEXT, updated_at TEXT NOT NULL, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS memory_embeddings (embedding_id TEXT PRIMARY KEY, memory_id TEXT NOT NULL, model_name TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL);
 """
 
 
@@ -96,6 +100,20 @@ class SQLiteStore(OrbitStore):
         self.conn.execute("INSERT OR REPLACE INTO session_messages(message_id, session_id, turn_index, created_at, data) VALUES (?, ?, ?, ?, ?)", (message.message_id, message.session_id, message.turn_index, message.created_at.isoformat(), self._dump(message)))
         self.conn.commit()
 
+    def save_memory_record(self, record: MemoryRecord) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO memory_records(memory_id, scope, session_id, updated_at, data) VALUES (?, ?, ?, ?, ?)",
+            (record.memory_id, str(record.scope), record.session_id, record.updated_at.isoformat(), self._dump(record)),
+        )
+        self.conn.commit()
+
+    def save_memory_embedding(self, embedding: MemoryEmbedding) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO memory_embeddings(embedding_id, memory_id, model_name, created_at, data) VALUES (?, ?, ?, ?, ?)",
+            (embedding.embedding_id, embedding.memory_id, embedding.model_name, embedding.created_at.isoformat(), self._dump(embedding)),
+        )
+        self.conn.commit()
+
     def list_tasks(self) -> list[Task]:
         rows = self.conn.execute("SELECT data FROM tasks ORDER BY rowid ASC").fetchall()
         return [Task.model_validate_json(row["data"]) for row in rows]
@@ -115,6 +133,41 @@ class SQLiteStore(OrbitStore):
     def list_messages_for_session(self, session_id: str) -> list[ConversationMessage]:
         rows = self.conn.execute("SELECT data FROM session_messages WHERE session_id = ? ORDER BY turn_index ASC, created_at ASC, rowid ASC", (session_id,)).fetchall()
         return [ConversationMessage.model_validate_json(row["data"]) for row in rows]
+
+    def list_memory_records(self, *, scope: str | None = None, session_id: str | None = None, limit: int | None = None) -> list[MemoryRecord]:
+        query = "SELECT data FROM memory_records"
+        clauses: list[str] = []
+        params: list[object] = []
+        if scope is not None:
+            clauses.append("scope = ?")
+            params.append(scope)
+        if session_id is not None:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY updated_at DESC, rowid DESC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
+        rows = self.conn.execute(query, tuple(params)).fetchall()
+        return [MemoryRecord.model_validate_json(row["data"]) for row in rows]
+
+    def list_memory_embeddings(self, *, memory_id: str | None = None, model_name: str | None = None) -> list[MemoryEmbedding]:
+        query = "SELECT data FROM memory_embeddings"
+        clauses: list[str] = []
+        params: list[object] = []
+        if memory_id is not None:
+            clauses.append("memory_id = ?")
+            params.append(memory_id)
+        if model_name is not None:
+            clauses.append("model_name = ?")
+            params.append(model_name)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at DESC, rowid DESC"
+        rows = self.conn.execute(query, tuple(params)).fetchall()
+        return [MemoryEmbedding.model_validate_json(row["data"]) for row in rows]
 
     def list_events_for_run(self, run_id: str) -> list[ExecutionEvent]:
         rows = self.conn.execute("SELECT data FROM events WHERE run_id = ? ORDER BY timestamp ASC", (run_id,)).fetchall()
@@ -165,6 +218,10 @@ class SQLiteStore(OrbitStore):
         row = self.conn.execute("SELECT data FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
         return ConversationSession.model_validate_json(row["data"]) if row else None
 
+    def get_memory_record(self, memory_id: str) -> MemoryRecord | None:
+        row = self.conn.execute("SELECT data FROM memory_records WHERE memory_id = ?", (memory_id,)).fetchone()
+        return MemoryRecord.model_validate_json(row["data"]) if row else None
+
     def delete_session(self, session_id: str) -> None:
         session = self.get_session(session_id)
         if session is None:
@@ -203,4 +260,6 @@ class SQLiteStore(OrbitStore):
         self.conn.execute("DELETE FROM tool_invocations")
         self.conn.execute("DELETE FROM approval_decisions")
         self.conn.execute("DELETE FROM approval_requests")
+        self.conn.execute("DELETE FROM memory_embeddings")
+        self.conn.execute("DELETE FROM memory_records")
         self.conn.commit()

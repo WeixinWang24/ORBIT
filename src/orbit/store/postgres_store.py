@@ -17,6 +17,8 @@ from orbit.models import (
     ConversationSession,
     ExecutionEvent,
     ManagedProcess,
+    MemoryEmbedding,
+    MemoryRecord,
     Run,
     RunStep,
     Task,
@@ -36,6 +38,8 @@ CREATE TABLE IF NOT EXISTS context_artifacts (context_artifact_id TEXT PRIMARY K
 CREATE TABLE IF NOT EXISTS sessions (session_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, backend_name TEXT NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, data JSONB NOT NULL);
 CREATE TABLE IF NOT EXISTS managed_processes (process_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, status TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL, data JSONB NOT NULL);
 CREATE TABLE IF NOT EXISTS session_messages (message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, turn_index INTEGER NOT NULL, created_at TIMESTAMPTZ NOT NULL, data JSONB NOT NULL);
+CREATE TABLE IF NOT EXISTS memory_records (memory_id TEXT PRIMARY KEY, scope TEXT NOT NULL, memory_type TEXT NOT NULL, session_id TEXT NULL, updated_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL, data JSONB NOT NULL);
+CREATE TABLE IF NOT EXISTS memory_embeddings (embedding_id TEXT PRIMARY KEY, memory_id TEXT NOT NULL, model_name TEXT NOT NULL, embedding_dim INTEGER NOT NULL, created_at TIMESTAMPTZ NOT NULL, data JSONB NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_runs_task_id ON runs(task_id);
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);
 CREATE INDEX IF NOT EXISTS idx_run_steps_run_id_step_index ON run_steps(run_id, step_index);
@@ -46,6 +50,9 @@ CREATE INDEX IF NOT EXISTS idx_context_artifacts_run_id ON context_artifacts(run
 CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);
 CREATE INDEX IF NOT EXISTS idx_managed_processes_session_updated_at ON managed_processes(session_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_session_messages_session_turn ON session_messages(session_id, turn_index, created_at);
+CREATE INDEX IF NOT EXISTS idx_memory_records_scope_updated_at ON memory_records(scope, updated_at);
+CREATE INDEX IF NOT EXISTS idx_memory_records_session_updated_at ON memory_records(session_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_memory_embeddings_memory_model ON memory_embeddings(memory_id, model_name, created_at);
 """
 
 
@@ -138,6 +145,22 @@ class PostgresStore(OrbitStore):
             cur.execute("INSERT INTO session_messages (message_id, session_id, role, turn_index, created_at, data) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (message_id) DO UPDATE SET session_id = EXCLUDED.session_id, role = EXCLUDED.role, turn_index = EXCLUDED.turn_index, created_at = EXCLUDED.created_at, data = EXCLUDED.data", (message.message_id, message.session_id, message.role, message.turn_index, message.created_at, self._payload(message)))
         self.conn.commit()
 
+    def save_memory_record(self, record: MemoryRecord) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO memory_records (memory_id, scope, memory_type, session_id, updated_at, created_at, data) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (memory_id) DO UPDATE SET scope = EXCLUDED.scope, memory_type = EXCLUDED.memory_type, session_id = EXCLUDED.session_id, updated_at = EXCLUDED.updated_at, created_at = EXCLUDED.created_at, data = EXCLUDED.data",
+                (record.memory_id, record.scope, record.memory_type, record.session_id, record.updated_at, record.created_at, self._payload(record)),
+            )
+        self.conn.commit()
+
+    def save_memory_embedding(self, embedding: MemoryEmbedding) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO memory_embeddings (embedding_id, memory_id, model_name, embedding_dim, created_at, data) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (embedding_id) DO UPDATE SET memory_id = EXCLUDED.memory_id, model_name = EXCLUDED.model_name, embedding_dim = EXCLUDED.embedding_dim, created_at = EXCLUDED.created_at, data = EXCLUDED.data",
+                (embedding.embedding_id, embedding.memory_id, embedding.model_name, embedding.embedding_dim, embedding.created_at, self._payload(embedding)),
+            )
+        self.conn.commit()
+
     def list_tasks(self) -> list[Task]:
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT data FROM tasks ORDER BY created_at ASC")
@@ -162,6 +185,43 @@ class PostgresStore(OrbitStore):
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT data FROM session_messages WHERE session_id = %s ORDER BY turn_index ASC, created_at ASC", (session_id,))
             return [self._read_model(ConversationMessage, row) for row in cur.fetchall()]
+
+    def list_memory_records(self, *, scope: str | None = None, session_id: str | None = None, limit: int | None = None) -> list[MemoryRecord]:
+        query = "SELECT data FROM memory_records"
+        clauses: list[str] = []
+        params: list[object] = []
+        if scope is not None:
+            clauses.append("scope = %s")
+            params.append(scope)
+        if session_id is not None:
+            clauses.append("session_id = %s")
+            params.append(session_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY updated_at DESC, created_at DESC"
+        if limit is not None:
+            query += " LIMIT %s"
+            params.append(limit)
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query, tuple(params))
+            return [self._read_model(MemoryRecord, row) for row in cur.fetchall()]
+
+    def list_memory_embeddings(self, *, memory_id: str | None = None, model_name: str | None = None) -> list[MemoryEmbedding]:
+        query = "SELECT data FROM memory_embeddings"
+        clauses: list[str] = []
+        params: list[object] = []
+        if memory_id is not None:
+            clauses.append("memory_id = %s")
+            params.append(memory_id)
+        if model_name is not None:
+            clauses.append("model_name = %s")
+            params.append(model_name)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at DESC, embedding_id DESC"
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query, tuple(params))
+            return [self._read_model(MemoryEmbedding, row) for row in cur.fetchall()]
 
     def list_events_for_run(self, run_id: str) -> list[ExecutionEvent]:
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -230,6 +290,12 @@ class PostgresStore(OrbitStore):
             row = cur.fetchone()
             return self._read_model(ConversationSession, row) if row else None
 
+    def get_memory_record(self, memory_id: str) -> MemoryRecord | None:
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT data FROM memory_records WHERE memory_id = %s", (memory_id,))
+            row = cur.fetchone()
+            return self._read_model(MemoryRecord, row) if row else None
+
     def delete_session(self, session_id: str) -> None:
         session = self.get_session(session_id)
         if session is None:
@@ -259,4 +325,6 @@ class PostgresStore(OrbitStore):
             cur.execute("DELETE FROM tool_invocations")
             cur.execute("DELETE FROM approval_decisions")
             cur.execute("DELETE FROM approval_requests")
+            cur.execute("DELETE FROM memory_embeddings")
+            cur.execute("DELETE FROM memory_records")
         self.conn.commit()

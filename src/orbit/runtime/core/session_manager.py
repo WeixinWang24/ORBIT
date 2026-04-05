@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from pathlib import Path
 
 from orbit.models import ContextArtifact, ConversationMessage, ConversationSession, ExecutionEvent, GovernedToolState, MessageRole, ToolInvocation, ToolInvocationStatus
 from orbit.models.core import new_id
 from orbit.runtime.core.contracts import RunDescriptor, WorkspaceDescriptor
 from orbit.runtime.core.events import RuntimeEventType
 from orbit.runtime.execution.continuation_context import build_rejection_continuation_context
+from orbit.runtime.memory_service import MemoryService
 from orbit.runtime.governance.tool_approval_policy import PolicyDecision, PolicyEvaluationInput, evaluate_tool_approval_policy
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
 from orbit.runtime.mcp.bootstrap import bootstrap_local_filesystem_mcp_server, bootstrap_local_git_mcp_server
@@ -69,6 +69,9 @@ class SessionManager:
             register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
         if hasattr(self.backend, "tool_registry"):
             self.backend.tool_registry = self.tool_registry
+        self.memory_service = MemoryService(store=self.store)
+        if hasattr(self.backend, "memory_service"):
+            self.backend.memory_service = self.memory_service
 
     def create_session(self, *, backend_name: str, model: str, conversation_id: str | None = None) -> ConversationSession:
         session = ConversationSession(conversation_id=conversation_id or new_id(f"conversation_{backend_name}"), backend_name=backend_name, model=model)
@@ -95,6 +98,31 @@ class SessionManager:
         session.updated_at = datetime.now(timezone.utc)
         self.store.save_session(session)
         return message
+
+    def _capture_memory_after_turn(self, *, session: ConversationSession) -> None:
+        """Persist a bounded first-slice memory summary after a completed turn."""
+        messages = self.list_messages(session.session_id)
+        assistant_message = next((message for message in reversed(messages) if message.role == MessageRole.ASSISTANT and message.content.strip()), None)
+        user_message = None
+        if assistant_message is not None:
+            for message in reversed(messages):
+                if message.created_at <= assistant_message.created_at and message.role == MessageRole.USER and message.content.strip():
+                    user_message = message
+                    break
+        records = self.memory_service.capture_turn_memory(
+            session_id=session.session_id,
+            run_id=session.conversation_id,
+            user_message=user_message,
+            assistant_message=assistant_message,
+        )
+        if records:
+            session.metadata["last_memory_capture"] = {
+                "memory_ids": [record.memory_id for record in records],
+                "captured_at": datetime.now(timezone.utc).isoformat(),
+                "count": len(records),
+            }
+            session.updated_at = datetime.now(timezone.utc)
+            self.store.save_session(session)
 
     def append_context_artifact_for_session(self, *, session_id: str, artifact_type: str, content: str, source: str) -> ContextArtifact | None:
         session = self.get_session(session_id)
@@ -706,6 +734,9 @@ class SessionManager:
                     "used_continuation_bridge": used_continuation_bridge,
                 },
             )
+            refreshed = self.get_session(session.session_id)
+            if refreshed is not None:
+                self._capture_memory_after_turn(session=refreshed)
         elif plan.tool_request is None and plan.final_text:
             self.append_message(
                 session_id=session.session_id,
@@ -713,6 +744,9 @@ class SessionManager:
                 content=plan.final_text,
                 metadata={"source_backend": plan.source_backend, "plan_label": plan.plan_label},
             )
+            refreshed = self.get_session(session.session_id)
+            if refreshed is not None:
+                self._capture_memory_after_turn(session=refreshed)
         elif plan.tool_request is not None:
             decision = self._evaluate_policy_for_plan(
                 session=session,
