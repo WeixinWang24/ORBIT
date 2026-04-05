@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from datetime import datetime, timezone
 from typing import Iterable
 
 from orbit.memory.backend import ApplicationMemoryRetrievalBackend, MemoryRetrievalBackend, PostgresMemoryRetrievalBackend
@@ -262,6 +263,13 @@ class MemoryService:
                 "session_boost": effective_weights.session_boost,
                 "salience_weight": effective_weights.salience_weight,
             },
+            "snapshot": {
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "query_text": query_text,
+                "scope": scope,
+                "limit": limit,
+                "backend_override": backend_override,
+            },
         }
 
     def _current_backend_plan(self, backend_override: str | None = None):
@@ -276,15 +284,34 @@ class MemoryService:
         backend_plan.strategy = strategy_name
         if backend_plan.backend == "postgres":
             has_connection = hasattr(self.store, "conn")
+            pgvector_checked = False
+            pgvector_available = False
+            if has_connection:
+                try:
+                    with self.store.conn.cursor() as cur:
+                        cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector' LIMIT 1")
+                        pgvector_available = cur.fetchone() is not None
+                        pgvector_checked = True
+                except Exception:
+                    pgvector_checked = True
+                    pgvector_available = False
             backend_plan.capabilities = {
                 "has_connection": has_connection,
-                "pgvector_checked": False,
-                "pgvector_available": False,
+                "pgvector_checked": pgvector_checked,
+                "pgvector_available": pgvector_available,
                 "execution_enabled": False,
             }
             backend_plan.notes = (
                 "Postgres backend selected from store type or override; current phase keeps this as an explainable stub until pgvector execution is enabled. "
-                + ("Connection object present; pgvector capability not yet probed/used." if has_connection else "No live Postgres connection object exposed for pgvector preflight.")
+                + (
+                    "pgvector extension detected, but SQL execution path is not enabled yet."
+                    if pgvector_available
+                    else (
+                        "Connection object present; pgvector extension not detected or probe failed."
+                        if has_connection
+                        else "No live Postgres connection object exposed for pgvector preflight."
+                    )
+                )
             )
         else:
             backend_plan.capabilities = {
