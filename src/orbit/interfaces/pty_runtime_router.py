@@ -268,7 +268,7 @@ def route_slash_command(state: RuntimeShellState, adapter: RuntimeCliAdapter, te
     if command == "/chat":
         activate_chat(state)
         return
-    if command == "/inspect":
+    if command in {"/i", "/inspect"}:
         activate_inspect(state, INSPECT_TRANSCRIPT_TAB)
         return
     if command == "/events":
