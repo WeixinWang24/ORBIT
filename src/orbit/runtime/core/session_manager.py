@@ -14,7 +14,9 @@ from orbit.runtime.core.events import RuntimeEventType
 from orbit.runtime.execution.continuation_context import build_rejection_continuation_context
 from orbit.runtime.governance.tool_approval_policy import PolicyDecision, PolicyEvaluationInput, evaluate_tool_approval_policy
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
-from orbit.runtime.mcp.bootstrap import bootstrap_local_filesystem_mcp_server
+from orbit.runtime.mcp.bootstrap import bootstrap_local_filesystem_mcp_server, bootstrap_local_git_mcp_server
+from orbit.runtime.mcp.bash_bootstrap import bootstrap_local_bash_mcp_server
+from orbit.runtime.mcp.process_bootstrap import bootstrap_local_process_mcp_server
 from orbit.runtime.mcp.governance import resolve_filesystem_mcp_target_path
 from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
 from orbit.runtime.auth.storage.openai_store import OpenAIAuthStoreError
@@ -38,13 +40,32 @@ class SessionManager:
     phase rather than a full reuse of run-oriented approval persistence.
     """
 
-    def __init__(self, *, store: OrbitStore, backend, workspace_root: str, enable_mcp_filesystem: bool = False):
+    def __init__(
+        self,
+        *,
+        store: OrbitStore,
+        backend,
+        workspace_root: str,
+        enable_mcp_filesystem: bool = False,
+        enable_mcp_git: bool = False,
+        enable_mcp_bash: bool = False,
+        enable_mcp_process: bool = False,
+    ):
         self.store = store
         self.backend = backend
         self.workspace_root = workspace_root
         self.tool_registry = ToolRegistry(Path(workspace_root))
         if enable_mcp_filesystem:
             bootstrap = bootstrap_local_filesystem_mcp_server(workspace_root=workspace_root)
+            register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
+        if enable_mcp_git:
+            bootstrap = bootstrap_local_git_mcp_server(workspace_root=workspace_root)
+            register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
+        if enable_mcp_bash:
+            bootstrap = bootstrap_local_bash_mcp_server(workspace_root=workspace_root)
+            register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
+        if enable_mcp_process:
+            bootstrap = bootstrap_local_process_mcp_server(workspace_root=workspace_root)
             register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
         if hasattr(self.backend, "tool_registry"):
             self.backend.tool_registry = self.tool_registry

@@ -28,11 +28,12 @@ class RuntimeAdapterConfig:
     model: str = "gpt-5.4"
     enable_tools: bool = True
     enable_mcp_filesystem: bool = True
+    enable_mcp_git: bool = True
     enable_mcp_bash: bool = True
     enable_mcp_process: bool = True
 
 
-def build_codex_session_manager(*, model: str, enable_tools: bool = False, enable_mcp_filesystem: bool = False, enable_mcp_bash: bool = False, enable_mcp_process: bool = False) -> SessionManager:
+def build_codex_session_manager(*, model: str, enable_tools: bool = False, enable_mcp_filesystem: bool = False, enable_mcp_git: bool = False, enable_mcp_bash: bool = False, enable_mcp_process: bool = False) -> SessionManager:
     backend = OpenAICodexExecutionBackend(
         config=OpenAICodexConfig(model=model, enable_tools=enable_tools),
         repo_root=REPO_ROOT,
@@ -43,6 +44,9 @@ def build_codex_session_manager(*, model: str, enable_tools: bool = False, enabl
         backend=backend,
         workspace_root=str(DEFAULT_WORKSPACE_ROOT),
         enable_mcp_filesystem=enable_mcp_filesystem,
+        enable_mcp_git=enable_mcp_git,
+        enable_mcp_bash=enable_mcp_bash,
+        enable_mcp_process=enable_mcp_process,
     )
 
 
@@ -86,6 +90,7 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             model=config.model,
             enable_tools=config.enable_tools,
             enable_mcp_filesystem=config.enable_mcp_filesystem,
+            enable_mcp_git=config.enable_mcp_git,
             enable_mcp_bash=config.enable_mcp_bash,
             enable_mcp_process=config.enable_mcp_process,
         )
