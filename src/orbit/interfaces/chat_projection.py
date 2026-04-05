@@ -29,7 +29,20 @@ def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy:
         label = msg.role.upper() if not msg.message_kind else f"{msg.role.upper()} [{msg.message_kind}]"
         color = accent_user if msg.role == "user" else accent_assistant if msg.role == "assistant" else accent_warning
         body.append(color + label + T.RESET)
-        wrapped = wrap_display_text(msg.content, max(20, width - 4))
+        if msg.message_kind == "tool_result":
+            tool_name = None
+            tool_ok = None
+            if isinstance(msg.metadata, dict):
+                tool_name = msg.metadata.get("tool_name")
+                tool_ok = msg.metadata.get("tool_ok")
+            summary = f"tool={tool_name or 'unknown'}"
+            if tool_ok is True:
+                summary += " status=ok"
+            elif tool_ok is False:
+                summary += " status=error"
+            wrapped = wrap_display_text(summary, max(20, width - 4))
+        else:
+            wrapped = wrap_display_text(msg.content, max(20, width - 4))
         for ln in wrapped:
             body.append("  " + ln)
         body.append("")

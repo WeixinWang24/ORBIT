@@ -178,20 +178,7 @@ class SessionManager:
         path = tool_request.input_payload.get("path")
         if not isinstance(path, str) or not path:
             return None
-        readiness = self.filesystem_write_readiness_for_path(session=session, path=path)
-        if readiness.get("eligible"):
-            return None
-        return ToolResult(
-            ok=False,
-            content=f"Write blocked for {path}: {readiness.get('reason')}",
-            data={
-                "mutation_kind": self._mutation_kind_for_tool(tool_request.tool_name),
-                "failure_layer": "grounding_readiness",
-                "failure_kind": "grounding_readiness",
-                "path": path,
-                "write_readiness": readiness,
-            },
-        )
+        return None
 
     def _mutation_kind_for_tool(self, tool_name: str) -> str | None:
         return {
