@@ -86,6 +86,14 @@ _PYTEST_SYSTEM_ENVIRONMENT_TOOLS = {
     "run_pytest_structured",
 }
 
+_RUFF_SYSTEM_ENVIRONMENT_TOOLS = {
+    "run_ruff_structured",
+}
+
+_MYPY_SYSTEM_ENVIRONMENT_TOOLS = {
+    "run_mypy_structured",
+}
+
 _BROWSER_SYSTEM_ENVIRONMENT_TOOLS = {
     "browser_open",
     "browser_snapshot",
@@ -93,6 +101,13 @@ _BROWSER_SYSTEM_ENVIRONMENT_TOOLS = {
     "browser_type",
     "browser_console",
     "browser_screenshot",
+}
+
+_OBSIDIAN_SYSTEM_ENVIRONMENT_TOOLS = {
+    "obsidian_list_notes",
+    "obsidian_read_note",
+    "obsidian_search_notes",
+    "obsidian_get_note_links",
 }
 
 
@@ -163,6 +178,24 @@ def resolve_mcp_tool_governance(*, server_name: str, original_tool_name: str) ->
                 "environment_check_kind": "none",
             }
 
+    if server == "ruff":
+        if tool in _RUFF_SYSTEM_ENVIRONMENT_TOOLS:
+            return {
+                "side_effect_class": "safe",
+                "requires_approval": False,
+                "governance_policy_group": "system_environment",
+                "environment_check_kind": "none",
+            }
+
+    if server == "mypy":
+        if tool in _MYPY_SYSTEM_ENVIRONMENT_TOOLS:
+            return {
+                "side_effect_class": "safe",
+                "requires_approval": False,
+                "governance_policy_group": "system_environment",
+                "environment_check_kind": "none",
+            }
+
     if server == "browser":
         if tool in _BROWSER_SYSTEM_ENVIRONMENT_TOOLS:
             return {
@@ -185,6 +218,15 @@ def resolve_mcp_tool_governance(*, server_name: str, original_tool_name: str) ->
                 "side_effect_class": "write",
                 "requires_approval": True,
                 "governance_policy_group": "permission_authority",
+                "environment_check_kind": "none",
+            }
+
+    if server == "obsidian":
+        if tool in _OBSIDIAN_SYSTEM_ENVIRONMENT_TOOLS:
+            return {
+                "side_effect_class": "safe",
+                "requires_approval": False,
+                "governance_policy_group": "system_environment",
                 "environment_check_kind": "none",
             }
 

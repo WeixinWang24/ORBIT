@@ -2,10 +2,35 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from orbit.runtime.mcp.models import McpClientBootstrap, McpStdioServerConfig
+from orbit.runtime.mcp.models import McpCapabilityMetadata, McpClientBootstrap, McpStdioServerConfig
 from orbit.runtime.mcp.naming import normalize_name_for_mcp
 
 ORBIT_CONDA_PYTHON = Path("/Users/visen24/anaconda3/envs/Orbit/bin/python")
+
+# ---------------------------------------------------------------------------
+# Capability metadata declarations for filesystem and git families.
+# Defined here because both are bootstrapped from this module.
+# ---------------------------------------------------------------------------
+
+_FILESYSTEM_CAPABILITY_METADATA = McpCapabilityMetadata(
+    capability_family="filesystem",
+    # stateless: the server process is ephemeral; each call spawns a fresh instance.
+    # The workspace root is injected via env var at startup time (configuration, not
+    # live session state). Truth comes from the underlying filesystem, not from any
+    # session record maintained by the server. transport_importance is irrelevant.
+    continuity_type="stateless",
+    truth_source="filesystem_or_repo_truth",
+    layer_role="substrate",
+    transport_importance="irrelevant",
+)
+
+_GIT_CAPABILITY_METADATA = McpCapabilityMetadata(
+    capability_family="git",
+    continuity_type="stateless",
+    truth_source="filesystem_or_repo_truth",
+    layer_role="access_support",
+    transport_importance="irrelevant",
+)
 
 
 def bootstrap_stdio_mcp_server(config: McpStdioServerConfig) -> McpClientBootstrap:
@@ -17,6 +42,8 @@ def bootstrap_stdio_mcp_server(config: McpStdioServerConfig) -> McpClientBootstr
         command=config.command,
         args=list(config.args),
         env=dict(config.env),
+        continuity_mode=config.continuity_mode,
+        capability_metadata=config.capability_metadata,
     )
 
 
@@ -31,6 +58,8 @@ def bootstrap_local_filesystem_mcp_server(*, workspace_root: str, max_read_bytes
         command=str(ORBIT_CONDA_PYTHON),
         args=["-m", "mcp_servers.system.core.filesystem.stdio_server"],
         env=env,
+        continuity_mode="stateless",
+        capability_metadata=_FILESYSTEM_CAPABILITY_METADATA,
     )
     return bootstrap_stdio_mcp_server(config)
 
@@ -42,5 +71,27 @@ def bootstrap_local_git_mcp_server(*, workspace_root: str) -> McpClientBootstrap
         command=str(ORBIT_CONDA_PYTHON),
         args=["-m", "mcp_servers.system.core.git.stdio_server"],
         env=env,
+        continuity_mode="stateless",
+        capability_metadata=_GIT_CAPABILITY_METADATA,
+    )
+    return bootstrap_stdio_mcp_server(config)
+
+
+def bootstrap_local_obsidian_mcp_server(*, vault_root: str, max_read_chars: int | None = None, max_results: int | None = None) -> McpClientBootstrap:
+    env = {"ORBIT_OBSIDIAN_VAULT_ROOT": vault_root}
+    if max_read_chars is not None:
+        env["ORBIT_OBSIDIAN_MAX_READ_CHARS"] = str(max_read_chars)
+    if max_results is not None:
+        env["ORBIT_OBSIDIAN_MAX_RESULTS"] = str(max_results)
+    config = McpStdioServerConfig(
+        name="obsidian",
+        command=str(ORBIT_CONDA_PYTHON),
+        args=["-m", "mcp_servers.system.core.obsidian.stdio_server"],
+        env=env,
+        continuity_mode="stateless",
+        # TODO(capability-metadata): capability_metadata intentionally omitted for the
+        # first slice. Obsidian is not in McpCapabilityFamily yet; it would need a family
+        # classification (e.g., "knowledge_base") and posture declaration before metadata
+        # can be added here. Leaving None is explicit and searchable.
     )
     return bootstrap_stdio_mcp_server(config)

@@ -6,6 +6,7 @@ import json
 import sys
 import time
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 
 _SESSION_MANAGER_IMPORT_TIMINGS: dict[str, float] = {}
@@ -38,6 +39,8 @@ _SESSION_MANAGER_IMPORT_TIMINGS['mcp_bootstrap_ms'] = 'deferred'
 _SESSION_MANAGER_IMPORT_TIMINGS['mcp_bash_bootstrap_ms'] = 'deferred'
 _SESSION_MANAGER_IMPORT_TIMINGS['mcp_process_bootstrap_ms'] = 'deferred'
 _SESSION_MANAGER_IMPORT_TIMINGS['mcp_pytest_bootstrap_ms'] = 'deferred'
+_SESSION_MANAGER_IMPORT_TIMINGS['mcp_ruff_bootstrap_ms'] = 'deferred'
+_SESSION_MANAGER_IMPORT_TIMINGS['mcp_mypy_bootstrap_ms'] = 'deferred'
 _SESSION_MANAGER_IMPORT_TIMINGS['mcp_browser_bootstrap_ms'] = 'deferred'
 _SESSION_MANAGER_IMPORT_TIMINGS['mcp_governance_ms'] = 'deferred'
 _SESSION_MANAGER_IMPORT_TIMINGS['mcp_registry_loader_ms'] = 'deferred'
@@ -57,6 +60,12 @@ SESSION_MANAGER_IMPORT_PROFILE_TIMINGS = dict(_SESSION_MANAGER_IMPORT_TIMINGS)
 
 
 class SessionManager:
+    def _obsidian_vault_root(self) -> str:
+        configured = os.environ.get("ORBIT_OBSIDIAN_VAULT_ROOT", "").strip()
+        if configured:
+            return configured
+        return "/Volumes/2TB/MAS/vio_vault"
+
     def _record_timing(self, key: str, started_at: float) -> None:
         timings = self.metadata.setdefault('session_manager_profile_timings', {}) if isinstance(getattr(self, 'metadata', None), dict) else {}
         timings[key] = round((time.perf_counter() - started_at) * 1000, 2)
@@ -139,6 +148,45 @@ class SessionManager:
         self._record_timing('mcp_browser_ms', t)
         self._mcp_browser_mounted = True
 
+    def _mount_mcp_ruff(self) -> None:
+        if getattr(self, '_mcp_ruff_mounted', False):
+            return
+        t = time.perf_counter()
+        from orbit.runtime.mcp.ruff_bootstrap import bootstrap_local_ruff_mcp_server
+        self._record_timing('mcp_ruff_import_deferred_ms', t)
+        t = time.perf_counter()
+        bootstrap = bootstrap_local_ruff_mcp_server(workspace_root=self.workspace_root)
+        from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
+        register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
+        self._record_timing('mcp_ruff_ms', t)
+        self._mcp_ruff_mounted = True
+
+    def _mount_mcp_mypy(self) -> None:
+        if getattr(self, '_mcp_mypy_mounted', False):
+            return
+        t = time.perf_counter()
+        from orbit.runtime.mcp.mypy_bootstrap import bootstrap_local_mypy_mcp_server
+        self._record_timing('mcp_mypy_import_deferred_ms', t)
+        t = time.perf_counter()
+        bootstrap = bootstrap_local_mypy_mcp_server(workspace_root=self.workspace_root)
+        from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
+        register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
+        self._record_timing('mcp_mypy_ms', t)
+        self._mcp_mypy_mounted = True
+
+    def _mount_mcp_obsidian(self) -> None:
+        if getattr(self, '_mcp_obsidian_mounted', False):
+            return
+        t = time.perf_counter()
+        from orbit.runtime.mcp.bootstrap import bootstrap_local_obsidian_mcp_server
+        self._record_timing('mcp_obsidian_import_deferred_ms', t)
+        t = time.perf_counter()
+        bootstrap = bootstrap_local_obsidian_mcp_server(vault_root=self._obsidian_vault_root())
+        from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
+        register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
+        self._record_timing('mcp_obsidian_ms', t)
+        self._mcp_obsidian_mounted = True
+
     def _enable_memory_runtime(self) -> None:
         if self.memory_service is not None:
             return
@@ -182,7 +230,10 @@ class SessionManager:
         enable_mcp_bash: bool = False,
         enable_mcp_process: bool = False,
         enable_mcp_pytest: bool = False,
+        enable_mcp_ruff: bool = False,
+        enable_mcp_mypy: bool = False,
         enable_mcp_browser: bool = False,
+        enable_mcp_obsidian: bool = False,
         enable_memory: bool = False,
     ):
         t0 = time.perf_counter()
@@ -207,8 +258,14 @@ class SessionManager:
             self._mount_mcp_process()
         if enable_mcp_pytest:
             self._mount_mcp_pytest()
+        if enable_mcp_ruff:
+            self._mount_mcp_ruff()
+        if enable_mcp_mypy:
+            self._mount_mcp_mypy()
         if enable_mcp_browser:
             self._mount_mcp_browser()
+        if enable_mcp_obsidian:
+            self._mount_mcp_obsidian()
         if hasattr(self.backend, "tool_registry"):
             t = time.perf_counter()
             self.backend.tool_registry = self.tool_registry
@@ -321,6 +378,265 @@ class SessionManager:
         self.store.save_event(event)
         return event
 
+    # ── Self-change plan lifecycle ────────────────────────────────────────────
+
+    def _require_evo_mode(self, operation: str) -> None:
+        if self.runtime_mode != "evo":
+            raise ValueError(
+                f"{operation} requires evo mode (current mode: {self.runtime_mode})"
+            )
+
+    def _save_self_change_plan_artifact(self, session_id: str, plan) -> None:
+        from orbit.models.builds import SelfChangePlan
+        self.append_context_artifact_for_session(
+            session_id=session_id,
+            artifact_type="self_change_plan",
+            content=plan.model_dump_json(indent=2),
+            source="self_change_lifecycle",
+        )
+
+    def _update_session_self_change_summary(self, session: ConversationSession, plan) -> None:
+        session.metadata["self_change"] = {
+            "active_plan_id": plan.plan_id if plan.status in {"planned", "approved", "active"} else None,
+            "last_plan": {
+                "plan_id": plan.plan_id,
+                "title": plan.title,
+                "status": plan.status,
+                "updated_at": plan.updated_at.isoformat(),
+            },
+        }
+        session.updated_at = datetime.now(timezone.utc)
+        self.store.save_session(session)
+
+    def create_self_change_plan(
+        self,
+        *,
+        session_id: str,
+        title: str,
+        description: str,
+        metadata: dict | None = None,
+    ):
+        from orbit.models.builds import SelfChangePlan
+        self._require_evo_mode("create_self_change_plan")
+        session = self.get_session(session_id)
+        if session is None:
+            raise ValueError(f"session not found: {session_id}")
+        plan = SelfChangePlan(
+            session_id=session_id,
+            title=title,
+            description=description,
+            metadata=metadata or {},
+        )
+        self._save_self_change_plan_artifact(session_id, plan)
+        event = ExecutionEvent(
+            run_id=session.conversation_id,
+            event_type="self_change_plan_created",
+            payload={"plan_id": plan.plan_id, "title": plan.title, "status": plan.status},
+        )
+        self.store.save_event(event)
+        self._update_session_self_change_summary(session, plan)
+        return plan
+
+    def get_active_self_change_plan(self, *, session_id: str):
+        session = self.get_session(session_id)
+        if session is None:
+            return None
+        sc = session.metadata.get("self_change", {}) if isinstance(session.metadata, dict) else {}
+        return sc.get("active_plan_id")
+
+    def update_self_change_plan_status(
+        self,
+        *,
+        session_id: str,
+        plan,
+        status: str,
+    ):
+        self._require_evo_mode("update_self_change_plan_status")
+        _VALID_PLAN_STATUSES = {"planned", "approved", "active", "blocked", "completed", "abandoned", "superseded"}
+        if status not in _VALID_PLAN_STATUSES:
+            raise ValueError(f"invalid self_change_plan status: {status!r}")
+        session = self.get_session(session_id)
+        if session is None:
+            raise ValueError(f"session not found: {session_id}")
+        updated = plan.with_status(status)
+        self._save_self_change_plan_artifact(session_id, updated)
+        event = ExecutionEvent(
+            run_id=session.conversation_id,
+            event_type="self_change_plan_status_changed",
+            payload={"plan_id": updated.plan_id, "old_status": plan.status, "new_status": status},
+        )
+        self.store.save_event(event)
+        self._update_session_self_change_summary(session, updated)
+        return updated
+
+    def has_active_evo_self_change(self, *, session_id: str) -> bool:
+        if self.runtime_mode != "evo":
+            return False
+        active = self.get_active_self_change_plan(session_id=session_id)
+        return active is not None
+
+    # ── Build record lifecycle ────────────────────────────────────────────────
+
+    def _save_build_record_artifact(self, session_id: str, record) -> None:
+        self.append_context_artifact_for_session(
+            session_id=session_id,
+            artifact_type="build_record",
+            content=record.model_dump_json(indent=2),
+            source="build_lifecycle",
+        )
+
+    def _update_session_build_summary(self, session: ConversationSession, record) -> None:
+        session.metadata["build_management"] = {
+            "active_build_id": record.build_id if record.status in {"planned", "validating"} else None,
+            "last_build": {
+                "build_id": record.build_id,
+                "status": record.status,
+                "summary": record.summary,
+                "updated_at": record.updated_at.isoformat(),
+            },
+        }
+        session.updated_at = datetime.now(timezone.utc)
+        self.store.save_session(session)
+
+    def create_build_record(
+        self,
+        *,
+        session_id: str,
+        linked_plan_id: str | None = None,
+        summary: str = "",
+        metadata: dict | None = None,
+    ):
+        from orbit.models.builds import BuildRecord
+        self._require_evo_mode("create_build_record")
+        session = self.get_session(session_id)
+        if session is None:
+            raise ValueError(f"session not found: {session_id}")
+        record = BuildRecord(
+            session_id=session_id,
+            linked_plan_id=linked_plan_id,
+            summary=summary,
+            metadata=metadata or {},
+        )
+        self._save_build_record_artifact(session_id, record)
+        event = ExecutionEvent(
+            run_id=session.conversation_id,
+            event_type="build_record_created",
+            payload={"build_id": record.build_id, "linked_plan_id": linked_plan_id, "status": record.status},
+        )
+        self.store.save_event(event)
+        self._update_session_build_summary(session, record)
+        return record
+
+    def get_active_build_record(self, *, session_id: str) -> str | None:
+        session = self.get_session(session_id)
+        if session is None:
+            return None
+        bm = session.metadata.get("build_management", {}) if isinstance(session.metadata, dict) else {}
+        return bm.get("active_build_id")
+
+    def start_build_validation(self, *, session_id: str, record):
+        self._require_evo_mode("start_build_validation")
+        if record.status != "planned":
+            raise ValueError(
+                f"cannot start validation for build record in status {record.status!r} (expected 'planned')"
+            )
+        session = self.get_session(session_id)
+        if session is None:
+            raise ValueError(f"session not found: {session_id}")
+        updated = record.with_status("validating")
+        self._save_build_record_artifact(session_id, updated)
+        event = ExecutionEvent(
+            run_id=session.conversation_id,
+            event_type="build_validation_started",
+            payload={"build_id": updated.build_id},
+        )
+        self.store.save_event(event)
+        self._update_session_build_summary(session, updated)
+        return updated
+
+    def append_build_validation_step(
+        self,
+        *,
+        session_id: str,
+        record,
+        step_name: str,
+        status: str,
+        output: str = "",
+    ):
+        self._require_evo_mode("append_build_validation_step")
+        from orbit.models.builds import ValidationStep
+        session = self.get_session(session_id)
+        if session is None:
+            raise ValueError(f"session not found: {session_id}")
+        step = ValidationStep(step_name=step_name, status=status, output=output)  # type: ignore[arg-type]
+        updated = record.with_validation_step(step)
+        event = ExecutionEvent(
+            run_id=session.conversation_id,
+            event_type="build_validation_step_appended",
+            payload={"build_id": updated.build_id, "step_name": step_name, "status": status},
+        )
+        self.store.save_event(event)
+        self._update_session_build_summary(session, updated)
+        return updated
+
+    def finalize_build_record(
+        self,
+        *,
+        session_id: str,
+        record,
+        verdict: str,
+        summary: str = "",
+    ):
+        self._require_evo_mode("finalize_build_record")
+        if verdict not in {"passed", "failed", "blocked"}:
+            raise ValueError(f"invalid build verdict: {verdict!r}")
+        if record.status not in {"planned", "validating"}:
+            raise ValueError(
+                f"cannot finalize build record in status {record.status!r} (expected 'planned' or 'validating')"
+            )
+        session = self.get_session(session_id)
+        if session is None:
+            raise ValueError(f"session not found: {session_id}")
+        now = datetime.now(timezone.utc)
+        updated = record.model_copy(update={
+            "status": verdict,
+            "summary": summary or record.summary,
+            "finalized_at": now,
+            "updated_at": now,
+        })
+        self._save_build_record_artifact(session_id, updated)
+        event = ExecutionEvent(
+            run_id=session.conversation_id,
+            event_type="build_record_finalized",
+            payload={"build_id": updated.build_id, "verdict": verdict, "summary": summary},
+        )
+        self.store.save_event(event)
+        self._update_session_build_summary(session, updated)
+        return updated
+
+    def mark_build_rolled_back(self, *, session_id: str, record):
+        self._require_evo_mode("mark_build_rolled_back")
+        if record.status == "rolled_back":
+            raise ValueError("build record is already rolled_back")
+        session = self.get_session(session_id)
+        if session is None:
+            raise ValueError(f"session not found: {session_id}")
+        now = datetime.now(timezone.utc)
+        updated = record.model_copy(update={
+            "status": "rolled_back",
+            "rolled_back_at": now,
+            "updated_at": now,
+        })
+        self._save_build_record_artifact(session_id, updated)
+        event = ExecutionEvent(
+            run_id=session.conversation_id,
+            event_type="build_record_rolled_back",
+            payload={"build_id": updated.build_id},
+        )
+        self.store.save_event(event)
+        self._update_session_build_summary(session, updated)
+        return updated
+
     def _consume_pending_turn_snapshots(self, session: ConversationSession) -> None:
         metadata = session.metadata if isinstance(session.metadata, dict) else {}
         context_snapshot = metadata.pop("_pending_context_assembly", None)
@@ -354,7 +670,22 @@ class SessionManager:
         if write_gate_result is not None:
             return write_gate_result
         tool = self.tool_registry.get(tool_request.tool_name)
-        return tool.invoke(**tool_request.input_payload)
+        input_payload = dict(tool_request.input_payload)
+        if (
+            session is not None
+            and getattr(tool, "tool_source", None) == "mcp"
+            and getattr(tool, "server_name", None) == "process"
+            and getattr(tool, "original_name", None) == "start_process"
+        ):
+            # Unconditionally overwrite session_id with the runtime session value.
+            # This is the authoritative link between a spawned process and the owning session:
+            # it enables session-scoped process listing and prevents cross-session handle leaks.
+            # The model must not supply session_id; any caller-supplied value is discarded here.
+            # Intentionally NOT guarded on 'not input_payload.get("session_id")': a permissive
+            # guard would allow a model-supplied or planner-injected session_id to bypass this,
+            # anchoring a process under a foreign session (prompt-injection vector).
+            input_payload["session_id"] = session.session_id
+        return tool.invoke(**input_payload)
 
     def maybe_block_write_for_grounding(self, *, session: ConversationSession | None, tool_request: ToolRequest) -> ToolResult | None:
         if session is None or tool_request.tool_name not in {"native__write_file", "native__replace_in_file", "native__replace_all_in_file", "native__replace_block_in_file", "native__apply_exact_hunk", "replace_in_file", "apply_unified_patch"}:

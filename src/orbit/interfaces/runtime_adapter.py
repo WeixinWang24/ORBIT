@@ -16,7 +16,7 @@ _t = time.perf_counter()
 from orbit.runtime.governance.build_state_store import BuildStateStore
 _MODULE_IMPORT_TIMINGS['build_state_store_ms'] = round((time.perf_counter() - _t) * 1000, 2)
 _t = time.perf_counter()
-from orbit.runtime.governance.protocol.mode import RuntimeMode, mode_policy_summary, workspace_root_for_runtime_mode
+from orbit.runtime.governance.protocol.mode import RuntimeMode, build_policy_profile_for_mode, mode_policy_summary, workspace_root_for_runtime_mode
 _MODULE_IMPORT_TIMINGS['mode_protocol_ms'] = round((time.perf_counter() - _t) * 1000, 2)
 _t = time.perf_counter()
 from orbit.runtime.auth.storage.openai_store import OpenAIAuthStoreError
@@ -54,11 +54,14 @@ class RuntimeAdapterConfig:
     enable_mcp_bash: bool = False
     enable_mcp_process: bool = False
     enable_mcp_pytest: bool = False
+    enable_mcp_ruff: bool = False
+    enable_mcp_mypy: bool = False
     enable_mcp_browser: bool = False
+    enable_mcp_obsidian: bool = False
     enable_memory: bool = False
 
 
-def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev", enable_tools: bool = True, enable_mcp_filesystem: bool = False, enable_mcp_git: bool = False, enable_mcp_bash: bool = False, enable_mcp_process: bool = False, enable_mcp_pytest: bool = False, enable_mcp_browser: bool = False, enable_memory: bool = False) -> SessionManager:
+def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev", enable_tools: bool = True, enable_mcp_filesystem: bool = False, enable_mcp_git: bool = False, enable_mcp_bash: bool = False, enable_mcp_process: bool = False, enable_mcp_pytest: bool = False, enable_mcp_ruff: bool = False, enable_mcp_mypy: bool = False, enable_mcp_browser: bool = False, enable_mcp_obsidian: bool = False, enable_memory: bool = False) -> SessionManager:
     t0 = time.perf_counter()
     workspace_root = workspace_root_for_runtime_mode(runtime_mode)
     t1 = time.perf_counter()
@@ -78,9 +81,14 @@ def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev"
         enable_mcp_bash=enable_mcp_bash,
         enable_mcp_process=enable_mcp_process,
         enable_mcp_pytest=enable_mcp_pytest,
+        enable_mcp_ruff=enable_mcp_ruff,
+        enable_mcp_mypy=enable_mcp_mypy,
         enable_mcp_browser=enable_mcp_browser,
+        enable_mcp_obsidian=enable_mcp_obsidian,
         enable_memory=enable_memory,
     )
+    if hasattr(backend, "session_manager"):
+        backend.session_manager = manager
     t3 = time.perf_counter()
     manager.metadata = {
         **getattr(manager, 'metadata', {}),
@@ -148,8 +156,20 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         timings['warmup_pytest_ms'] = round((time.perf_counter() - step) * 1000, 2)
 
         step = time.perf_counter()
+        manager._mount_mcp_ruff()
+        timings['warmup_ruff_ms'] = round((time.perf_counter() - step) * 1000, 2)
+
+        step = time.perf_counter()
+        manager._mount_mcp_mypy()
+        timings['warmup_mypy_ms'] = round((time.perf_counter() - step) * 1000, 2)
+
+        step = time.perf_counter()
         manager._mount_mcp_browser()
         timings['warmup_browser_ms'] = round((time.perf_counter() - step) * 1000, 2)
+
+        step = time.perf_counter()
+        manager._mount_mcp_obsidian()
+        timings['warmup_obsidian_ms'] = round((time.perf_counter() - step) * 1000, 2)
 
         timings['warmup_total_ms'] = round((time.perf_counter() - t0) * 1000, 2)
         self.startup_metrics.update(timings)
@@ -179,7 +199,10 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             enable_mcp_bash=config.enable_mcp_bash,
             enable_mcp_process=config.enable_mcp_process,
             enable_mcp_pytest=config.enable_mcp_pytest,
+            enable_mcp_ruff=config.enable_mcp_ruff,
+            enable_mcp_mypy=config.enable_mcp_mypy,
             enable_mcp_browser=config.enable_mcp_browser,
+            enable_mcp_obsidian=config.enable_mcp_obsidian,
             enable_memory=config.enable_memory,
         )
         t1 = time.perf_counter()
@@ -342,9 +365,15 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         metadata = getattr(self.session_manager, 'metadata', {}) if hasattr(self.session_manager, 'metadata') else {}
         profile_timings = metadata.get('build_profile_timings', {})
         session_manager_profile_timings = metadata.get('session_manager_profile_timings', {})
+        runtime_mode = self.session_manager.runtime_mode
+        build_policy_profile = build_policy_profile_for_mode(runtime_mode)
+        # Aggregate self-change/build state across all sessions for the status surface
+        active_self_change_plan_ids = [s.active_self_change_plan_id for s in sessions if s.active_self_change_plan_id]
+        active_build_record_ids = [s.active_build_record_id for s in sessions if s.active_build_record_id]
+        last_build_statuses = [s.last_build_status for s in sessions if s.last_build_status]
         return {
             "adapter_kind": "session_manager_runtime",
-            "runtime_mode": self.session_manager.runtime_mode,
+            "runtime_mode": runtime_mode,
             "workspace_root": self.session_manager.workspace_root,
             **policy,
             "build_profile_timings": profile_timings,
@@ -357,6 +386,11 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             "approval_count": len(self.list_open_approvals()),
             "registered_tool_count": len(tool_names),
             "registered_tool_names": tool_names,
+            # self-change / build management projection
+            "build_policy_profile": build_policy_profile,
+            "active_self_change_plan_ids": active_self_change_plan_ids,
+            "active_build_record_ids": active_build_record_ids,
+            "last_build_statuses": last_build_statuses,
         }
 
     def get_pending_approval(self, session_id: str) -> InterfaceApproval | None:
@@ -435,8 +469,26 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
     def wipe_session_history(self) -> bool:
         return self.clear_all_sessions()
 
+    def _extract_build_projection(self, session) -> dict[str, Any]:
+        """Extract self-change and build summary fields from session metadata."""
+        meta = session.metadata if isinstance(session.metadata, dict) else {}
+        sc = meta.get("self_change", {}) if isinstance(meta.get("self_change"), dict) else {}
+        bm = meta.get("build_management", {}) if isinstance(meta.get("build_management"), dict) else {}
+        last_build = bm.get("last_build", {}) if isinstance(bm.get("last_build"), dict) else {}
+        mode = getattr(session, "runtime_mode", "dev")
+        policy = mode_policy_summary(mode)
+        build_policy = build_policy_profile_for_mode(mode)
+        return {
+            "active_self_change_plan_id": sc.get("active_plan_id"),
+            "active_build_record_id": bm.get("active_build_id"),
+            "last_build_status": last_build.get("status"),
+            "last_build_summary": last_build.get("summary"),
+            "build_policy_profile": build_policy,
+        }
+
     def _map_session_summary(self, session) -> InterfaceSession:
         policy = mode_policy_summary(session.runtime_mode)
+        build = self._extract_build_projection(session)
         return InterfaceSession(
             session_id=session.session_id,
             conversation_id=session.conversation_id,
@@ -451,6 +503,7 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             message_count=0,
             last_message_preview="",
             status="active",
+            **build,
         )
 
     def _map_session(self, session) -> InterfaceSession:
@@ -459,6 +512,7 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         pending = self.get_pending_approval(session.session_id)
         status = "waiting_for_approval" if pending is not None else "active"
         policy = mode_policy_summary(session.runtime_mode)
+        build = self._extract_build_projection(session)
         return InterfaceSession(
             session_id=session.session_id,
             conversation_id=session.conversation_id,
@@ -473,6 +527,7 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             message_count=len(messages),
             last_message_preview=last_message[:120],
             status=status,
+            **build,
         )
 
     def _map_message(self, message) -> InterfaceMessage:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Callable
 
@@ -15,6 +16,10 @@ from orbit.runtime.core.contracts import RunDescriptor
 from orbit.runtime.execution.normalization import ProviderFailure, ProviderNormalizedResult, normalized_result_to_execution_plan
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
 from orbit.runtime.execution.context_assembly import build_text_only_prompt_assembly_plan
+from orbit.knowledge.context_integration import knowledge_bundle_to_context_fragments
+from orbit.knowledge.models import KnowledgeQuery
+from orbit.knowledge.obsidian_service import ObsidianKnowledgeService
+from orbit.knowledge.retrieval import retrieve_knowledge_bundle
 from orbit.runtime.execution.transcript_projection import messages_to_codex_input
 from orbit.runtime.mcp.bootstrap import bootstrap_local_filesystem_mcp_server, bootstrap_local_git_mcp_server
 from orbit.runtime.mcp.bash_bootstrap import bootstrap_local_bash_mcp_server
@@ -37,6 +42,10 @@ class OpenAICodexConfig:
 
 class OpenAICodexExecutionBackend(ExecutionBackend):
     backend_name = "openai-codex"
+
+    def _knowledge_enabled(self) -> bool:
+        raw = os.environ.get("ORBIT_ENABLE_KNOWLEDGE", "1").strip().lower()
+        return raw not in {"0", "false", "no", "off"}
 
     def __init__(self, config: OpenAICodexConfig | None = None, repo_root: Path | None = None, workspace_root: Path | None = None, tool_registry: ToolRegistry | None = None):
         self.config = config or OpenAICodexConfig()
@@ -121,15 +130,34 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
         return [codex_function_definition(tool) for tool in registry.list_tools()]
 
     def build_request_payload_from_messages(self, messages: list[ConversationMessage], *, session: ConversationSession | None = None) -> dict:
+        latest_user = next((message for message in reversed(messages) if message.role == MessageRole.USER and message.content.strip()), None)
+        query_text = latest_user.content if latest_user is not None else messages[-1].content if messages else ""
+
         memory_fragments = []
         if session is not None and hasattr(self, "memory_service"):
-            latest_user = next((message for message in reversed(messages) if message.role == MessageRole.USER and message.content.strip()), None)
-            query_text = latest_user.content if latest_user is not None else messages[-1].content if messages else ""
             memory_fragments = self.memory_service.retrieve_memory_fragments(
                 session_id=session.session_id,
                 query_text=query_text,
                 limit=5,
             )
+
+        knowledge_fragments = []
+        if session is not None and query_text.strip() and self._knowledge_enabled():
+            try:
+                vault_root = getattr(getattr(self, "session_manager", None), "_obsidian_vault_root", None)
+                resolved_vault_root = vault_root() if callable(vault_root) else "/Volumes/2TB/MAS/vio_vault"
+                knowledge_service = ObsidianKnowledgeService(vault_root=resolved_vault_root)
+                knowledge_bundle = retrieve_knowledge_bundle(
+                    query=KnowledgeQuery(query_text=query_text, limit=5),
+                    obsidian_service=knowledge_service,
+                )
+                knowledge_fragments = knowledge_bundle_to_context_fragments(knowledge_bundle)
+                session.metadata["last_knowledge_bundle"] = knowledge_bundle.model_dump(mode="json")
+            except Exception as exc:
+                if session is not None:
+                    session.metadata["last_knowledge_error"] = repr(exc)
+
+        auxiliary_fragments = [*memory_fragments, *knowledge_fragments]
         runtime_mode = session.runtime_mode if session is not None else "dev"
         assembly_plan = build_text_only_prompt_assembly_plan(
             backend_name=self.backend_name,
@@ -137,7 +165,7 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
             messages=messages,
             workspace_root=str(self.workspace_root),
             runtime_mode=runtime_mode,
-            memory_fragments=memory_fragments,
+            auxiliary_fragments=auxiliary_fragments,
         )
         instructions = assembly_plan.effective_instructions
         projected_input = messages_to_codex_input(messages)

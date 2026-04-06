@@ -85,7 +85,7 @@ def _load_workspace_prompt(workspace_root: str | None) -> ContextFragment | None
     )
 
 
-def build_text_only_prompt_assembly_plan(*, backend_name: str, model: str, messages: list[ConversationMessage], workspace_root: str | None = None, runtime_mode: str = "dev", memory_fragments: list[ContextFragment] | None = None) -> PromptAssemblyPlan:
+def build_text_only_prompt_assembly_plan(*, backend_name: str, model: str, messages: list[ConversationMessage], workspace_root: str | None = None, runtime_mode: str = "dev", auxiliary_fragments: list[ContextFragment] | None = None) -> PromptAssemblyPlan:
     instruction_fragments = [
         ContextFragment(
             fragment_name="identity_charter",
@@ -130,7 +130,7 @@ def build_text_only_prompt_assembly_plan(*, backend_name: str, model: str, messa
         instruction_fragments=instruction_fragments,
         transcript_messages=list(messages),
         history_context_fragments=[history_fragment] if history_fragment.content else [],
-        auxiliary_context_fragments=list(memory_fragments or []),
+        auxiliary_context_fragments=list(auxiliary_fragments or []),
         projection_hints={
             "codex": {
                 "instruction_target": "instructions",
