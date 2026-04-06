@@ -57,13 +57,45 @@ import re
 from functools import lru_cache
 
 from rich.console import Console
+from rich.markdown import Heading as _RichHeading
 from rich.markdown import Markdown
+from rich.theme import Theme
 
 from . import termio as T
 
 _CODE_THEME = "monokai"
-MUTED_HEADING = T.fg_rgb(220, 208, 255) + T.BOLD
-MUTED_HEADING_DIVIDER = T.fg_rgb(120, 104, 160)
+
+# Override Rich's inline-code style: strip the black background so file/path
+# spans blend into the PTY background, and use a muted teal foreground that
+# stays readable without fighting the rest of the palette.
+_ORBIT_MD_THEME = Theme({
+    "markdown.code": "bold #4EB3A8",   # muted teal-cyan, no background
+})
+
+
+class _LeftAlignedHeading(_RichHeading):
+    """Override Rich's default center-justified heading with left alignment."""
+
+    def __rich_console__(self, console, options):
+        text = self.text
+        text.justify = "left"
+        if self.tag == "h1":
+            from rich import box
+            from rich.panel import Panel
+            yield Panel(text, box=box.HEAVY, style="markdown.h1.border")
+        else:
+            from rich.text import Text as _Text
+            if self.tag == "h2":
+                yield _Text("")
+            yield text
+
+
+class _Markdown(Markdown):
+    """Markdown subclass that renders all headings left-aligned."""
+    elements = {**Markdown.elements, "heading_open": _LeftAlignedHeading}
+# Muted purple palette for headings — cyberpunk feel, low saturation, not glaring.
+MUTED_HEADING = T.fg_rgb(188, 152, 220) + T.BOLD
+MUTED_HEADING_DIVIDER = T.fg_rgb(82, 58, 112)
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 
@@ -124,9 +156,10 @@ def render_markdown(text: str, width: int) -> tuple[str, ...]:
         width=width,
         highlight=False,
         no_color=False,
+        theme=_ORBIT_MD_THEME,
     )
     try:
-        md = Markdown(text, hyperlinks=False, code_theme=_CODE_THEME)
+        md = _Markdown(text, hyperlinks=False, code_theme=_CODE_THEME)
         console.print(md, end="")
     except Exception:
         return (text.replace("\n", " "),)

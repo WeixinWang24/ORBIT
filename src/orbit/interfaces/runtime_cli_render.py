@@ -34,11 +34,18 @@ class FrameRender:
     composer_col: int
 
 
-ACCENT_PRIMARY = T.FG_BRIGHT_MAGENTA
-ACCENT_SECONDARY = T.FG_BRIGHT_CYAN
-ACCENT_MUTED = T.FG_BRIGHT_BLACK
-ACCENT_SUCCESS = T.FG_BRIGHT_GREEN
-ACCENT_WARNING = T.FG_BRIGHT_YELLOW
+# Label accents — high-brightness, used for role headers (USER / ASSISTANT).
+ACCENT_PRIMARY   = T.FG_BRIGHT_MAGENTA          # assistant label
+ACCENT_SECONDARY = T.fg_rgb(120, 185, 255)      # user label — bright blue, same hue as CONTENT_USER
+ACCENT_MUTED     = T.FG_BRIGHT_BLACK
+ACCENT_SUCCESS   = T.FG_BRIGHT_GREEN
+ACCENT_WARNING   = T.FG_BRIGHT_YELLOW
+
+# Content body colours — cyberpunk, low-saturation, dark-terminal-friendly.
+# Applied to ordinary text lines inside each message; markdown-specific styles
+# (headings, inline code, bold) still take priority within the line.
+CONTENT_USER      = T.fg_rgb(90, 150, 215)   # muted steel-blue  — user body text
+CONTENT_ASSISTANT = T.fg_rgb(150, 112, 198)  # muted violet      — assistant body text
 
 INSPECT_TAB_LABELS = {
     INSPECT_TRANSCRIPT_TAB: "transcript",
@@ -87,6 +94,8 @@ def chat_body_lines(state: RuntimeCliState, adapter: RuntimeCliAdapter, width: i
         accent_assistant=ACCENT_PRIMARY,
         accent_warning=ACCENT_WARNING,
         accent_muted=ACCENT_MUTED,
+        content_user=CONTENT_USER,
+        content_assistant=CONTENT_ASSISTANT,
         approval_picker_index=state.approval_picker_index,
         approval_action_pending=state.approval_action_pending,
         approval_action_label=state.approval_action_label,

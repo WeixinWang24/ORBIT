@@ -36,6 +36,11 @@ def mode_policy_summary(runtime_mode: RuntimeMode) -> dict[str, str]:
     }
 
 
+def build_policy_profile_for_mode(runtime_mode: RuntimeMode) -> str:
+    """Return the build policy profile string for the given runtime mode."""
+    return "evo-phase-a-build" if runtime_mode == "evo" else "none"
+
+
 def build_mode_policy_snapshot(*, runtime_mode: RuntimeMode, workspace_root: str) -> dict[str, str]:
     payload = dict(mode_policy_summary(runtime_mode))
     payload["workspace_root"] = workspace_root

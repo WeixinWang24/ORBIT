@@ -8,11 +8,47 @@ First slice:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+
+from unicodedata import east_asian_width as _eaw
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def _visible_len(s: str) -> int:
+    """Return the visible *column* width of *s* after stripping ANSI escapes.
+
+    Wide characters (CJK ideographs, fullwidth forms) occupy 2 terminal
+    columns each; everything else counts as 1.
+    """
+    plain = _ANSI_RE.sub("", s)
+    return sum(2 if _eaw(ch) in ("W", "F") else 1 for ch in plain)
 
 from . import termio as T
 from .composer_state import wrap_display_text
 from .markdown_render import render_markdown
+
+# Matches SGR full-reset sequences: ESC[0m and ESC[m (both are valid resets).
+_SGR_RESET_RE = re.compile(r"\x1b\[0?m")
+
+
+def _paint_line(ln: str, color: str) -> str:
+    """Apply *color* as the persistent base foreground for a rendered line.
+
+    Rich emits ``ESC[0m`` after every inline style span (bold, code, etc.).
+    That full SGR reset wipes our base color, leaving subsequent plain text
+    at the terminal default.  We fix this by replacing every reset with
+    ``reset + color`` so the base color is restored after each span, then
+    wrapping the whole line in ``color … reset``.
+
+    Empty / whitespace-only lines are returned unchanged (no color needed).
+    """
+    if not ln.strip():
+        return ln
+    # Re-apply base color after every inline reset.
+    recolored = _SGR_RESET_RE.sub("\x1b[0m" + color, ln)
+    return color + recolored + "\x1b[0m"
 
 
 @dataclass
@@ -23,7 +59,7 @@ class ChatProjection:
     assistant_inflight_text: str | None = None
 
 
-def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy: bool, pending_submit_session_id: str | None, pending_submit_text: str, submit_started_at: float | None, assistant_inflight_text: str | None, accent_user: str, accent_assistant: str, accent_warning: str, accent_muted: str, approval_picker_index: int = 0, approval_action_pending: bool = False, approval_action_label: str | None = None, chat_history_limit: int = 20) -> ChatProjection:
+def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy: bool, pending_submit_session_id: str | None, pending_submit_text: str, submit_started_at: float | None, assistant_inflight_text: str | None, accent_user: str, accent_assistant: str, accent_warning: str, accent_muted: str, content_user: str = "", content_assistant: str = "", approval_picker_index: int = 0, approval_action_pending: bool = False, approval_action_label: str | None = None, chat_history_limit: int = 20) -> ChatProjection:
     lines: list[str] = []
     body: list[str] = []
     hidden_kinds = {
@@ -40,26 +76,59 @@ def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy:
         if msg.message_kind in hidden_kinds:
             continue
         label = msg.role.upper() if not msg.message_kind else f"{msg.role.upper()} [{msg.message_kind}]"
-        color = accent_user if msg.role == "user" else accent_assistant if msg.role == "assistant" else accent_warning
+
+        # ── TOOL result ───────────────────────────────────────────────────
         if msg.message_kind == "tool_result":
             tool_name = None
             tool_ok = None
             if isinstance(msg.metadata, dict):
                 tool_name = msg.metadata.get("tool_name")
                 tool_ok = msg.metadata.get("tool_ok")
-            summary = f"TOOL [tool_result] tool={tool_name or 'unknown'}"
-            if tool_ok is True:
-                summary += " status=ok"
-            elif tool_ok is False:
-                summary += " status=error"
-            compact = summary.replace("\n", " ")
+            tool_label = f"TOOL [tool_result] tool={tool_name or 'unknown'}"
+            status_text = " status=ok" if tool_ok is True else " status=error" if tool_ok is False else ""
+            compact = (tool_label + status_text).replace("\n", " ")
             max_width = max(20, width)
             if len(compact) > max_width:
                 compact = compact[: max(0, max_width - 1)] + "…"
-            tone = T.FG_GREEN if tool_ok is True else T.FG_RED if tool_ok is False else T.FG_YELLOW
-            body.append(tone + compact + T.RESET)
+                status_text = ""          # may have been trimmed away
+                tool_label = compact
+            status_color = T.FG_GREEN if tool_ok is True else T.FG_RED if tool_ok is False else ""
+            # TOOL label in assistant purple; status suffix keeps green/red.
+            body.append(
+                accent_assistant + tool_label + T.RESET
+                + status_color + status_text + T.RESET
+            )
             body.append("")
             continue
+
+        # ── User message — bubble-right layout ───────────────────────────
+        if msg.role == "user":
+            # Render at max bubble width first (min_indent=18, right_margin=1).
+            _min_indent = 18
+            _right_margin = 1
+            bubble_width = max(20, width - _min_indent - _right_margin)
+            if msg.message_kind is None:
+                content_lines: tuple[str, ...] | list[str] = render_markdown(
+                    msg.content, bubble_width
+                )
+            else:
+                content_lines = wrap_display_text(msg.content, bubble_width)
+            # Compute indent so the longest line's right edge touches the border.
+            max_line_len = max(
+                (_visible_len(ln) for ln in content_lines if ln.strip()),
+                default=0,
+            )
+            indent = max(_min_indent, width - max_line_len - _right_margin)
+            indent_str = " " * indent
+            # Label right-aligned to terminal width.
+            body.append(" " * max(0, width - len(label)) + accent_user + label + T.RESET)
+            for ln in content_lines:
+                body.append(indent_str + _paint_line(ln, content_user))
+            body.append("")
+            continue
+
+        # ── Assistant / system / other ────────────────────────────────────
+        color = accent_assistant if msg.role == "assistant" else accent_warning
         body.append(color + label + T.RESET)
         # Apply markdown rendering only for ordinary committed chat messages
         # (message_kind is None).  Messages with an explicit kind tag carry
@@ -68,14 +137,16 @@ def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy:
         # interpretation.  Streaming / inflight text is handled separately
         # below and stays on wrap_display_text() throughout.
         content_width = max(20, width - 4)
-        if msg.message_kind is None and msg.role in ("user", "assistant"):
-            content_lines: tuple[str, ...] | list[str] = render_markdown(
-                msg.content, content_width
-            )
+        if msg.message_kind is None and msg.role == "assistant":
+            content_lines = render_markdown(msg.content, content_width)
         else:
             content_lines = wrap_display_text(msg.content, content_width)
+        content_color = content_assistant if msg.role == "assistant" else ""
         for ln in content_lines:
-            body.append("  " + ln)
+            if content_color:
+                body.append("  " + _paint_line(ln, content_color))
+            else:
+                body.append("  " + ln)
         body.append("")
 
     pending = adapter.get_pending_approval(session_id)
