@@ -688,12 +688,33 @@ class SessionManager:
         return tool.invoke(**input_payload)
 
     def maybe_block_write_for_grounding(self, *, session: ConversationSession | None, tool_request: ToolRequest) -> ToolResult | None:
-        if session is None or tool_request.tool_name not in {"native__write_file", "native__replace_in_file", "native__replace_all_in_file", "native__replace_block_in_file", "native__apply_exact_hunk", "replace_in_file", "apply_unified_patch"}:
+        mutation_family = {"native__write_file", "native__replace_in_file", "native__replace_all_in_file", "native__replace_block_in_file", "native__apply_exact_hunk", "replace_in_file", "apply_unified_patch"}
+        if session is None or tool_request.tool_name not in mutation_family:
             return None
         path = tool_request.input_payload.get("path")
         if not isinstance(path, str) or not path:
             return None
-        return None
+
+        readiness = self.filesystem_write_readiness_for_path(session=session, path=path)
+        if readiness.get("eligible"):
+            return None
+
+        mutation_kind = self._mutation_kind_for_tool(tool_request.tool_name) or tool_request.tool_name
+        return ToolResult(
+            ok=False,
+            content=(
+                f"Grounded mutation blocked for {path}: "
+                f"{readiness.get('reason', 'grounding_required')}. "
+                "A fresh full read of the current file is required before mutation."
+            ),
+            data={
+                "mutation_kind": mutation_kind,
+                "path": path,
+                "failure_layer": "grounding_readiness",
+                "failure_kind": "grounding_required",
+                "write_readiness": readiness,
+            },
+        )
 
     def _mutation_kind_for_tool(self, tool_name: str) -> str | None:
         return {

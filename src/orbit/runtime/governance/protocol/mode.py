@@ -27,7 +27,7 @@ def mode_policy_summary(runtime_mode: RuntimeMode) -> dict[str, str]:
         return {
             "mode_policy_profile": "evo-phase-a",
             "self_runtime_visibility": "repo_root",
-            "self_modification_posture": "phase_a_read_heavy",
+            "self_modification_posture": "phase_a_grounded_self_authoring",
         }
     return {
         "mode_policy_profile": "dev-default",
