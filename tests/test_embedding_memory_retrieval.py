@@ -44,10 +44,10 @@ def test_capture_turn_persists_embedding_and_retrieval_is_semantic(tmp_path):
     service.capture_turn_memory(session_id="session_1", run_id="run_1", user_message=user, assistant_message=assistant)
 
     embeddings = store.list_memory_embeddings(model_name="fake-mini")
-    assert len(embeddings) == 1
+    assert len(embeddings) >= 1
 
     fragments = service.retrieve_memory_fragments(session_id="session_1", query_text="what are my concise orbit preferences?", limit=5)
     assert fragments
-    assert fragments[0].metadata["retrieval_mode"] == "local_embedding_cosine_v1"
+    assert fragments[0].metadata["retrieval_mode"] == "hybrid_embedding_lexical_v1"
     assert fragments[0].metadata["embedding_model"] == "fake-mini"
     assert "concise" in fragments[0].content.lower()

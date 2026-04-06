@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from orbit.models import ConversationMessage, MemoryScope, MessageRole
+from orbit.models import ConversationMessage, MemoryScope, MemoryType, MessageRole
 from orbit.runtime.execution.context_assembly import build_text_only_prompt_assembly_plan
 from orbit.memory import MemoryService
 from orbit.store.sqlite_store import SQLiteStore
@@ -22,11 +22,14 @@ def test_memory_service_captures_session_turn_summary(tmp_path):
         assistant_message=assistant,
     )
 
-    assert len(records) == 1
-    persisted = store.list_memory_records(scope="session", session_id="session_1", limit=10)
-    assert len(persisted) == 1
-    assert persisted[0].scope == MemoryScope.SESSION
-    assert "concise" in persisted[0].detail_text
+    assert len(records) >= 1
+    session_records = store.list_memory_records(scope="session", session_id="session_1", limit=10)
+    assert len(session_records) == 1
+    assert session_records[0].scope == MemoryScope.SESSION
+    assert "concise" in session_records[0].detail_text
+
+    durable_records = store.list_memory_records(scope="durable", limit=10)
+    assert any(record.memory_type == MemoryType.USER_PREFERENCE for record in durable_records)
 
 
 def test_prompt_assembly_accepts_memory_fragments(tmp_path):
@@ -46,4 +49,4 @@ def test_prompt_assembly_accepts_memory_fragments(tmp_path):
     )
 
     assert plan.auxiliary_context_fragments
-    assert plan.auxiliary_context_fragments[0].metadata["retrieval_mode"] == "pre_embedding_first_slice"
+    assert plan.auxiliary_context_fragments[0].metadata["retrieval_mode"] == "hybrid_embedding_lexical_v1"

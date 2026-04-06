@@ -1,11 +1,17 @@
 """Notebook-oriented exports for ORBIT."""
 
-from orbit.notebook.display import approvals_dataframe, events_dataframe, project_run, session_messages_dataframe, session_turn_summary_dataframe, sessions_dataframe, steps_dataframe
+from orbit.notebook.display import approvals_dataframe, events_dataframe, memory_compare_backends_dataframe, memory_context_artifacts_dataframe, memory_embeddings_dataframe, memory_probe_dataframe, memory_records_dataframe, memory_scope_summary_dataframe, memory_status_summary_frame, project_run, session_messages_dataframe, session_turn_summary_dataframe, sessions_dataframe, steps_dataframe
 from orbit.notebook.providers import (
+    DemoMemoryEmbeddingService,
+    build_durable_bias_service,
     build_openai_codex_hello_world_descriptor,
     build_openai_hello_world_descriptor,
     build_ssh_vllm_hello_world_descriptor,
+    capture_memory_showcase_turns,
+    create_memory_showcase_bundle,
     create_openai_login_url_bundle,
+    default_memory_showcase_turns,
+    memory_showcase_summary_frames,
     openai_codex_hello_world_summary_frame,
     openai_hello_world_summary_frame,
     openai_login_url_summary_frame,
@@ -17,13 +23,26 @@ from orbit.notebook.providers import (
 from orbit.notebook.workbench import NotebookWorkbench
 
 __all__ = [
+    "DemoMemoryEmbeddingService",
     "NotebookWorkbench",
     "approvals_dataframe",
+    "build_durable_bias_service",
     "build_openai_codex_hello_world_descriptor",
     "build_openai_hello_world_descriptor",
     "build_ssh_vllm_hello_world_descriptor",
+    "capture_memory_showcase_turns",
+    "create_memory_showcase_bundle",
     "create_openai_login_url_bundle",
+    "default_memory_showcase_turns",
     "events_dataframe",
+    "memory_compare_backends_dataframe",
+    "memory_context_artifacts_dataframe",
+    "memory_embeddings_dataframe",
+    "memory_probe_dataframe",
+    "memory_records_dataframe",
+    "memory_scope_summary_dataframe",
+    "memory_showcase_summary_frames",
+    "memory_status_summary_frame",
     "openai_codex_hello_world_summary_frame",
     "openai_hello_world_summary_frame",
     "openai_login_url_summary_frame",
