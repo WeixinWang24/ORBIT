@@ -17,7 +17,7 @@ class BuildManagementCliTests(unittest.TestCase):
             state_dir = Path(tmpdir) / '.orbit'
             state_dir.mkdir(parents=True, exist_ok=True)
             store = BuildStateStore(state_dir=state_dir)
-            store.save_manifest(BuildManifest(build_id='build-active', runtime_mode_context='evo', venv_path='/tmp/active-venv'))
+            store.save_manifest(BuildManifest(build_id='build-active', runtime_mode_context='evo', python_executable='/tmp/active-python', launcher_path='/tmp/build-active/launch_active.py'))
             store.save_activation_pointer(ActivationPointer(active_build_id='build-active'))
 
             completed = subprocess.run(
@@ -30,7 +30,8 @@ class BuildManagementCliTests(unittest.TestCase):
             )
 
             self.assertEqual(completed.returncode, 0)
-            self.assertIn('/tmp/active-venv/bin/python', completed.stdout)
+            self.assertIn('/tmp/active-python', completed.stdout)
+            self.assertIn('/tmp/build-active/launch_active.py', completed.stdout)
             self.assertIn('--mode evo', completed.stdout)
 
     def test_promote_candidate_subcommand(self) -> None:
@@ -38,8 +39,8 @@ class BuildManagementCliTests(unittest.TestCase):
             state_dir = Path(tmpdir) / '.orbit'
             state_dir.mkdir(parents=True, exist_ok=True)
             store = BuildStateStore(state_dir=state_dir)
-            store.save_manifest(BuildManifest(build_id='build-old', runtime_mode_context='dev', venv_path='/tmp/old-venv', activation_status='active'))
-            store.save_manifest(BuildManifest(build_id='build-new', runtime_mode_context='evo', venv_path='/tmp/new-venv', activation_status='candidate'))
+            store.save_manifest(BuildManifest(build_id='build-old', runtime_mode_context='dev', python_executable='/tmp/old-python', launcher_path='/tmp/build-old/launch_active.py', activation_status='active'))
+            store.save_manifest(BuildManifest(build_id='build-new', runtime_mode_context='evo', python_executable='/tmp/new-python', launcher_path='/tmp/build-new/launch_active.py', activation_status='candidate'))
             store.save_activation_pointer(ActivationPointer(active_build_id='build-old', candidate_build_id='build-new'))
 
             completed = subprocess.run(

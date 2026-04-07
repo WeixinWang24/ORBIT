@@ -23,17 +23,23 @@ ACTIVATION_POINTER_PATH = DEFAULT_STATE_DIR / "activation.json"
 
 
 class BuildManifest(OrbitBaseModel):
-    schema_version: str = "v1"
+    schema_version: str = "v2"
     build_id: str
     generated_at: datetime = Field(default_factory=_utc_now)
     source_ref: str | None = None
     source_dirty: bool = True
     source_diff_summary: str | None = None
+    source_patch_path: str | None = None
+    repo_root_at_build: str | None = None
+    build_input_kind: str = "repo_tree"
     runtime_mode_context: RuntimeMode = "dev"
     validation_status: BuildValidationStatus = "pending"
     activation_status: BuildActivationStatus = "inactive"
     environment_kind: str = "host_conda_bound"
     python_executable: str | None = None
+    wheel_path: str | None = None
+    runtime_root: str | None = None
+    launcher_path: str | None = None
     snapshot_root: str | None = None
     launch_command: list[str] = Field(default_factory=list)
     parent_build_id: str | None = None

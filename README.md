@@ -82,6 +82,77 @@ Current command surface inside the new terminal UI includes session/runtime cont
 - `/status`
 - `/help`
 
+## Build creation / activation commands
+
+ORBIT currently has two related command-line layers for build work:
+
+1. **Runtime/self-change build-management slice**
+   - this is the new `SelfChangePlan` / `BuildRecord` lifecycle in the runtime
+   - current first slice is primarily code/API-driven and persists through `session.metadata`, `ContextArtifact`, and `ExecutionEvent`
+   - it is not yet a standalone human-facing CLI command family
+
+2. **Repo/runtime build activation commands**
+   - this is the existing command surface for creating/loading the repo/runtime build that the workbench launches against
+
+Current repo/runtime build commands:
+
+```bash
+# create a new candidate build record
+python apps/orbit_build_cli.py create-candidate --mode dev
+python apps/orbit_build_cli.py create-candidate --mode evo
+
+# create a materialized candidate build
+python apps/orbit_build_cli.py materialize-candidate --mode dev
+python apps/orbit_build_cli.py materialize-candidate --mode evo
+
+# promote current candidate build to active
+python apps/orbit_build_cli.py promote-candidate
+
+# print the launch command for the active build
+python apps/orbit_build_cli.py print-active-launch
+
+# compatibility launcher helper
+python apps/orbit_print_active_launch.py
+
+# directly launch the current active build
+python apps/orbit_launch_active.py
+```
+
+Current runtime truth for `materialize-candidate`:
+- the current repo remains the development target
+- candidate materialization now builds a wheel from the repo
+- each build gets a per-build `runtime_root` and generated launcher
+- active launch binds to the current Conda Python while loading ORBIT code from the build runtime root
+- the active runtime is no longer expected to import ORBIT code from the live repo
+
+This is a first-slice shared-environment model:
+- code artifact isolation per build
+- shared Conda dependency environment
+- `promote-candidate` still only performs activation-pointer switching
+
+Recommended operational sequence:
+
+```bash
+# 1) create and materialize a candidate build for evo mode
+python apps/orbit_build_cli.py materialize-candidate --mode evo
+
+# 2) promote that candidate to active
+python apps/orbit_build_cli.py promote-candidate
+
+# 3) inspect what command the active build will launch with
+python apps/orbit_build_cli.py print-active-launch
+
+# 4) launch the current active build
+python apps/orbit_launch_active.py
+```
+
+Notes:
+- these commands manage the repo/runtime build pointers and materialized build launcher flow
+- state is managed through `src/orbit/runtime/governance/build_state_store.py`
+- build provenance now includes source identity / dirty-state tracking to support later active-baseline understanding
+- they are distinct from the new self-change/build-management runtime records
+- in the current first slice, self-change/build-management is governance/runtime truth, while build CLI commands remain the launcher/runtime-build control surface
+
 ## Environment and persistence direction
 
 - Default development environment: Conda environment `Orbit`

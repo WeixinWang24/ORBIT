@@ -16,7 +16,7 @@ class ActiveBuildLauncherScriptTests(unittest.TestCase):
             state_dir = Path(tmpdir) / '.orbit'
             state_dir.mkdir(parents=True, exist_ok=True)
             store = BuildStateStore(state_dir=state_dir)
-            store.save_manifest(BuildManifest(build_id='build-active', runtime_mode_context='evo', venv_path='/tmp/active-venv'))
+            store.save_manifest(BuildManifest(build_id='build-active', runtime_mode_context='evo', python_executable='/tmp/active-python', launcher_path='/tmp/build-active/launch_active.py'))
             store.save_activation_pointer(ActivationPointer(active_build_id='build-active'))
 
             completed = subprocess.run(
@@ -29,7 +29,8 @@ class ActiveBuildLauncherScriptTests(unittest.TestCase):
             )
 
             self.assertEqual(completed.returncode, 0)
-            self.assertIn('/tmp/active-venv/bin/python', completed.stdout)
+            self.assertIn('/tmp/active-python', completed.stdout)
+            self.assertIn('/tmp/build-active/launch_active.py', completed.stdout)
             self.assertIn('--mode evo', completed.stdout)
 
 

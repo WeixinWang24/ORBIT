@@ -31,7 +31,9 @@ class BuildStateStoreTests(unittest.TestCase):
                 validation_status="passed",
                 activation_status="candidate",
                 python_executable="/tmp/orbit-python",
-                snapshot_root="/tmp/build-001/snapshot",
+                wheel_path="/tmp/build-001/dist/orbit.whl",
+                runtime_root="/tmp/build-001/runtime",
+                launcher_path="/tmp/build-001/launch_active.py",
             )
             path = store.save_manifest(manifest)
             loaded = store.load_manifest("build-001")
@@ -44,7 +46,9 @@ class BuildStateStoreTests(unittest.TestCase):
             self.assertEqual(loaded.runtime_mode_context, "evo")
             self.assertEqual(loaded.validation_status, "passed")
             self.assertEqual(loaded.python_executable, "/tmp/orbit-python")
-            self.assertEqual(loaded.snapshot_root, "/tmp/build-001/snapshot")
+            self.assertEqual(loaded.wheel_path, "/tmp/build-001/dist/orbit.whl")
+            self.assertEqual(loaded.runtime_root, "/tmp/build-001/runtime")
+            self.assertEqual(loaded.launcher_path, "/tmp/build-001/launch_active.py")
 
     def test_save_and_load_activation_pointer(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -97,31 +101,51 @@ class BuildStateStoreTests(unittest.TestCase):
             assert loaded is not None
             self.assertEqual(loaded.runtime_mode_context, 'evo')
             self.assertEqual(loaded.environment_kind, 'host_conda_bound')
-            self.assertTrue(Path(loaded.snapshot_root).exists())
-            self.assertTrue(Path(loaded.snapshot_root, 'apps', 'orbit_cli.py').exists())
+            self.assertTrue(Path(loaded.wheel_path).exists())
+            self.assertTrue(Path(loaded.runtime_root).exists())
+            self.assertTrue(Path(loaded.runtime_root, 'orbit').exists())
+            self.assertTrue(Path(loaded.launcher_path).exists())
             self.assertTrue(loaded.python_executable)
             self.assertTrue(loaded.launch_command)
             self.assertEqual(loaded.launch_command[-2:], ['--mode', 'evo'])
-            self.assertTrue(loaded.launch_command[1].endswith('apps/orbit_cli.py'))
+            self.assertTrue(loaded.launch_command[1].endswith('launch_active.py'))
             pointer = store.load_activation_pointer()
             self.assertEqual(pointer.candidate_build_id, loaded.build_id)
+
+        
+    def test_materialize_candidate_build_writes_patch_for_dirty_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path('/Volumes/2TB/MAS/openclaw-core/ORBIT')
+            temp_state = Path(tmpdir)
+            store = BuildStateStore(state_dir=temp_state)
+            scratch = temp_state / 'repo-copy'
+            subprocess.run(['git', 'clone', str(repo_root), str(scratch)], check=True, capture_output=True)
+            subprocess.run(['git', 'config', 'user.name', 'ORBIT Test'], cwd=scratch, check=True, capture_output=True)
+            subprocess.run(['git', 'config', 'user.email', 'orbit@example.com'], cwd=scratch, check=True, capture_output=True)
+            target = scratch / 'README.md'
+            original = target.read_text(encoding='utf-8') if target.exists() else ''
+            target.write_text(original + '\nlocal dirty change\n', encoding='utf-8')
+            manifest = store.materialize_candidate_build(runtime_mode='evo', repo_root=scratch)
+            self.assertTrue(manifest.source_dirty)
+            self.assertTrue(manifest.source_patch_path)
+            self.assertTrue(Path(manifest.source_patch_path).exists())
 
     def test_stable_launch_command_for_manifest_includes_runtime_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = BuildStateStore(state_dir=Path(tmpdir))
-            manifest = BuildManifest(build_id='build-xyz', runtime_mode_context='evo', python_executable='/tmp/fake-python', snapshot_root='/tmp/fake-snapshot')
+            manifest = BuildManifest(build_id='build-xyz', runtime_mode_context='evo', python_executable='/tmp/fake-python', launcher_path='/tmp/fake-build/launch_active.py')
             command = store.stable_launch_command_for_manifest(manifest)
             self.assertEqual(command[-2:], ['--mode', 'evo'])
-            self.assertEqual(command[:2], ['/tmp/fake-python', '/tmp/fake-snapshot/apps/orbit_cli.py'])
+            self.assertEqual(command[:2], ['/tmp/fake-python', '/tmp/fake-build/launch_active.py'])
 
     def test_stable_launch_command_for_build_reads_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = BuildStateStore(state_dir=Path(tmpdir))
-            manifest = BuildManifest(build_id='build-abc', runtime_mode_context='dev', python_executable='/tmp/stable-python', snapshot_root='/tmp/stable-snapshot')
+            manifest = BuildManifest(build_id='build-abc', runtime_mode_context='dev', python_executable='/tmp/stable-python', launcher_path='/tmp/stable-build/launch_active.py')
             store.save_manifest(manifest)
             command = store.stable_launch_command_for_build('build-abc')
             self.assertEqual(command[-2:], ['--mode', 'dev'])
-            self.assertEqual(command[:2], ['/tmp/stable-python', '/tmp/stable-snapshot/apps/orbit_cli.py'])
+            self.assertEqual(command[:2], ['/tmp/stable-python', '/tmp/stable-build/launch_active.py'])
 
     def test_stable_launch_command_for_build_raises_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -132,11 +156,11 @@ class BuildStateStoreTests(unittest.TestCase):
     def test_active_launch_command_reads_active_build_pointer(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = BuildStateStore(state_dir=Path(tmpdir))
-            manifest = BuildManifest(build_id='build-active', runtime_mode_context='evo', python_executable='/tmp/active-python', snapshot_root='/tmp/active-snapshot')
+            manifest = BuildManifest(build_id='build-active', runtime_mode_context='evo', python_executable='/tmp/active-python', launcher_path='/tmp/active-build/launch_active.py')
             store.save_manifest(manifest)
             store.save_activation_pointer(ActivationPointer(active_build_id='build-active'))
             command = store.active_launch_command()
-            self.assertEqual(command[:2], ['/tmp/active-python', '/tmp/active-snapshot/apps/orbit_cli.py'])
+            self.assertEqual(command[:2], ['/tmp/active-python', '/tmp/active-build/launch_active.py'])
             self.assertEqual(command[-2:], ['--mode', 'evo'])
 
     def test_active_launch_command_raises_when_no_active_build(self) -> None:
@@ -148,8 +172,8 @@ class BuildStateStoreTests(unittest.TestCase):
     def test_promote_candidate_to_active_moves_previous_active_to_last_known_good(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = BuildStateStore(state_dir=Path(tmpdir))
-            old_active = BuildManifest(build_id='build-old', runtime_mode_context='dev', python_executable='/tmp/old-python', snapshot_root='/tmp/old-snapshot', activation_status='active')
-            candidate = BuildManifest(build_id='build-new', runtime_mode_context='evo', python_executable='/tmp/new-python', snapshot_root='/tmp/new-snapshot', activation_status='candidate')
+            old_active = BuildManifest(build_id='build-old', runtime_mode_context='dev', python_executable='/tmp/old-python', launcher_path='/tmp/old-build/launch_active.py', activation_status='active')
+            candidate = BuildManifest(build_id='build-new', runtime_mode_context='evo', python_executable='/tmp/new-python', launcher_path='/tmp/new-build/launch_active.py', activation_status='candidate')
             store.save_manifest(old_active)
             store.save_manifest(candidate)
             store.save_activation_pointer(ActivationPointer(active_build_id='build-old', candidate_build_id='build-new'))
