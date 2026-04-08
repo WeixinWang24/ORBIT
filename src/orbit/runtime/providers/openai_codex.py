@@ -16,7 +16,7 @@ from orbit.runtime.core.contracts import RunDescriptor
 from orbit.runtime.execution.normalization import ProviderFailure, ProviderNormalizedResult, normalized_result_to_execution_plan
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
 from orbit.runtime.execution.context_assembly import build_text_only_prompt_assembly_plan
-from orbit.knowledge.context_integration import knowledge_bundle_to_context_fragments
+from orbit.knowledge.context_integration import knowledge_bundle_to_context_fragments, knowledge_preflight_to_context_fragments
 from orbit.knowledge.models import KnowledgeQuery
 from orbit.knowledge.obsidian_service import ObsidianKnowledgeService
 from orbit.knowledge.retrieval import retrieve_knowledge_bundle
@@ -147,12 +147,27 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
                 vault_root = getattr(getattr(self, "session_manager", None), "_obsidian_vault_root", None)
                 resolved_vault_root = vault_root() if callable(vault_root) else "/Volumes/2TB/MAS/vio_vault"
                 knowledge_service = ObsidianKnowledgeService(vault_root=resolved_vault_root)
-                knowledge_bundle = retrieve_knowledge_bundle(
-                    query=KnowledgeQuery(query_text=query_text, limit=5),
-                    obsidian_service=knowledge_service,
+
+                availability = knowledge_service.check_availability()
+                vault_metadata = None
+                if availability.get("availability_level") in {"full", "vault_only"}:
+                    vault_metadata = knowledge_service.get_vault_metadata(max_entries=5)
+                preflight_fragments = knowledge_preflight_to_context_fragments(
+                    availability=availability,
+                    vault_metadata=vault_metadata,
                 )
-                knowledge_fragments = knowledge_bundle_to_context_fragments(knowledge_bundle)
-                session.metadata["last_knowledge_bundle"] = knowledge_bundle.model_dump(mode="json")
+                knowledge_fragments.extend(preflight_fragments)
+                session.metadata["last_knowledge_availability"] = availability
+                if vault_metadata is not None:
+                    session.metadata["last_knowledge_vault_metadata"] = vault_metadata
+
+                if availability.get("availability_level") in {"full", "vault_only"}:
+                    knowledge_bundle = retrieve_knowledge_bundle(
+                        query=KnowledgeQuery(query_text=query_text, limit=5),
+                        obsidian_service=knowledge_service,
+                    )
+                    knowledge_fragments.extend(knowledge_bundle_to_context_fragments(knowledge_bundle))
+                    session.metadata["last_knowledge_bundle"] = knowledge_bundle.model_dump(mode="json")
             except Exception as exc:
                 if session is not None:
                     session.metadata["last_knowledge_error"] = repr(exc)

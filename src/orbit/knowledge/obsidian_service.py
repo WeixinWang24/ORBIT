@@ -82,6 +82,27 @@ class ObsidianKnowledgeService:
         result = self.call_tool("obsidian_get_note_links", {"path": path})
         return self._structured(result)
 
+    def get_vault_metadata(
+        self,
+        *,
+        path: str | None = None,
+        include_top_level_entries: bool = True,
+        max_entries: int | None = None,
+    ) -> dict[str, Any]:
+        result = self.call_tool(
+            "obsidian_get_vault_metadata",
+            {
+                **({"path": path} if path else {}),
+                "includeTopLevelEntries": include_top_level_entries,
+                **({"maxEntries": max_entries} if max_entries is not None else {}),
+            },
+        )
+        return self._structured(result)
+
+    def check_availability(self) -> dict[str, Any]:
+        result = self.call_tool("obsidian_check_availability", {})
+        return self._structured(result)
+
     def hydrate_match_note(self, match: dict[str, Any]) -> KnowledgeNote:
         path = str(match.get("path") or "").strip()
         note = self.read_note(path=path, include_raw_content=False)

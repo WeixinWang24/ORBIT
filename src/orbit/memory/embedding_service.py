@@ -8,8 +8,13 @@ This first implementation intentionally stays simple:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
+import logging
 import math
+import os
+import warnings
 from functools import lru_cache
 
 from sentence_transformers import SentenceTransformer
@@ -20,8 +25,46 @@ from orbit.settings import DEFAULT_MEMORY_EMBEDDING_MODEL
 
 @lru_cache(maxsize=2)
 def _load_model(model_name: str) -> SentenceTransformer:
-    """Load and cache the local embedding model."""
-    return SentenceTransformer(model_name)
+    """Load and cache the local embedding model.
+
+    SentenceTransformers / HuggingFace / Transformers may emit first-load
+    progress, warnings, and load-report text through stdout, stderr, warnings,
+    and logging handlers. Orbit's chat-mode composer should not be polluted by
+    that initialization noise, so model construction is wrapped in a temporary
+    sink plus logger suppression here.
+    """
+    sink = io.StringIO()
+    previous_tokenizers_parallelism = os.environ.get("TOKENIZERS_PARALLELISM")
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+    logger_names = [
+        "sentence_transformers",
+        "transformers",
+        "transformers.modeling_utils",
+        "transformers.utils.loading_report",
+        "huggingface_hub",
+    ]
+    previous_logger_states: dict[str, tuple[int, bool]] = {}
+    for name in logger_names:
+        logger = logging.getLogger(name)
+        previous_logger_states[name] = (logger.level, logger.propagate)
+        logger.setLevel(logging.ERROR)
+        logger.propagate = False
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                return SentenceTransformer(model_name)
+    finally:
+        for name, (level, propagate) in previous_logger_states.items():
+            logger = logging.getLogger(name)
+            logger.setLevel(level)
+            logger.propagate = propagate
+        if previous_tokenizers_parallelism is None:
+            os.environ.pop("TOKENIZERS_PARALLELISM", None)
+        else:
+            os.environ["TOKENIZERS_PARALLELISM"] = previous_tokenizers_parallelism
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:

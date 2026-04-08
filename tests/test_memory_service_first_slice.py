@@ -45,7 +45,7 @@ def test_prompt_assembly_accepts_memory_fragments(tmp_path):
         model="gpt-5.4",
         messages=[user, assistant],
         workspace_root=None,
-        memory_fragments=fragments,
+        auxiliary_fragments=fragments,
     )
 
     assert plan.auxiliary_context_fragments

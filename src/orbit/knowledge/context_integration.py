@@ -8,6 +8,62 @@ if TYPE_CHECKING:
     from orbit.runtime.execution.context_assembly import ContextFragment
 
 
+def knowledge_preflight_to_context_fragments(*, availability: dict, vault_metadata: dict | None = None) -> list["ContextFragment"]:
+    from orbit.runtime.execution.context_assembly import ContextFragment
+
+    fragments: list[ContextFragment] = []
+    warnings = availability.get("warnings") if isinstance(availability, dict) else []
+    checks = availability.get("checks") if isinstance(availability, dict) else {}
+    fragments.append(
+        ContextFragment(
+            fragment_name="knowledge_availability_preflight",
+            visibility_scope="knowledge_preflight",
+            content=(
+                f"Knowledge availability: {availability.get('availability_level', 'unknown')}\n"
+                f"Recommended mode: {availability.get('recommended_mode', 'unknown')}\n"
+                f"Vault root configured: {availability.get('vault_root_configured')}\n"
+                f"Vault root exists: {availability.get('vault_root_exists')}\n"
+                f"Vault root readable: {availability.get('vault_root_readable')}\n"
+                f"Obsidian CLI found: {availability.get('obsidian_cli_found')}"
+            ).strip(),
+            priority=62,
+            metadata={
+                "availability_level": availability.get("availability_level"),
+                "recommended_mode": availability.get("recommended_mode"),
+                "warnings": list(warnings) if isinstance(warnings, list) else [],
+                "checks": checks if isinstance(checks, dict) else {},
+            },
+        )
+    )
+    if vault_metadata:
+        top_level_entries = vault_metadata.get("top_level_entries") if isinstance(vault_metadata, dict) else []
+        top_level_hint = ", ".join(
+            str(item.get("name")) for item in (top_level_entries or [])[:5] if isinstance(item, dict) and item.get("name")
+        )
+        fragments.append(
+            ContextFragment(
+                fragment_name="knowledge_vault_metadata",
+                visibility_scope="knowledge_preflight",
+                content=(
+                    f"Vault: {vault_metadata.get('vault_name', 'unknown')}\n"
+                    f"Scope: {vault_metadata.get('path_scope', '') or '(root)'}\n"
+                    f"Note count: {vault_metadata.get('note_count', 'unknown')}\n"
+                    f"Directory count: {vault_metadata.get('directory_count', 'unknown')}\n"
+                    f"Latest modified: {vault_metadata.get('latest_modified_at_epoch', 'unknown')}\n"
+                    f"Top-level structure hint: {top_level_hint or '(none)'}"
+                ).strip(),
+                priority=61,
+                metadata={
+                    "vault_name": vault_metadata.get("vault_name"),
+                    "path_scope": vault_metadata.get("path_scope"),
+                    "note_count": vault_metadata.get("note_count"),
+                    "directory_count": vault_metadata.get("directory_count"),
+                },
+            )
+        )
+    return fragments
+
+
 def knowledge_bundle_to_context_fragments(bundle: KnowledgeBundle) -> list["ContextFragment"]:
     from orbit.runtime.execution.context_assembly import ContextFragment
     fragments: list[ContextFragment] = []
