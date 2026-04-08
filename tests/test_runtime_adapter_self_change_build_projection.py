@@ -14,9 +14,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from orbit.interfaces.build_operation_service import BuildOperationService
 from orbit.interfaces.contracts import InterfaceSession
 from orbit.interfaces.runtime_adapter import SessionManagerRuntimeAdapter
 from orbit.runtime import DummyExecutionBackend, SessionManager
+from orbit.runtime.governance.self_change_service import SelfChangeGovernanceService
 from orbit.store.sqlite_store import SQLiteStore
 
 
@@ -70,7 +72,7 @@ class TestWorkbenchStatusBuildFields(unittest.TestCase):
     def test_workbench_status_aggregates_active_plans(self) -> None:
         adapter = _make_adapter(runtime_mode="evo")
         session = adapter.session_manager.create_session(backend_name="dummy", model="dummy")
-        plan = adapter.session_manager.create_self_change_plan(
+        plan = SelfChangeGovernanceService(adapter.session_manager).create_plan(
             session_id=session.session_id,
             title="agg test plan",
             description="for aggregation",
@@ -81,7 +83,7 @@ class TestWorkbenchStatusBuildFields(unittest.TestCase):
     def test_workbench_status_aggregates_active_builds(self) -> None:
         adapter = _make_adapter(runtime_mode="evo")
         session = adapter.session_manager.create_session(backend_name="dummy", model="dummy")
-        record = adapter.session_manager.create_build_record(
+        record = BuildOperationService(adapter.session_manager).create_build_record(
             session_id=session.session_id,
             summary="aggregation build",
         )
@@ -93,7 +95,7 @@ class TestSessionProjectionAfterLifecycle(unittest.TestCase):
     def test_session_projects_active_plan_id(self) -> None:
         adapter = _make_adapter(runtime_mode="evo")
         session_obj = adapter.session_manager.create_session(backend_name="dummy", model="dummy")
-        plan = adapter.session_manager.create_self_change_plan(
+        plan = SelfChangeGovernanceService(adapter.session_manager).create_plan(
             session_id=session_obj.session_id,
             title="projection plan",
             description="test projection",
@@ -105,7 +107,7 @@ class TestSessionProjectionAfterLifecycle(unittest.TestCase):
     def test_session_projects_active_build_id(self) -> None:
         adapter = _make_adapter(runtime_mode="evo")
         session_obj = adapter.session_manager.create_session(backend_name="dummy", model="dummy")
-        record = adapter.session_manager.create_build_record(
+        record = BuildOperationService(adapter.session_manager).create_build_record(
             session_id=session_obj.session_id,
         )
         mapped = adapter.get_session(session_obj.session_id)
@@ -115,10 +117,10 @@ class TestSessionProjectionAfterLifecycle(unittest.TestCase):
     def test_session_projects_last_build_status_after_finalize(self) -> None:
         adapter = _make_adapter(runtime_mode="evo")
         session_obj = adapter.session_manager.create_session(backend_name="dummy", model="dummy")
-        record = adapter.session_manager.create_build_record(
+        record = BuildOperationService(adapter.session_manager).create_build_record(
             session_id=session_obj.session_id,
         )
-        adapter.session_manager.finalize_build_record(
+        BuildOperationService(adapter.session_manager).finalize_build(
             session_id=session_obj.session_id,
             record=record,
             verdict="passed",
@@ -128,16 +130,15 @@ class TestSessionProjectionAfterLifecycle(unittest.TestCase):
         self.assertIsNotNone(mapped)
         self.assertEqual(mapped.last_build_status, "passed")
         self.assertEqual(mapped.last_build_summary, "green")
-        # active_build_record_id should be cleared after finalization
         self.assertIsNone(mapped.active_build_record_id)
 
     def test_session_projects_rolled_back_build(self) -> None:
         adapter = _make_adapter(runtime_mode="evo")
         session_obj = adapter.session_manager.create_session(backend_name="dummy", model="dummy")
-        record = adapter.session_manager.create_build_record(
+        record = BuildOperationService(adapter.session_manager).create_build_record(
             session_id=session_obj.session_id,
         )
-        adapter.session_manager.mark_build_rolled_back(
+        BuildOperationService(adapter.session_manager).mark_rolled_back(
             session_id=session_obj.session_id,
             record=record,
         )
