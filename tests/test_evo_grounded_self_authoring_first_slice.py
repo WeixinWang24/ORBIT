@@ -7,6 +7,7 @@ from pathlib import Path
 from orbit.models import ConversationSession
 from orbit.runtime.core.session_manager import SessionManager
 from orbit.runtime.execution.contracts.plans import ToolRequest
+from orbit.runtime.governance.grounding_service import GroundingGovernanceService
 from orbit.runtime.governance.protocol.mode import mode_policy_summary, workspace_root_for_runtime_mode
 from orbit.runtime import DummyExecutionBackend
 from orbit.store.sqlite_store import SQLiteStore
@@ -41,7 +42,7 @@ class EvoGroundedSelfAuthoringFirstSliceTests(unittest.TestCase):
                 side_effect_class="write",
                 requires_approval=False,
             )
-            blocked = manager.maybe_block_write_for_grounding(session=session, tool_request=request)
+            blocked = GroundingGovernanceService(manager).maybe_block_mutation(session=session, tool_request=request)
             self.assertIsNotNone(blocked)
             assert blocked is not None
             self.assertFalse(blocked.ok)
@@ -83,7 +84,7 @@ class EvoGroundedSelfAuthoringFirstSliceTests(unittest.TestCase):
                 side_effect_class="write",
                 requires_approval=False,
             )
-            blocked = manager.maybe_block_write_for_grounding(session=refreshed, tool_request=request)
+            blocked = GroundingGovernanceService(manager).maybe_block_mutation(session=refreshed, tool_request=request)
             self.assertIsNone(blocked)
 
 

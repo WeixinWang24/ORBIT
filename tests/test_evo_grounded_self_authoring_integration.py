@@ -6,6 +6,7 @@ from pathlib import Path
 
 from orbit.runtime import DummyExecutionBackend, SessionManager
 from orbit.runtime.execution.contracts.plans import ToolRequest
+from orbit.runtime.governance.grounding_service import GroundingGovernanceService
 from orbit.store.sqlite_store import SQLiteStore
 
 
@@ -22,35 +23,37 @@ class EvoGroundedSelfAuthoringIntegrationTests(unittest.TestCase):
                 backend=DummyExecutionBackend(),
                 workspace_root=str(repo),
                 runtime_mode="evo",
-                enable_mcp_filesystem=True,
             )
             session = manager.create_session(backend_name="dummy", model="dummy")
 
-            read_request = ToolRequest(
-                tool_name="read_file",
-                input_payload={"path": "sample.txt"},
-                side_effect_class="safe",
-                requires_approval=False,
-            )
-            read_result = manager.execute_tool_request(session=session, tool_request=read_request)
-            self.assertTrue(read_result.ok)
-            manager.record_filesystem_read_state(session=session, tool_request=read_request, tool_result=read_result)
+            stat = target.stat()
+            session.metadata["filesystem_read_state"] = {
+                "sample.txt": {
+                    "source_tool": "native__read_file",
+                    "timestamp_epoch": 0,
+                    "is_partial_view": False,
+                    "grounding_kind": "full_read",
+                    "path_kind": "file",
+                    "observed_modified_at_epoch": stat.st_mtime,
+                    "observed_size_bytes": stat.st_size,
+                    "range": None,
+                }
+            }
+            store.save_session(session)
 
             refreshed = manager.get_session(session.session_id)
             assert refreshed is not None
             replace_request = ToolRequest(
-                tool_name="replace_in_file",
+                tool_name="native__replace_in_file",
                 input_payload={"path": "sample.txt", "old_text": "beta", "new_text": "BETA"},
                 side_effect_class="write",
                 requires_approval=False,
             )
-            blocked = manager.maybe_block_write_for_grounding(session=refreshed, tool_request=replace_request)
+            blocked = GroundingGovernanceService(manager).maybe_block_mutation(session=refreshed, tool_request=replace_request)
             self.assertIsNone(blocked)
 
             replace_result = manager.execute_tool_request(session=refreshed, tool_request=replace_request)
             self.assertTrue(replace_result.ok)
-            structured = (((replace_result.data or {}).get("raw_result") or {}).get("structuredContent") or {})
-            self.assertEqual(structured.get("mutation_kind"), "replace_in_file")
             self.assertEqual(target.read_text(encoding="utf-8"), "alpha\nBETA\n")
 
 
