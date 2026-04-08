@@ -9,6 +9,7 @@ workspace/*
 .ipynb_checkpoints/
 .env
 *.env
+.env.local
 .runtime/
 .tmp/
 .trash/

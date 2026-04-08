@@ -64,7 +64,7 @@ class SessionManager:
         configured = os.environ.get("ORBIT_OBSIDIAN_VAULT_ROOT", "").strip()
         if configured:
             return configured
-        return "/Volumes/2TB/MAS/vio_vault"
+        return ""
 
     def _record_timing(self, key: str, started_at: float) -> None:
         timings = self.metadata.setdefault('session_manager_profile_timings', {}) if isinstance(getattr(self, 'metadata', None), dict) else {}
@@ -177,15 +177,24 @@ class SessionManager:
     def _mount_mcp_obsidian(self) -> None:
         if getattr(self, '_mcp_obsidian_mounted', False):
             return
+        if not self._obsidian_vault_root():
+            return  # no vault configured — skip silently
         t = time.perf_counter()
         from orbit.runtime.mcp.bootstrap import bootstrap_local_obsidian_mcp_server
         self._record_timing('mcp_obsidian_import_deferred_ms', t)
         t = time.perf_counter()
-        bootstrap = bootstrap_local_obsidian_mcp_server(vault_root=self._obsidian_vault_root())
-        from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
-        register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
-        self._record_timing('mcp_obsidian_ms', t)
-        self._mcp_obsidian_mounted = True
+        try:
+            bootstrap = bootstrap_local_obsidian_mcp_server(vault_root=self._obsidian_vault_root())
+            from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
+            register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
+            self._record_timing('mcp_obsidian_ms', t)
+            self._mcp_obsidian_mounted = True
+        except Exception as exc:
+            # Server start / tool discovery failed (e.g. vault path missing on this machine).
+            # Log and skip rather than crashing the warmup / session manager init.
+            from orbit.interfaces.pty_debug import debug_log
+            debug_log(f"session_manager:_mount_mcp_obsidian failed (vault={self._obsidian_vault_root()!r}): {exc!r}")
+            self._record_timing('mcp_obsidian_error_ms', t)
 
     def _enable_memory_runtime(self) -> None:
         if self.memory_service is not None:
@@ -880,7 +889,7 @@ class SessionManager:
             },
         )
 
-    def run_session_turn(self, *, session_id: str, user_input: str, descriptor: RunDescriptor | None = None, on_assistant_partial_text=None) -> ExecutionPlan:
+    def run_session_turn(self, *, session_id: str, user_input: str, descriptor: RunDescriptor | None = None, on_assistant_partial_text=None, on_stream_completed=None) -> ExecutionPlan:
         """Execute one canonical session turn and return its bounded result.
 
         Current MVP closure contract:
@@ -937,7 +946,7 @@ class SessionManager:
             source="runtime",
         )
         try:
-            plan = self._plan_from_messages(session=session, messages=messages, on_assistant_partial_text=on_assistant_partial_text)
+            plan = self._plan_from_messages(session=session, messages=messages, on_assistant_partial_text=on_assistant_partial_text, on_stream_completed=on_stream_completed)
             self._consume_pending_turn_snapshots(session)
             refreshed_after_plan = self.get_session(session_id)
             if refreshed_after_plan is not None:
@@ -1662,10 +1671,10 @@ class SessionManager:
             failure_reason=None,
         )
 
-    def _plan_from_messages(self, *, session: ConversationSession, messages: list[ConversationMessage], on_assistant_partial_text=None) -> ExecutionPlan:
+    def _plan_from_messages(self, *, session: ConversationSession, messages: list[ConversationMessage], on_assistant_partial_text=None, on_stream_completed=None) -> ExecutionPlan:
         """Use history-aware provider path when available, otherwise fallback."""
         if hasattr(self.backend, "plan_from_messages"):
-            return self.backend.plan_from_messages(messages, session=session, on_partial_text=on_assistant_partial_text)
+            return self.backend.plan_from_messages(messages, session=session, on_partial_text=on_assistant_partial_text, on_stream_completed=on_stream_completed)
         latest_user = next((message for message in reversed(messages) if message.role == MessageRole.USER), None)
         if latest_user is None:
             raise ValueError("cannot fallback to descriptor path without a user message")

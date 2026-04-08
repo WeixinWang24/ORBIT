@@ -49,7 +49,7 @@ def _pty_input_debug_path() -> Path | None:
     raw = os.environ.get(PTY_INPUT_DEBUG_ENV, "").strip().lower()
     if raw not in {"1", "true", "yes", "on"}:
         return None
-    log_dir = Path("/Volumes/2TB/MAS/openclaw-core/ORBIT/logs")
+    log_dir = Path(os.environ.get("ORBIT_LOG_DIR", str(Path(__file__).resolve().parents[3] / "logs")))
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir / f"pty-input-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
 
@@ -101,6 +101,13 @@ def _start_background_submit(state: RuntimeCliState, adapter: RuntimeCliAdapter)
             state.assistant_inflight_text = partial
             state.assistant_inflight_dirty = True
 
+        def _handle_stream_completed() -> None:
+            # Called right after the SSE stream ends, before slow post-stream work
+            # (normalize_events, memory capture). Clears the streaming banner
+            # immediately so the UI does not appear stuck in streaming state.
+            state.assistant_inflight_text = None
+            state.assistant_inflight_dirty = True
+
         try:
             state.assistant_inflight_text = ""
             state.assistant_inflight_dirty = True
@@ -123,6 +130,7 @@ def _start_background_submit(state: RuntimeCliState, adapter: RuntimeCliAdapter)
                     session_id,
                     text,
                     on_assistant_partial_text=_handle_partial_text,
+                    on_stream_completed=_handle_stream_completed,
                 )
                 state.completed_submit_banner = f"Submitted to {session_id}"
                 state.completed_submit_error = None
@@ -200,14 +208,17 @@ def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None, *, runtime_mode
             state.warmup_done = True
             state.warmup_error = None
             if state.pending_warmup_submit and state.composer.text.strip() and state.active_session_id:
-                state.banner = f"Submitting {len(state.composer.text.strip())} chars to active session..."
+                # Only non-slash messages are queued here (slash commands now bypass
+                # the warmup gate and execute immediately in handle_chat_key).
+                queued_text = state.composer.text.strip()
+                state.pending_warmup_submit = False
+                state.composer.text = ""
+                state.banner = f"Submitting {len(queued_text)} chars to active session..."
                 state.pending_submit_session_id = state.active_session_id
-                state.pending_submit_text = state.composer.text.strip()
+                state.pending_submit_text = queued_text
                 state.runtime_busy = True
                 state.completed_submit_banner = None
                 state.completed_submit_error = None
-                state.composer.text = ""
-                state.pending_warmup_submit = False
         except Exception as exc:
             state.warmup_error = repr(exc)
             state.warmup_done = True

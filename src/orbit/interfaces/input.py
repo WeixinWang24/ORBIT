@@ -19,10 +19,11 @@ import sys
 import fcntl
 import termios
 from dataclasses import dataclass
+from pathlib import Path
 
 ESC = "\x1b"
 _INPUT_DEBUG_ENABLED = os.environ.get("ORBIT_PTY_DEBUG", "").lower() in {"1", "true", "yes", "on"}
-_INPUT_DEBUG_PATH = "/Volumes/2TB/MAS/openclaw-core/ORBIT/.tmp/orbit_pty_debug.log"
+_INPUT_DEBUG_PATH = os.environ.get("ORBIT_PTY_DEBUG_LOG", str(Path(__file__).resolve().parents[3] / ".tmp" / "orbit_pty_debug.log"))
 _INPUT_DEBUG_VERSION = "input_tokenizer_v1"
 _PENDING_SEQ = ""
 _PENDING_AGE = 0

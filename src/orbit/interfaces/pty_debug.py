@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 _DEBUG_ENABLED = os.environ.get("ORBIT_PTY_DEBUG", "").lower() in {"1", "true", "yes", "on"}
-_DEBUG_PATH = Path(os.environ.get("ORBIT_PTY_DEBUG_LOG", "/Volumes/2TB/MAS/openclaw-core/ORBIT/.tmp/orbit_pty_debug.log"))
+_DEBUG_PATH = Path(os.environ.get("ORBIT_PTY_DEBUG_LOG", str(Path(__file__).resolve().parents[3] / ".tmp" / "orbit_pty_debug.log")))
 
 
 def debug_enabled() -> bool:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 from orbit.runtime.auth.storage.openai import OpenAIOAuthCredential
@@ -43,6 +44,20 @@ class OpenAIAuthStore:
         )
         os.chmod(self.file_path, 0o600)
         return self.file_path
+
+    def load_fresh(self) -> OpenAIOAuthCredential:
+        """Load credential, auto-refreshing via refresh token if expired."""
+        credential = self.load()
+        now_ms = int(time.time() * 1000)
+        if credential.expires_at_epoch_ms > now_ms:
+            return credential
+        from orbit.runtime.auth.oauth.openai_oauth_refresh import refresh_openai_credential, OpenAIRefreshError
+        try:
+            refreshed = refresh_openai_credential(credential)
+        except OpenAIRefreshError as exc:
+            raise OpenAIAuthStoreError(f"access token expired and refresh failed: {exc}") from exc
+        self.save(refreshed)
+        return refreshed
 
     def load(self) -> OpenAIOAuthCredential:
         if not self.file_path.exists():

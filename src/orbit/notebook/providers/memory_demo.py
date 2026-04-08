@@ -55,7 +55,7 @@ def create_memory_showcase_bundle(*, db_path: Path | None = None, session_id: st
     By default, the showcase database now lives inside the ORBIT repo `.tmp`
     tree so repeated notebook runs stay visible and easy to clean.
     """
-    default_db_dir = Path('/Volumes/2TB/MAS/openclaw-core/ORBIT/.tmp/notebooks/memory_showcase')
+    default_db_dir = Path(__file__).resolve().parents[4] / ".tmp" / "notebooks" / "memory_showcase"
     default_db_dir.mkdir(parents=True, exist_ok=True)
     db_path = db_path or (default_db_dir / 'orbit.db')
     db_path.unlink(missing_ok=True)

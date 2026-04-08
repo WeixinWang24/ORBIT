@@ -1,5 +1,5 @@
-# Compatibility wrapper. Canonical environment file now lives at `config/environment.yml`.
-# Keep this file temporarily to avoid breaking existing local habits.
+# Compatibility wrapper — canonical environment file is at config/environment.yml.
+# Both files are kept in sync. Prefer:  conda env create -f config/environment.yml
 name: Orbit
 channels:
   - conda-forge
@@ -11,6 +11,15 @@ dependencies:
   - pydantic>=2
   - typer
   - rich
+  - pytest
+  - mypy
+  - ruff
   - pip:
+      - mcp[cli]>=1.27,<2
+      - psycopg2-binary>=2.9,<3
+      - torch
+      - transformers
+      - sentence-transformers
+      - huggingface_hub
       - playwright>=1.52,<2
       - -e .

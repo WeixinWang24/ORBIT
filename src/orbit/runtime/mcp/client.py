@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from queue import Queue
 from threading import Event, Thread
-from typing import Any, Protocol
+from typing import Any, Protocol, TextIO
 from urllib.parse import urlparse
 
 import anyio
@@ -15,6 +17,18 @@ from orbit.runtime.mcp.resource_models import McpResourceContent, McpResourceDes
 from orbit.tools.base import ToolResult
 
 DEFAULT_MCP_TIMEOUT_SECONDS = 15
+
+# Redirect MCP subprocess stderr to a log file so it never pollutes the PTY UI.
+# The file is created lazily on first open; the directory is created if needed.
+_MCP_STDERR_LOG: Path = Path(
+    os.environ.get("ORBIT_MCP_STDERR_LOG",
+                   str(Path(__file__).resolve().parents[4] / ".tmp" / "mcp_stderr.log"))
+)
+
+
+def _open_mcp_errlog() -> TextIO:
+    _MCP_STDERR_LOG.parent.mkdir(parents=True, exist_ok=True)
+    return _MCP_STDERR_LOG.open("a", encoding="utf-8", errors="replace")
 
 
 class McpClient(Protocol):
@@ -51,7 +65,7 @@ class StdioMcpClient:
             env=self.bootstrap.env or None,
         )
         with anyio.fail_after(DEFAULT_MCP_TIMEOUT_SECONDS):
-            async with stdio_client(server_params) as (read_stream, write_stream):
+            async with stdio_client(server_params, errlog=_open_mcp_errlog()) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
                     result = await session.list_tools()
@@ -67,7 +81,7 @@ class StdioMcpClient:
             env=self.bootstrap.env or None,
         )
         with anyio.fail_after(DEFAULT_MCP_TIMEOUT_SECONDS):
-            async with stdio_client(server_params) as (read_stream, write_stream):
+            async with stdio_client(server_params, errlog=_open_mcp_errlog()) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
                     result = await session.call_tool(tool_name, arguments)
@@ -84,7 +98,7 @@ class StdioMcpClient:
             env=self.bootstrap.env or None,
         )
         with anyio.fail_after(DEFAULT_MCP_TIMEOUT_SECONDS):
-            async with stdio_client(server_params) as (read_stream, write_stream):
+            async with stdio_client(server_params, errlog=_open_mcp_errlog()) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
                     result = await session.list_resources()
@@ -118,7 +132,7 @@ class StdioMcpClient:
             env=self.bootstrap.env or None,
         )
         with anyio.fail_after(DEFAULT_MCP_TIMEOUT_SECONDS):
-            async with stdio_client(server_params) as (read_stream, write_stream):
+            async with stdio_client(server_params, errlog=_open_mcp_errlog()) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
                     result = await session.read_resource(uri)
@@ -169,7 +183,7 @@ class PersistentStdioMcpClient:
             args=self.bootstrap.args,
             env=self.bootstrap.env or None,
         )
-        async with stdio_client(server_params) as (read_stream, write_stream):
+        async with stdio_client(server_params, errlog=_open_mcp_errlog()) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
                 self._ready.set()

@@ -36,7 +36,7 @@ def resolve_openai_auth_material(credential: OpenAIOAuthCredential) -> ResolvedO
         raise OpenAIAuthResolutionError("OpenAI OAuth credential is missing an access token")
     now_ms = int(time.time() * 1000)
     if credential.expires_at_epoch_ms <= now_ms:
-        raise OpenAIAuthResolutionError("OpenAI OAuth access token is expired; refresh flow is not implemented yet")
+        raise OpenAIAuthResolutionError("OpenAI OAuth access token is expired; call load_fresh() to auto-refresh via refresh token")
     return ResolvedOpenAIAuthMaterial(
         bearer_token=credential.access_token,
         expires_at_epoch_ms=credential.expires_at_epoch_ms,

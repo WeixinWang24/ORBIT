@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 from orbit.runtime.mcp.models import McpCapabilityMetadata, McpClientBootstrap, McpStdioServerConfig
 from orbit.runtime.mcp.naming import normalize_name_for_mcp
 
-ORBIT_CONDA_PYTHON = Path("/Users/visen24/anaconda3/envs/Orbit/bin/python")
+# Resolve the Orbit conda-environment Python executable.
+# Prefer ORBIT_CONDA_PYTHON env-var override (useful in CI or non-standard layouts),
+# then fall back to the running interpreter so editable-install workflows just work.
+_conda_python_override = os.environ.get("ORBIT_CONDA_PYTHON", "").strip()
+ORBIT_CONDA_PYTHON = Path(_conda_python_override) if _conda_python_override else Path(sys.executable)
 ORBIT_REPO_ROOT = Path(__file__).resolve().parents[4]
 
 # ---------------------------------------------------------------------------

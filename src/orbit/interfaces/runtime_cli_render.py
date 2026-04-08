@@ -2,8 +2,36 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from unicodedata import east_asian_width
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_DEBUG_LOG_SOURCES = [
+    ("mcp_stderr",  _REPO_ROOT / ".tmp" / "mcp_stderr.log"),
+    ("orbit_debug", _REPO_ROOT / ".tmp" / "orbit_pty_debug.log"),
+]
+_DEBUG_LOG_MAX_LINES = 2000  # cap kept in memory per render
+
+
+def _read_debug_log_lines() -> list[str]:
+    """Read all configured debug log files and merge into a single line list."""
+    merged: list[str] = []
+    for source_name, path in _DEBUG_LOG_SOURCES:
+        if not path.exists():
+            continue
+        try:
+            raw = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        lines = raw.splitlines()[-_DEBUG_LOG_MAX_LINES:]
+        merged.append(f"── {source_name}  ({path}) ──")
+        merged.extend(lines)
+        merged.append("")
+    if not merged:
+        merged = ["(no debug log entries yet — logs appear here once MCP subprocesses run)"]
+    return merged
 
 from . import termio as T
 from .adapter_protocol import RuntimeCliAdapter
@@ -18,6 +46,7 @@ from .runtime_cli_state import (
     CHAT_MODE,
     HELP_MODE,
     INSPECT_ARTIFACTS_TAB,
+    INSPECT_DEBUG_TAB,
     INSPECT_EVENTS_TAB,
     INSPECT_MODE,
     INSPECT_TOOL_CALLS_TAB,
@@ -52,6 +81,7 @@ INSPECT_TAB_LABELS = {
     INSPECT_EVENTS_TAB: "events",
     INSPECT_TOOL_CALLS_TAB: "tool_calls",
     INSPECT_ARTIFACTS_TAB: "artifacts",
+    INSPECT_DEBUG_TAB: "debug_log",
 }
 
 
@@ -231,8 +261,12 @@ def approvals_body_lines(state: RuntimeCliState, adapter: RuntimeCliAdapter, wid
 
 
 def inspect_body_lines(state: RuntimeCliState, adapter: RuntimeCliAdapter, width: int) -> list[str]:
-    session_id = current_session_id(state, adapter)
     tab = INSPECT_TAB_LABELS[state.tab_index]
+
+    if tab == "debug_log":
+        return _debug_log_body_lines(state, width)
+
+    session_id = current_session_id(state, adapter)
     lines = [
         header_text(f"Inspect · {session_id}", width),
         divider(width),
@@ -265,7 +299,31 @@ def inspect_body_lines(state: RuntimeCliState, adapter: RuntimeCliAdapter, width
             body.append("")
     lines += body
     lines.append(divider(width))
-    lines.append(T.DIM + "Navigation: ↑↓ scroll · t/Tab next · Shift+Tab prev · j/k session hop · c back · Ctrl+C quit" + T.RESET)
+    lines.append(T.DIM + "Navigation: ↑↓ scroll · t/Tab next tab · Shift+Tab prev tab · j/k session hop · i debug log · c back · Ctrl+C quit" + T.RESET)
+    return lines
+
+
+def _debug_log_body_lines(state: RuntimeCliState, width: int) -> list[str]:
+    lines = [
+        header_text("Debug Log", width),
+        divider(width),
+        tab_bar(state.tab_index),
+        divider(width),
+    ]
+    raw_lines = _read_debug_log_lines()
+    for ln in raw_lines:
+        # colour section headers
+        if ln.startswith("──"):
+            lines.append(ACCENT_WARNING + T.BOLD + fit_text(ln, width) + T.RESET)
+        else:
+            # dim ordinary log lines; highlight lines that look like errors
+            low = ln.lower()
+            if any(k in low for k in ("error", "traceback", "exception", "valueerror", "typeerror")):
+                lines.append(T.FG_BRIGHT_RED + fit_text(ln, width) + T.RESET)
+            else:
+                lines.append(T.DIM + fit_text(ln, width) + T.RESET)
+    lines.append(divider(width))
+    lines.append(T.DIM + "Navigation: ↑↓/j/k scroll · t/Tab next tab · Shift+Tab prev tab · i inspect · c back · Ctrl+C quit" + T.RESET)
     return lines
 
 
@@ -361,7 +419,8 @@ def frame_lines(state: RuntimeCliState, adapter: RuntimeCliAdapter | None) -> Fr
         return build_chat_frame(state, adapter, width=width, height=height, pulse_tick=pulse_tick)
     session_id = current_session_id(state, adapter)
     if state.mode == INSPECT_MODE:
-        title = f"ORBIT · Inspector · {INSPECT_TAB_LABELS[state.tab_index]} · {session_id}"
+        tab_label = INSPECT_TAB_LABELS[state.tab_index]
+        title = f"ORBIT · Debug Log" if tab_label == "debug_log" else f"ORBIT · Inspector · {tab_label} · {session_id}"
     elif state.mode == APPROVALS_MODE:
         title = f"ORBIT · Approvals · {session_id}"
     elif state.mode == SESSIONS_MODE:

@@ -141,6 +141,13 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
 
         step = time.perf_counter()
         manager._enable_memory_runtime()
+        # Pre-load the embedding model so the first turn's memory capture does not
+        # block the worker thread and cause a "stuck in streaming state" visual.
+        if getattr(manager, 'embedding_service', None) is not None:
+            try:
+                manager.embedding_service.embed_text("orbit_warmup_prefetch")
+            except Exception:
+                pass
         timings['warmup_memory_ms'] = round((time.perf_counter() - step) * 1000, 2)
 
         step = time.perf_counter()
@@ -310,8 +317,8 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         approvals = self.session_manager.list_open_session_approvals()
         return [self._map_open_approval(item) for item in approvals]
 
-    def send_user_message(self, session_id: str, text: str, on_assistant_partial_text=None) -> list[InterfaceMessage]:
-        self.session_manager.run_session_turn(session_id=session_id, user_input=text, on_assistant_partial_text=on_assistant_partial_text)
+    def send_user_message(self, session_id: str, text: str, on_assistant_partial_text=None, on_stream_completed=None) -> list[InterfaceMessage]:
+        self.session_manager.run_session_turn(session_id=session_id, user_input=text, on_assistant_partial_text=on_assistant_partial_text, on_stream_completed=on_stream_completed)
         pending = self.get_pending_approval(session_id)
         if pending is not None:
             self.append_system_message(

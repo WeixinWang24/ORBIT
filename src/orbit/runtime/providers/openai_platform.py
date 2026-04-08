@@ -112,7 +112,7 @@ class OpenAIOAuthExecutionBackend(ExecutionBackend):
         return self.normalize_first_response(raw)
 
     def load_persisted_credential(self) -> OpenAIOAuthCredential:
-        return self.auth_store.load()
+        return self.auth_store.load_fresh()
 
     def save_persisted_credential(self, credential: OpenAIOAuthCredential) -> Path:
         return self.auth_store.save(credential)

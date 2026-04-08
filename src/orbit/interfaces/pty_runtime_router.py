@@ -20,6 +20,7 @@ from .runtime_cli_state import (
     DEFAULT_CHAT_BANNER,
     HELP_MODE,
     INSPECT_ARTIFACTS_TAB,
+    INSPECT_DEBUG_TAB,
     INSPECT_EVENTS_TAB,
     INSPECT_MODE,
     INSPECT_TAB_ORDER,
@@ -423,6 +424,9 @@ def route_slash_command(state: RuntimeShellState, adapter: RuntimeCliAdapter, te
         return
     if command == "/artifacts":
         activate_inspect(state, INSPECT_ARTIFACTS_TAB)
+        return
+    if command in {"/debug", "/debug-log", "/debuglog"}:
+        activate_inspect(state, INSPECT_DEBUG_TAB)
         return
     if command == "/approvals":
         activate_approvals(state)

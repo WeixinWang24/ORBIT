@@ -80,7 +80,7 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
     def plan(self, descriptor: RunDescriptor) -> ExecutionPlan:
         return self.plan_from_messages([ConversationMessage(session_id=descriptor.session_key, role=MessageRole.USER, content=descriptor.user_input, turn_index=1)], session=None)
 
-    def plan_from_messages(self, messages: list[ConversationMessage], *, session: ConversationSession | None = None, on_partial_text: Callable[[str], None] | None = None) -> ExecutionPlan:
+    def plan_from_messages(self, messages: list[ConversationMessage], *, session: ConversationSession | None = None, on_partial_text: Callable[[str], None] | None = None, on_stream_completed: Callable[[], None] | None = None) -> ExecutionPlan:
         credential = self.load_persisted_credential()
         auth = self.resolve_auth_material(credential)
         url = self.build_request_url()
@@ -106,12 +106,19 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
         except OpenAICodexHttpError as exc:
             normalized = ProviderNormalizedResult(source_backend=self.backend_name, plan_label="openai-codex-transport-failure", failure=ProviderFailure(kind="transport_error", message=str(exc)), metadata={"payload_shape": "codex_messages_projection"})
             return normalized_result_to_execution_plan(normalized)
+        # SSE stream has ended — notify the UI so it can clear the streaming banner
+        # before we enter the potentially slow post-stream work (normalize, memory capture).
+        if on_stream_completed is not None:
+            try:
+                on_stream_completed()
+            except Exception:
+                pass
         # on_partial_text already fired incrementally above; pass None to avoid
         # re-firing the same callbacks during final normalization.
         return self.normalize_events(events, on_partial_text=None)
 
     def load_persisted_credential(self) -> OpenAIOAuthCredential:
-        return self.auth_store.load()
+        return self.auth_store.load_fresh()
 
     def resolve_auth_material(self, credential: OpenAIOAuthCredential) -> ResolvedOpenAIAuthMaterial:
         return resolve_openai_auth_material(credential)
@@ -145,7 +152,7 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
         if session is not None and query_text.strip() and self._knowledge_enabled():
             try:
                 vault_root = getattr(getattr(self, "session_manager", None), "_obsidian_vault_root", None)
-                resolved_vault_root = vault_root() if callable(vault_root) else "/Volumes/2TB/MAS/vio_vault"
+                resolved_vault_root = vault_root() if callable(vault_root) else os.environ.get("ORBIT_OBSIDIAN_VAULT_ROOT", "")
                 knowledge_service = ObsidianKnowledgeService(vault_root=resolved_vault_root)
 
                 availability = knowledge_service.check_availability()

@@ -5,7 +5,7 @@ from __future__ import annotations
 from .adapter_protocol import RuntimeCliAdapter
 from .input import ParsedKey
 from .pty_runtime_router import activate_chat, activate_approvals, activate_help, activate_inspect, activate_sessions, attach_current_session, cycle_inspect_tab, hop_inspect_session, resolve_current_approval, resolve_current_approval_via_picker, submit_composer
-from .runtime_cli_state import INSPECT_TRANSCRIPT_TAB, RETURN_TO_CHAT_BANNER, RuntimeCliState
+from .runtime_cli_state import INSPECT_DEBUG_TAB, INSPECT_TRANSCRIPT_TAB, RETURN_TO_CHAT_BANNER, RuntimeCliState
 
 
 def scroll_up(state: RuntimeCliState) -> None:
@@ -128,11 +128,15 @@ def handle_chat_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event: P
         if state.runtime_busy and not has_pending_approval:
             state.banner = "Runtime busy; you can keep typing, but submit waits for the current turn to finish."
             return True
-        if not state.warmup_done:
+        queued_text = state.composer.text.strip()
+        is_slash = queued_text.startswith("/")
+        if not state.warmup_done and not is_slash:
+            # Block normal messages until MCP tools finish loading.
+            # Slash commands are UI-local and don't need warmup — pass them through.
             state.pending_warmup_submit = True
             state.banner = "Warming up capabilities before first send..."
             return True
-        state.banner = f"Submitting {len(state.composer.text.strip())} chars to active session..."
+        state.banner = f"Submitting {len(queued_text)} chars to active session..."
         submit_composer(state, adapter)
         reset_scroll(state)
         return True
@@ -211,12 +215,18 @@ def handle_approvals_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, eve
 
 def handle_inspect_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event: ParsedKey) -> bool:
     name = event.name
+    on_debug_tab = (state.tab_index == INSPECT_DEBUG_TAB)
     if name in ("h", "H"):
         activate_help(state)
         reset_scroll(state)
     elif name == "c":
         activate_chat(state, RETURN_TO_CHAT_BANNER)
         reset_scroll(state)
+    elif name == "i":
+        # From debug log: jump to transcript; from other tabs: no-op (already in inspect)
+        if on_debug_tab:
+            activate_inspect(state, INSPECT_TRANSCRIPT_TAB)
+            reset_scroll(state)
     elif name in {"up", "pageup"}:
         scroll_up(state)
     elif name in {"down", "pagedown"}:
@@ -228,11 +238,17 @@ def handle_inspect_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event
         cycle_inspect_tab(state, reverse=True)
         reset_scroll(state)
     elif name == "j":
-        hop_inspect_session(state, adapter)
-        reset_scroll(state)
+        if on_debug_tab:
+            scroll_down(state)
+        else:
+            hop_inspect_session(state, adapter)
+            reset_scroll(state)
     elif name == "k":
-        hop_inspect_session(state, adapter, reverse=True)
-        reset_scroll(state)
+        if on_debug_tab:
+            scroll_up(state)
+        else:
+            hop_inspect_session(state, adapter, reverse=True)
+            reset_scroll(state)
     return False
 
 
