@@ -385,7 +385,9 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         )
 
     def reauthorize_tool_path(self, session_id: str, tool_name: str, note: str | None = None, source: str = "runtime_cli"):
-        return self.session_manager.reauthorize_tool_path(
+        from orbit.runtime.governance.tool_governance_service import ToolGovernanceService
+
+        return ToolGovernanceService(self.session_manager).reauthorize_tool_path(
             session_id=session_id,
             tool_name=tool_name,
             note=note,
