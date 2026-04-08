@@ -16,6 +16,7 @@ from orbit.runtime.execution.continuation_context import build_rejection_continu
 from orbit.runtime.governance.tool_approval_policy import PolicyDecision, PolicyEvaluationInput, evaluate_tool_approval_policy
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
 from orbit.runtime.auth.storage.openai_store import OpenAIAuthStoreError
+from orbit.runtime.knowledge.context_accounting_service import ContextAccountingService
 from orbit.store.base import OrbitStore
 from orbit.tools.base import ToolResult
 from orbit.tools.registry import ToolRegistry
@@ -313,6 +314,10 @@ class SessionManager:
             refreshed_after_plan = self.get_session(session_id)
             if refreshed_after_plan is not None:
                 session = refreshed_after_plan
+            self._record_plan_usage_if_present(session=session, plan=plan)
+            refreshed_after_usage = self.get_session(session_id)
+            if refreshed_after_usage is not None:
+                session = refreshed_after_usage
         except OpenAIAuthStoreError as exc:
             failure_message = str(exc)
             self.emit_session_event(
@@ -821,6 +826,24 @@ class SessionManager:
     def _get_pending_approval(self, session: ConversationSession) -> dict | None:
         pending = session.metadata.get("pending_approval")
         return pending if isinstance(pending, dict) else None
+
+    def _record_plan_usage_if_present(self, *, session: ConversationSession, plan: ExecutionPlan) -> None:
+        """Thin integration helper: extract usage from plan.metadata and record it.
+
+        SessionManager does not implement token accounting itself. This method
+        reads provider-extracted usage/model hints from the plan boundary and
+        delegates all accounting logic to ContextAccountingService.
+        """
+        metadata = plan.metadata if isinstance(plan.metadata, dict) else {}
+        usage = metadata.get("usage")
+        if not usage:
+            return
+        model = metadata.get("model") or getattr(getattr(self, "backend", None), "config", None) and getattr(self.backend.config, "model", "") or ""
+        provider = getattr(getattr(self, "backend", None), "backend_name", "")
+        svc = ContextAccountingService()
+        call_usage = svc.normalize_provider_usage(usage=usage, provider=provider, model=model or "")
+        if call_usage is not None:
+            svc.record_observed_usage(session=session, call_usage=call_usage, store=self.store)
 
     def _plan_from_messages(self, *, session: ConversationSession, messages: list[ConversationMessage], on_assistant_partial_text=None, on_stream_completed=None) -> ExecutionPlan:
         """Use history-aware provider path when available, otherwise fallback."""
