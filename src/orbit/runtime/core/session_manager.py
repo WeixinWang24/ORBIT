@@ -309,15 +309,11 @@ class SessionManager:
             source="runtime",
         )
         try:
-            plan = self._plan_from_messages(session=session, messages=messages, on_assistant_partial_text=on_assistant_partial_text, on_stream_completed=on_stream_completed)
+            plan = self._plan_from_messages_and_record_usage(session=session, messages=messages, on_assistant_partial_text=on_assistant_partial_text, on_stream_completed=on_stream_completed)
             self._consume_pending_turn_snapshots(session)
             refreshed_after_plan = self.get_session(session_id)
             if refreshed_after_plan is not None:
                 session = refreshed_after_plan
-            self._record_plan_usage_if_present(session=session, plan=plan)
-            refreshed_after_usage = self.get_session(session_id)
-            if refreshed_after_usage is not None:
-                session = refreshed_after_usage
         except OpenAIAuthStoreError as exc:
             failure_message = str(exc)
             self.emit_session_event(
@@ -446,7 +442,7 @@ class SessionManager:
             continuation_messages = list(updated_messages)
             if continuation_context is not None and continuation_context.bridge_message is not None:
                 continuation_messages.append(continuation_context.bridge_message)
-            continuation_plan = self._plan_from_messages(session=session, messages=continuation_messages)
+            continuation_plan = self._plan_from_messages_and_record_usage(session=session, messages=continuation_messages)
             return self._finalize_session_plan(
                 session=session,
                 plan=continuation_plan,
@@ -481,6 +477,7 @@ class SessionManager:
         self.store.save_tool_invocation(invocation)
         tool_result = self.execute_tool_request(session=session, tool_request=tool_request)
         from orbit.runtime.governance.grounding_service import GroundingGovernanceService
+        from orbit.runtime.governance.tool_governance_service import ToolGovernanceService
 
         GroundingGovernanceService(self).record_read_state(
             session=session,
@@ -513,7 +510,7 @@ class SessionManager:
         if refreshed is not None:
             session = refreshed
         updated_messages = self.list_messages(session.session_id)
-        final_plan = self._plan_from_messages(session=session, messages=updated_messages)
+        final_plan = self._plan_from_messages_and_record_usage(session=session, messages=updated_messages)
         finalized_plan = self._finalize_session_plan(session=session, plan=final_plan, messages=updated_messages)
         return finalized_plan
 
@@ -826,6 +823,33 @@ class SessionManager:
     def _get_pending_approval(self, session: ConversationSession) -> dict | None:
         pending = session.metadata.get("pending_approval")
         return pending if isinstance(pending, dict) else None
+
+    def _plan_from_messages_and_record_usage(
+        self,
+        *,
+        session: ConversationSession,
+        messages: list[ConversationMessage],
+        on_assistant_partial_text=None,
+        on_stream_completed=None,
+    ) -> ExecutionPlan:
+        """Thin wrapper: plan then record observed usage in one call.
+
+        Use this everywhere a real provider call is made so that usage is
+        recorded consistently across all planning paths (normal turn, rejection
+        continuation, tool-closure replan).
+        """
+        plan = self._plan_from_messages(
+            session=session,
+            messages=messages,
+            on_assistant_partial_text=on_assistant_partial_text,
+            on_stream_completed=on_stream_completed,
+        )
+        # Re-read session before recording so we have the freshest metadata
+        # (pending snapshot consumption may have already saved a new version).
+        refreshed = self.get_session(session.session_id)
+        effective_session = refreshed if refreshed is not None else session
+        self._record_plan_usage_if_present(session=effective_session, plan=plan)
+        return plan
 
     def _record_plan_usage_if_present(self, *, session: ConversationSession, plan: ExecutionPlan) -> None:
         """Thin integration helper: extract usage from plan.metadata and record it.

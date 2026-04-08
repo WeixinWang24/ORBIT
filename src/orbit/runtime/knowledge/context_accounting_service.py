@@ -32,6 +32,17 @@ class ContextAccountingService:
     # Stable key under session.metadata where usage is persisted.
     METADATA_KEY = "context_usage"
 
+    # All first-slice usage field names across both naming styles.
+    _KNOWN_USAGE_FIELDS = frozenset({
+        "input_tokens",
+        "output_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "reasoning_tokens",
+    })
+
     def normalize_provider_usage(
         self,
         *,
@@ -46,29 +57,26 @@ class ContextAccountingService:
         - OpenAI Chat Completions: prompt_tokens / completion_tokens
         - Extended: cache_creation_input_tokens, cache_read_input_tokens, reasoning_tokens
 
-        Returns None when usage is absent or empty so callers can skip recording.
+        Returns None only when usage is truly absent — i.e. not a dict, or no
+        known usage field is present (even as None).  Explicit zero values are
+        preserved so that cache-only or reasoning-only calls are not silently
+        dropped.
         """
-        if not usage or not isinstance(usage, dict):
+        if not isinstance(usage, dict) or not usage:
             return None
 
-        input_tokens = (
-            usage.get("input_tokens")
-            or usage.get("prompt_tokens")
-            or 0
-        )
-        output_tokens = (
-            usage.get("output_tokens")
-            or usage.get("completion_tokens")
-            or 0
-        )
-
-        # No tokens at all — treat as absent.
-        if not input_tokens and not output_tokens:
+        # Return None only when every known field is absent (key not in dict).
+        # A key present with value 0 counts as "present".
+        if not any(k in usage for k in self._KNOWN_USAGE_FIELDS):
             return None
+
+        # Prefer the Responses-API name; fall back to Chat-Completions name.
+        raw_input = usage["input_tokens"] if "input_tokens" in usage else usage.get("prompt_tokens")
+        raw_output = usage["output_tokens"] if "output_tokens" in usage else usage.get("completion_tokens")
 
         return ModelCallUsage(
-            input_tokens=int(input_tokens),
-            output_tokens=int(output_tokens),
+            input_tokens=int(raw_input or 0),
+            output_tokens=int(raw_output or 0),
             cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens") or 0),
             cache_read_input_tokens=int(usage.get("cache_read_input_tokens") or 0),
             reasoning_tokens=int(usage.get("reasoning_tokens") or 0),
