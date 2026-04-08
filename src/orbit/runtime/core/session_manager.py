@@ -734,18 +734,7 @@ class SessionManager:
             return self._execute_non_approval_tool_closure(session=session, initial_plan=plan)
         return ToolGovernanceService(self).open_session_approval(session=session, tool_request=tool_request, plan=plan)
 
-    def _materialize_policy_message_outcome(self, *, session: ConversationSession, plan: ExecutionPlan, tool_request: ToolRequest, decision: PolicyDecision) -> ExecutionPlan:
-        from orbit.runtime.governance.tool_governance_service import ToolGovernanceService
-
-        spec = ToolGovernanceService(self).build_policy_message_outcome_spec(
-            tool_request=tool_request,
-            decision=decision,
-        )
-        if spec["termination_requested"]:
-            session.metadata["terminated"] = True
-            session.metadata["termination_reason"] = decision.reason
-            session.updated_at = datetime.now(timezone.utc)
-            self.store.save_session(session)
+    def _materialize_policy_outcome_from_spec(self, *, session: ConversationSession, plan: ExecutionPlan, decision: PolicyDecision, spec: dict) -> ExecutionPlan:
         self.append_context_artifact_for_session(
             session_id=session.session_id,
             artifact_type=spec["artifact_type"],
@@ -768,6 +757,25 @@ class SessionManager:
             plan_label=f"{plan.plan_label}-{spec['plan_suffix']}",
             final_text=decision.explanation,
             should_finish_after_tool=True,
+        )
+
+    def _materialize_policy_message_outcome(self, *, session: ConversationSession, plan: ExecutionPlan, tool_request: ToolRequest, decision: PolicyDecision) -> ExecutionPlan:
+        from orbit.runtime.governance.tool_governance_service import ToolGovernanceService
+
+        spec = ToolGovernanceService(self).build_policy_message_outcome_spec(
+            tool_request=tool_request,
+            decision=decision,
+        )
+        if spec["termination_requested"]:
+            session.metadata["terminated"] = True
+            session.metadata["termination_reason"] = decision.reason
+            session.updated_at = datetime.now(timezone.utc)
+            self.store.save_session(session)
+        return self._materialize_policy_outcome_from_spec(
+            session=session,
+            plan=plan,
+            decision=decision,
+            spec=spec,
         )
 
     def _materialize_governed_tool_failure_outcome(self, *, session: ConversationSession, plan: ExecutionPlan, tool_request: ToolRequest, decision: PolicyDecision) -> ExecutionPlan:
@@ -789,28 +797,11 @@ class SessionManager:
             result_payload=spec["invocation_failure_payload"],
         )
         self.store.save_tool_invocation(invocation)
-        self.append_context_artifact_for_session(
-            session_id=session.session_id,
-            artifact_type=spec["artifact_type"],
-            content=spec["artifact_content"],
-            source="governance",
-        )
-        self.emit_session_event(
-            session_id=session.session_id,
-            event_type=RuntimeEventType.RUN_FAILED,
-            payload=spec["event_payload"],
-        )
-        self.append_message(
-            session_id=session.session_id,
-            role=MessageRole.ASSISTANT,
-            content=spec["message_content"],
-            metadata=spec["message_metadata"],
-        )
-        return ExecutionPlan(
-            source_backend=plan.source_backend,
-            plan_label=f"{plan.plan_label}-{spec['plan_suffix']}",
-            final_text=decision.explanation,
-            should_finish_after_tool=True,
+        return self._materialize_policy_outcome_from_spec(
+            session=session,
+            plan=plan,
+            decision=decision,
+            spec=spec,
         )
 
     def _get_tool_governance_metadata(self, tool_name: str) -> dict[str, str]:
