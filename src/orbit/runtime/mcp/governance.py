@@ -108,6 +108,8 @@ _OBSIDIAN_SYSTEM_ENVIRONMENT_TOOLS = {
     "obsidian_read_note",
     "obsidian_search_notes",
     "obsidian_get_note_links",
+    "obsidian_get_vault_metadata",
+    "obsidian_check_availability",
 }
 
 

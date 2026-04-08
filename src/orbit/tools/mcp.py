@@ -34,6 +34,11 @@ class McpToolWrapper(Tool):
         self.requires_approval = governance["requires_approval"]
         self.governance_policy_group = governance["governance_policy_group"]
         self.environment_check_kind = governance["environment_check_kind"]
+        # Capability posture metadata propagated from the bootstrap declaration.
+        # Read directly from client.bootstrap so the wrapper never needs to
+        # re-derive posture from server name or continuity_mode heuristics.
+        # None for servers that have not yet declared capability_metadata.
+        self.capability_metadata = getattr(getattr(client, "bootstrap", None), "capability_metadata", None)
 
     def invoke(self, **kwargs: Any) -> ToolResult:
         normalized_kwargs = normalize_filesystem_mcp_payload(

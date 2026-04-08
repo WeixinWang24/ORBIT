@@ -7,10 +7,8 @@ from pathlib import Path
 from orbit.runtime.mcp.bootstrap import bootstrap_stdio_mcp_server
 from orbit.runtime.mcp.models import McpCapabilityMetadata, McpClientBootstrap, McpStdioServerConfig
 
-# Diagnostics family: bounded result. Each invocation returns a self-contained
-# structured result object. No continuity or persistent state required; the MCP
-# server process lifecycle is irrelevant to correctness.
-_PYTEST_CAPABILITY_METADATA = McpCapabilityMetadata(
+# Diagnostics family: bounded result. See pytest_bootstrap.py for rationale.
+_MYPY_CAPABILITY_METADATA = McpCapabilityMetadata(
     capability_family="diagnostics",
     continuity_type="bounded_result",
     truth_source="bounded_result_object",
@@ -19,18 +17,18 @@ _PYTEST_CAPABILITY_METADATA = McpCapabilityMetadata(
 )
 
 
-def bootstrap_local_pytest_mcp_server(*, workspace_root: str) -> McpClientBootstrap:
+def bootstrap_local_mypy_mcp_server(*, workspace_root: str) -> McpClientBootstrap:
     repo_root = Path(__file__).resolve().parents[3]
-    server_path = repo_root / "mcp_servers" / "system" / "core" / "pytest" / "stdio_server.py"
+    server_path = repo_root / "mcp_servers" / "system" / "core" / "mypy" / "stdio_server.py"
     env = dict(os.environ)
     env["PYTHONPATH"] = str(repo_root / "src")
     env["ORBIT_WORKSPACE_ROOT"] = workspace_root
     config = McpStdioServerConfig(
-        name="pytest",
+        name="mypy",
         command=sys.executable,
         args=[str(server_path)],
         env=env,
         continuity_mode="stateless",
-        capability_metadata=_PYTEST_CAPABILITY_METADATA,
+        capability_metadata=_MYPY_CAPABILITY_METADATA,
     )
     return bootstrap_stdio_mcp_server(config)

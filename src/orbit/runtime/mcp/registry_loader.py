@@ -9,12 +9,20 @@ from orbit.tools.mcp import McpToolWrapper
 from orbit.tools.registry import ToolRegistry
 
 
+def _build_runtime_mcp_client(bootstrap: McpClientBootstrap):
+    """Select the MCP client according to declared capability continuity posture."""
+    mode = getattr(bootstrap, "continuity_mode", "stateless")
+    if mode in {"persistent_preferred", "persistent_required"}:
+        return PERSISTENT_MCP_CLIENT_REGISTRY.get_or_create(bootstrap)
+    return build_mcp_client(bootstrap)
+
+
 async def async_register_mcp_server_tools(*, registry: ToolRegistry, bootstrap: McpClientBootstrap) -> list[str]:
     """Build one MCP client, wrap its discovered tools, and register them.
 
     Async-friendly version for notebook/event-loop contexts.
     """
-    client = PERSISTENT_MCP_CLIENT_REGISTRY.get_or_create(bootstrap) if bootstrap.server_name == "browser" else build_mcp_client(bootstrap)
+    client = _build_runtime_mcp_client(bootstrap)
     descriptors = await client.async_list_tools()
     wrapped = [McpToolWrapper(descriptor=descriptor, client=client) for descriptor in descriptors]
     registry.register_many(wrapped)

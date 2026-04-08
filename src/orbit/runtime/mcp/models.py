@@ -5,6 +5,64 @@ from typing import Any, Literal
 
 
 McpTransportKind = Literal["stdio"]
+McpContinuityMode = Literal["stateless", "persistent_preferred", "persistent_required"]
+
+# ---------------------------------------------------------------------------
+# Capability metadata Literal types — first-slice, small and hard.
+# These encode the architecture-level posture of each MCP family, not
+# runtime state. All fields use closed Literal sets to catch declaration
+# drift at type-check time.
+# ---------------------------------------------------------------------------
+
+McpCapabilityFamily = Literal["browser", "process", "diagnostics", "filesystem", "git", "bash"]
+
+# How does continuity of meaningful state work for this family?
+McpContinuityType = Literal[
+    "live_host",         # live browser session — state lives in the host process
+    "persisted_task",    # persisted runner/output files — survives server restarts
+    "bounded_result",    # one-shot invocation → bounded result object
+    "session_semantic",  # continuity comes from session-scoped metadata
+    "stateless",         # no continuity required; each call is independent
+]
+
+# Where does authoritative truth come from for this family?
+McpTruthSource = Literal[
+    "live_host_state",              # live browser host process
+    "persisted_runtime_artifacts",  # runner status file + stdout/stderr files + store
+    "bounded_result_object",        # structured result returned by the tool call itself
+    "session_metadata",             # session-scoped metadata record
+    "filesystem_or_repo_truth",     # underlying filesystem or git repo state
+]
+
+# What architectural role does this family play in the runtime layer stack?
+McpLayerRole = Literal[
+    "substrate",       # core execution environment (process, browser, filesystem)
+    "interpretation",  # interprets substrate output (diagnostics: pytest, ruff, mypy)
+    "access_support",  # facilitates access to substrate (git, bash)
+]
+
+# How important is MCP transport continuity (persistent server process) for correctness?
+McpTransportImportance = Literal[
+    "required",    # correctness depends on the live MCP server process (browser)
+    "preferred",   # reuse improves efficiency; correctness does not depend on it (process)
+    "irrelevant",  # MCP server process lifecycle has no bearing on correctness
+]
+
+
+@dataclass(frozen=True)
+class McpCapabilityMetadata:
+    """
+    First-slice capability posture metadata for one MCP family.
+
+    Declared explicitly by each bootstrap function — not inferred by the runtime.
+    Frozen to prevent accidental mutation after construction.
+    All fields are required (no defaults): every declaration must be complete.
+    """
+    capability_family: McpCapabilityFamily
+    continuity_type: McpContinuityType
+    truth_source: McpTruthSource
+    layer_role: McpLayerRole
+    transport_importance: McpTransportImportance
 
 
 @dataclass
@@ -13,6 +71,10 @@ class McpStdioServerConfig:
     command: str
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    continuity_mode: McpContinuityMode = "stateless"
+    # Capability posture metadata. Optional so that servers that have not yet
+    # declared metadata (e.g., obsidian) do not require a declaration.
+    capability_metadata: McpCapabilityMetadata | None = None
 
 
 @dataclass
@@ -24,6 +86,11 @@ class McpClientBootstrap:
     command: str
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    continuity_mode: McpContinuityMode = "stateless"
+    # Propagated from McpStdioServerConfig at bootstrap time. Visible to
+    # registry_loader and McpToolWrapper so the runtime can inspect posture
+    # without reconstructing it from server name or continuity_mode heuristics.
+    capability_metadata: McpCapabilityMetadata | None = None
 
 
 @dataclass
