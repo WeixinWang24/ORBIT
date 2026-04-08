@@ -36,3 +36,4 @@ class ExecutionPlan(OrbitBaseModel):
     tool_request: ToolRequest | None = None
     should_finish_after_tool: bool = True
     failure_reason: str | None = None
+    metadata: dict = Field(default_factory=dict)
