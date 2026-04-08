@@ -19,9 +19,25 @@ WORKSPACE_ROOT_ENV = "ORBIT_WORKSPACE_ROOT"
 server = Server(
     name=SERVER_NAME,
     version=SERVER_VERSION,
-    instructions="Workspace-scoped MCP browser verification and light-interaction server for ORBIT core capabilities.",
+    # Live-host substrate: all tools operate against the same persistent browser session
+    # managed by a single long-lived BrowserManager in this server process. Snapshot-local
+    # element IDs (from browser_snapshot) are valid targets for click/type only within the
+    # same live session. Correctness depends on host process continuity — a restarted server
+    # starts a fresh browser context, losing all prior navigation, DOM state, and element IDs.
+    instructions=(
+        "Live-host substrate MCP server for ORBIT browser automation. "
+        "All tools share a single persistent browser session backed by a long-lived BrowserManager. "
+        "Snapshot-local element IDs from browser_snapshot are valid for click and type operations "
+        "only within the same live session. Host process continuity is required for correctness."
+    ),
 )
 
+# _MANAGER is the live browser host singleton for this server process. All tool calls
+# route through this single BrowserManager instance, which is why snapshot-local element
+# IDs from browser_snapshot remain valid targets for browser_click and browser_type —
+# they reference live DOM state in the same persistent session. A restarted server process
+# creates a new BrowserManager and a fresh browser context, invalidating all prior element
+# IDs. This is the architectural reason continuity_mode is persistent_required for this family.
 _MANAGER: BrowserManager | None = None
 
 
@@ -47,7 +63,10 @@ async def list_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name="browser_open",
-            description="Open a URL in the current browser session and make it the active page.",
+            description=(
+                "Navigate the live browser session to a URL, replacing the current page. "
+                "Prior element IDs are invalidated; take a new browser_snapshot after opening."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -59,7 +78,11 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="browser_snapshot",
-            description="Return a bounded structured snapshot of the current page.",
+            description=(
+                "Return a bounded structured snapshot of the current live page state. "
+                "Element IDs in the result are snapshot-local handles valid for browser_click "
+                "and browser_type within this same live session."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -68,7 +91,11 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="browser_click",
-            description="Click an element on the current page by snapshot-local element id.",
+            description=(
+                "Click an element on the current live page by snapshot-local element_id. "
+                "The element_id must come from a prior browser_snapshot in the same live session; "
+                "IDs from a different session or after a page navigation are not valid."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -80,7 +107,10 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="browser_type",
-            description="Fill an input/textarea on the current page by snapshot-local element id.",
+            description=(
+                "Type text into an input or textarea on the current live page by snapshot-local element_id. "
+                "The element_id must come from a prior browser_snapshot in the same live session."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -93,7 +123,10 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="browser_console",
-            description="Return a bounded buffer of recent browser console messages.",
+            description=(
+                "Return a bounded buffer of browser console messages accumulated in the live session. "
+                "Messages are captured from the persistent session; a restarted server loses prior console history."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -102,7 +135,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="browser_screenshot",
-            description="Capture a PNG screenshot artifact of the current page.",
+            description="Capture a PNG screenshot of the current live page state.",
             inputSchema={
                 "type": "object",
                 "properties": {},
