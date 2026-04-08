@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 from orbit.runtime.core.session_manager import SESSION_MANAGER_IMPORT_PROFILE_TIMINGS, SessionManager
+from orbit.runtime.knowledge.context_accounting_service import ContextAccountingService
 from orbit.runtime.capabilities.composer import RuntimeCapabilityBundle, RuntimeCapabilityComposer, RuntimeCapabilityProfile
 from orbit.runtime.governance.build_state_store import BuildStateStore
 from orbit.runtime.governance.protocol.mode import RuntimeMode, build_policy_profile_for_mode, mode_policy_summary, workspace_root_for_runtime_mode
@@ -322,6 +323,18 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             ]
         )
 
+    def get_context_usage_projection(self, session_id: str) -> dict[str, Any]:
+        """Return the context usage projection for a single session.
+
+        Delegates entirely to ContextAccountingService — no accounting logic here.
+        Returns safe empty defaults when no usage has been recorded yet.
+        """
+        session = self.session_manager.get_session(session_id)
+        if session is None:
+            return {"latest_call": None, "totals": {"total_input_tokens": 0, "total_output_tokens": 0, "total_cache_creation_input_tokens": 0, "total_cache_read_input_tokens": 0, "total_reasoning_tokens": 0, "call_count": 0}}
+        svc = ContextAccountingService()
+        return svc.build_status_projection(session=session)
+
     def get_workbench_status(self) -> dict[str, Any]:
         sessions = self.list_sessions()
         tool_names = sorted(tool.name for tool in self.session_manager.tool_registry.list_tools())
@@ -336,6 +349,14 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         active_self_change_plan_ids = [s.active_self_change_plan_id for s in sessions if s.active_self_change_plan_id]
         active_build_record_ids = [s.active_build_record_id for s in sessions if s.active_build_record_id]
         last_build_statuses = [s.last_build_status for s in sessions if s.last_build_status]
+        # Context usage: expose per-session projection for each active session.
+        # Strategy: build a map {session_id: usage_projection} for all known sessions.
+        # Consumers that have a focused session_id can look up their slice directly.
+        svc = ContextAccountingService()
+        session_usage_projections: dict[str, Any] = {}
+        for raw_session in self.session_manager.store.list_sessions():
+            proj = svc.build_status_projection(session=raw_session)
+            session_usage_projections[raw_session.session_id] = proj
         return {
             "adapter_kind": "session_manager_runtime",
             "runtime_mode": runtime_mode,
@@ -356,6 +377,8 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             "active_self_change_plan_ids": active_self_change_plan_ids,
             "active_build_record_ids": active_build_record_ids,
             "last_build_statuses": last_build_statuses,
+            # context usage projection (per-session, first-slice)
+            "session_usage_projections": session_usage_projections,
         }
 
     def get_pending_approval(self, session_id: str) -> InterfaceApproval | None:
