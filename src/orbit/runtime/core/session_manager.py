@@ -3,216 +3,27 @@
 from __future__ import annotations
 
 import json
-import sys
 import time
 from datetime import datetime, timezone
-import os
 from pathlib import Path
 
-_SESSION_MANAGER_IMPORT_TIMINGS: dict[str, float] = {}
-_t = time.perf_counter()
 from orbit.models import ContextArtifact, ConversationMessage, ConversationSession, ExecutionEvent, GovernedToolState, MessageRole, ToolInvocation, ToolInvocationStatus
-_SESSION_MANAGER_IMPORT_TIMINGS['models_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-_t = time.perf_counter()
 from orbit.models.core import new_id
-_SESSION_MANAGER_IMPORT_TIMINGS['models_core_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-_t = time.perf_counter()
 from orbit.runtime.core.contracts import RunDescriptor, WorkspaceDescriptor
-_SESSION_MANAGER_IMPORT_TIMINGS['runtime_core_contracts_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-_t = time.perf_counter()
 from orbit.runtime.governance.protocol.mode import ModePolicyDescriptor, RuntimeMode, build_mode_policy_snapshot
-_SESSION_MANAGER_IMPORT_TIMINGS['mode_protocol_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-_t = time.perf_counter()
 from orbit.runtime.core.events import RuntimeEventType
-_SESSION_MANAGER_IMPORT_TIMINGS['runtime_core_events_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-_t = time.perf_counter()
 from orbit.runtime.execution.continuation_context import build_rejection_continuation_context
-_SESSION_MANAGER_IMPORT_TIMINGS['continuation_context_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-_SESSION_MANAGER_IMPORT_TIMINGS['memory_ms'] = 'deferred'
-_t = time.perf_counter()
 from orbit.runtime.governance.tool_approval_policy import PolicyDecision, PolicyEvaluationInput, evaluate_tool_approval_policy
-_SESSION_MANAGER_IMPORT_TIMINGS['tool_approval_policy_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-_t = time.perf_counter()
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
-_SESSION_MANAGER_IMPORT_TIMINGS['execution_plans_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-_SESSION_MANAGER_IMPORT_TIMINGS['mcp_bootstrap_ms'] = 'deferred'
-_SESSION_MANAGER_IMPORT_TIMINGS['mcp_bash_bootstrap_ms'] = 'deferred'
-_SESSION_MANAGER_IMPORT_TIMINGS['mcp_process_bootstrap_ms'] = 'deferred'
-_SESSION_MANAGER_IMPORT_TIMINGS['mcp_pytest_bootstrap_ms'] = 'deferred'
-_SESSION_MANAGER_IMPORT_TIMINGS['mcp_ruff_bootstrap_ms'] = 'deferred'
-_SESSION_MANAGER_IMPORT_TIMINGS['mcp_mypy_bootstrap_ms'] = 'deferred'
-_SESSION_MANAGER_IMPORT_TIMINGS['mcp_browser_bootstrap_ms'] = 'deferred'
-_SESSION_MANAGER_IMPORT_TIMINGS['mcp_governance_ms'] = 'deferred'
-_SESSION_MANAGER_IMPORT_TIMINGS['mcp_registry_loader_ms'] = 'deferred'
-_t = time.perf_counter()
 from orbit.runtime.auth.storage.openai_store import OpenAIAuthStoreError
-_SESSION_MANAGER_IMPORT_TIMINGS['openai_store_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-_t = time.perf_counter()
 from orbit.store.base import OrbitStore
-_SESSION_MANAGER_IMPORT_TIMINGS['store_base_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-_t = time.perf_counter()
 from orbit.tools.base import ToolResult
-_SESSION_MANAGER_IMPORT_TIMINGS['tools_base_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-_t = time.perf_counter()
 from orbit.tools.registry import ToolRegistry
-_SESSION_MANAGER_IMPORT_TIMINGS['tools_registry_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-SESSION_MANAGER_IMPORT_PROFILE_TIMINGS = dict(_SESSION_MANAGER_IMPORT_TIMINGS)
+
+SESSION_MANAGER_IMPORT_PROFILE_TIMINGS: dict[str, float] = {}
 
 
 class SessionManager:
-    def _obsidian_vault_root(self) -> str:
-        configured = os.environ.get("ORBIT_OBSIDIAN_VAULT_ROOT", "").strip()
-        if configured:
-            return configured
-        return ""
-
-    def _record_timing(self, key: str, started_at: float) -> None:
-        timings = self.metadata.setdefault('session_manager_profile_timings', {}) if isinstance(getattr(self, 'metadata', None), dict) else {}
-        timings[key] = round((time.perf_counter() - started_at) * 1000, 2)
-
-    def _mount_mcp_filesystem(self) -> None:
-        if getattr(self, '_mcp_filesystem_mounted', False):
-            return
-        t = time.perf_counter()
-        from orbit.runtime.mcp.bootstrap import bootstrap_local_filesystem_mcp_server
-        self._record_timing('mcp_filesystem_import_deferred_ms', t)
-        t = time.perf_counter()
-        bootstrap = bootstrap_local_filesystem_mcp_server(workspace_root=self.workspace_root)
-        from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
-        register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
-        self._record_timing('mcp_filesystem_ms', t)
-        self._mcp_filesystem_mounted = True
-
-    def _mount_mcp_git(self) -> None:
-        if getattr(self, '_mcp_git_mounted', False):
-            return
-        t = time.perf_counter()
-        from orbit.runtime.mcp.bootstrap import bootstrap_local_git_mcp_server
-        self._record_timing('mcp_git_import_deferred_ms', t)
-        t = time.perf_counter()
-        bootstrap = bootstrap_local_git_mcp_server(workspace_root=self.workspace_root)
-        from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
-        register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
-        self._record_timing('mcp_git_ms', t)
-        self._mcp_git_mounted = True
-
-    def _mount_mcp_bash(self) -> None:
-        if getattr(self, '_mcp_bash_mounted', False):
-            return
-        t = time.perf_counter()
-        from orbit.runtime.mcp.bash_bootstrap import bootstrap_local_bash_mcp_server
-        self._record_timing('mcp_bash_import_deferred_ms', t)
-        t = time.perf_counter()
-        bootstrap = bootstrap_local_bash_mcp_server(workspace_root=self.workspace_root)
-        from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
-        register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
-        self._record_timing('mcp_bash_ms', t)
-        self._mcp_bash_mounted = True
-
-    def _mount_mcp_process(self) -> None:
-        if getattr(self, '_mcp_process_mounted', False):
-            return
-        t = time.perf_counter()
-        from orbit.runtime.mcp.process_bootstrap import bootstrap_local_process_mcp_server
-        self._record_timing('mcp_process_import_deferred_ms', t)
-        t = time.perf_counter()
-        bootstrap = bootstrap_local_process_mcp_server(workspace_root=self.workspace_root)
-        from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
-        register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
-        self._record_timing('mcp_process_ms', t)
-        self._mcp_process_mounted = True
-
-    def _mount_mcp_pytest(self) -> None:
-        if getattr(self, '_mcp_pytest_mounted', False):
-            return
-        t = time.perf_counter()
-        from orbit.runtime.mcp.pytest_bootstrap import bootstrap_local_pytest_mcp_server
-        self._record_timing('mcp_pytest_import_deferred_ms', t)
-        t = time.perf_counter()
-        bootstrap = bootstrap_local_pytest_mcp_server(workspace_root=self.workspace_root)
-        from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
-        register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
-        self._record_timing('mcp_pytest_ms', t)
-        self._mcp_pytest_mounted = True
-
-    def _mount_mcp_browser(self) -> None:
-        if getattr(self, '_mcp_browser_mounted', False):
-            return
-        t = time.perf_counter()
-        from orbit.runtime.mcp.browser_bootstrap import bootstrap_local_browser_mcp_server
-        self._record_timing('mcp_browser_import_deferred_ms', t)
-        t = time.perf_counter()
-        bootstrap = bootstrap_local_browser_mcp_server(workspace_root=self.workspace_root)
-        from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
-        register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
-        self._record_timing('mcp_browser_ms', t)
-        self._mcp_browser_mounted = True
-
-    def _mount_mcp_ruff(self) -> None:
-        if getattr(self, '_mcp_ruff_mounted', False):
-            return
-        t = time.perf_counter()
-        from orbit.runtime.mcp.ruff_bootstrap import bootstrap_local_ruff_mcp_server
-        self._record_timing('mcp_ruff_import_deferred_ms', t)
-        t = time.perf_counter()
-        bootstrap = bootstrap_local_ruff_mcp_server(workspace_root=self.workspace_root)
-        from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
-        register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
-        self._record_timing('mcp_ruff_ms', t)
-        self._mcp_ruff_mounted = True
-
-    def _mount_mcp_mypy(self) -> None:
-        if getattr(self, '_mcp_mypy_mounted', False):
-            return
-        t = time.perf_counter()
-        from orbit.runtime.mcp.mypy_bootstrap import bootstrap_local_mypy_mcp_server
-        self._record_timing('mcp_mypy_import_deferred_ms', t)
-        t = time.perf_counter()
-        bootstrap = bootstrap_local_mypy_mcp_server(workspace_root=self.workspace_root)
-        from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
-        register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
-        self._record_timing('mcp_mypy_ms', t)
-        self._mcp_mypy_mounted = True
-
-    def _mount_mcp_obsidian(self) -> None:
-        if getattr(self, '_mcp_obsidian_mounted', False):
-            return
-        if not self._obsidian_vault_root():
-            return  # no vault configured — skip silently
-        t = time.perf_counter()
-        from orbit.runtime.mcp.bootstrap import bootstrap_local_obsidian_mcp_server
-        self._record_timing('mcp_obsidian_import_deferred_ms', t)
-        t = time.perf_counter()
-        try:
-            bootstrap = bootstrap_local_obsidian_mcp_server(vault_root=self._obsidian_vault_root())
-            from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
-            register_mcp_server_tools(registry=self.tool_registry, bootstrap=bootstrap)
-            self._record_timing('mcp_obsidian_ms', t)
-            self._mcp_obsidian_mounted = True
-        except Exception as exc:
-            # Server start / tool discovery failed (e.g. vault path missing on this machine).
-            # Log and skip rather than crashing the warmup / session manager init.
-            from orbit.interfaces.pty_debug import debug_log
-            debug_log(f"session_manager:_mount_mcp_obsidian failed (vault={self._obsidian_vault_root()!r}): {exc!r}")
-            self._record_timing('mcp_obsidian_error_ms', t)
-
-    def _enable_memory_runtime(self) -> None:
-        if self.memory_service is not None:
-            return
-        t = time.perf_counter()
-        from orbit.memory import EmbeddingService, MemoryService
-        self._record_timing('memory_import_deferred_ms', t)
-        t = time.perf_counter()
-        self.embedding_service = EmbeddingService()
-        self._record_timing('embedding_service_init_ms', t)
-        t = time.perf_counter()
-        self.memory_service = MemoryService(store=self.store, embedding_service=self.embedding_service)
-        self._record_timing('memory_service_init_ms', t)
-        if hasattr(self.backend, 'memory_service'):
-            t = time.perf_counter()
-            self.backend.memory_service = self.memory_service
-            self._record_timing('backend_memory_service_bind_ms', t)
-
     """Manage linear conversation sessions for ORBIT.
 
     Current MVP single-turn contract:
@@ -234,16 +45,9 @@ class SessionManager:
         backend,
         workspace_root: str,
         runtime_mode: RuntimeMode = "dev",
-        enable_mcp_filesystem: bool = False,
-        enable_mcp_git: bool = False,
-        enable_mcp_bash: bool = False,
-        enable_mcp_process: bool = False,
-        enable_mcp_pytest: bool = False,
-        enable_mcp_ruff: bool = False,
-        enable_mcp_mypy: bool = False,
-        enable_mcp_browser: bool = False,
-        enable_mcp_obsidian: bool = False,
-        enable_memory: bool = False,
+        tool_registry: ToolRegistry | None = None,
+        embedding_service=None,
+        memory_service=None,
     ):
         t0 = time.perf_counter()
         self.store = store
@@ -254,36 +58,16 @@ class SessionManager:
         timings: dict[str, float] = self.metadata['session_manager_profile_timings']
 
         t_registry = time.perf_counter()
-        self.tool_registry = ToolRegistry(Path(workspace_root))
+        self.tool_registry = tool_registry or ToolRegistry(Path(workspace_root))
         timings['tool_registry_init_ms'] = round((time.perf_counter() - t_registry) * 1000, 2)
 
-        if enable_mcp_filesystem:
-            self._mount_mcp_filesystem()
-        if enable_mcp_git:
-            self._mount_mcp_git()
-        if enable_mcp_bash:
-            self._mount_mcp_bash()
-        if enable_mcp_process:
-            self._mount_mcp_process()
-        if enable_mcp_pytest:
-            self._mount_mcp_pytest()
-        if enable_mcp_ruff:
-            self._mount_mcp_ruff()
-        if enable_mcp_mypy:
-            self._mount_mcp_mypy()
-        if enable_mcp_browser:
-            self._mount_mcp_browser()
-        if enable_mcp_obsidian:
-            self._mount_mcp_obsidian()
         if hasattr(self.backend, "tool_registry"):
             t = time.perf_counter()
             self.backend.tool_registry = self.tool_registry
             timings['backend_tool_registry_bind_ms'] = round((time.perf_counter() - t) * 1000, 2)
-        self.embedding_service = None
-        self.memory_service = None
-        if enable_memory:
-            self._enable_memory_runtime()
-        else:
+        self.embedding_service = embedding_service
+        self.memory_service = memory_service
+        if self.memory_service is None:
             timings['memory_enabled'] = False
         timings['total_ms'] = round((time.perf_counter() - t0) * 1000, 2)
         self.metadata = {**getattr(self, 'metadata', {}), 'session_manager_profile_timings': timings}
@@ -982,80 +766,6 @@ class SessionManager:
                 plan_label="auth-failure",
                 failure_reason=failure_message,
             )
-
-        return self._finalize_session_plan(session=session, plan=plan, messages=messages)
-
-    def run_dummy_session_turn(self, *, session_id: str, user_input: str, dummy_scenario: str, on_assistant_partial_text=None, on_stream_completed=None) -> ExecutionPlan:
-        """Execute one deterministic dummy-backed session turn with an explicit scenario.
-
-        This helper exists so notebook/demo/testing surfaces can request a known
-        dummy scenario without overloading the normal user-input session path.
-        It keeps deterministic teaching scaffolds explicit rather than relying on
-        prompt wording or hidden fallback heuristics.
-        """
-        session = self.get_session(session_id)
-        if session is None:
-            raise ValueError(f"session not found: {session_id}")
-        if session.metadata.get("terminated"):
-            raise ValueError(f"session terminated: {session_id}")
-        pending = self._get_pending_approval(session)
-        if pending is not None:
-            raise ValueError(f"session has pending approval: {pending['approval_request_id']}")
-
-        mode_policy = session.metadata.get("mode_policy") if isinstance(session.metadata, dict) else None
-        descriptor = RunDescriptor(
-            session_key=f"session:{session.session_id}",
-            conversation_id=session.conversation_id,
-            runtime_mode=session.runtime_mode,
-            mode_policy=ModePolicyDescriptor(**mode_policy) if isinstance(mode_policy, dict) else ModePolicyDescriptor(),
-            workspace=WorkspaceDescriptor(cwd=self.workspace_root, writable_roots=[self.workspace_root]),
-            user_input=user_input,
-            dummy_scenario=dummy_scenario,
-        )
-        self.append_run_descriptor_for_session(session_id=session_id, descriptor=descriptor)
-        refreshed = self.get_session(session_id)
-        if refreshed is None:
-            raise ValueError(f"session not found after recording run descriptor: {session_id}")
-        session = refreshed
-
-        self.append_message(session_id=session_id, role=MessageRole.USER, content=user_input)
-        self.append_context_artifact_for_session(
-            session_id=session_id,
-            artifact_type="session_user_input",
-            content=user_input,
-            source="user_input",
-        )
-        self.emit_session_event(
-            session_id=session_id,
-            event_type=RuntimeEventType.RUN_STARTED,
-            payload={
-                "session_id": session_id,
-                "user_input": user_input,
-                "mode": "session_turn",
-                "has_run_descriptor": True,
-                "dummy_scenario": dummy_scenario,
-            },
-        )
-        messages = self.list_messages(session_id)
-        self.append_context_artifact_for_session(
-            session_id=session_id,
-            artifact_type="session_transcript_snapshot",
-            content=json.dumps([
-                {
-                    "role": getattr(message.role, "value", str(message.role)),
-                    "content": message.content,
-                    "turn_index": message.turn_index,
-                    "metadata": message.metadata,
-                }
-                for message in messages
-            ], indent=2, ensure_ascii=False),
-            source="runtime",
-        )
-        plan = self.backend.plan(descriptor)
-        self._consume_pending_turn_snapshots(session)
-        refreshed_after_plan = self.get_session(session_id)
-        if refreshed_after_plan is not None:
-            session = refreshed_after_plan
 
         return self._finalize_session_plan(session=session, plan=plan, messages=messages)
 

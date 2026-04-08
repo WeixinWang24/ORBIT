@@ -8,29 +8,16 @@ import sys
 import time
 from typing import Any
 
-_MODULE_IMPORT_TIMINGS: dict[str, float] = {}
-_t = time.perf_counter()
 from orbit.runtime.core.session_manager import SESSION_MANAGER_IMPORT_PROFILE_TIMINGS, SessionManager
-_MODULE_IMPORT_TIMINGS['orbit_runtime_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-_t = time.perf_counter()
+from orbit.runtime.capabilities.composer import RuntimeCapabilityBundle, RuntimeCapabilityComposer, RuntimeCapabilityProfile
 from orbit.runtime.governance.build_state_store import BuildStateStore
-_MODULE_IMPORT_TIMINGS['build_state_store_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-_t = time.perf_counter()
 from orbit.runtime.governance.protocol.mode import RuntimeMode, build_policy_profile_for_mode, mode_policy_summary, workspace_root_for_runtime_mode
-_MODULE_IMPORT_TIMINGS['mode_protocol_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-_t = time.perf_counter()
 from orbit.runtime.auth.storage.openai_store import OpenAIAuthStoreError
-_MODULE_IMPORT_TIMINGS['openai_auth_store_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-_t = time.perf_counter()
 from orbit.runtime.providers.openai_codex import OpenAICodexConfig, OpenAICodexExecutionBackend
-_MODULE_IMPORT_TIMINGS['openai_codex_provider_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-_t = time.perf_counter()
 from orbit.settings import REPO_ROOT
-_MODULE_IMPORT_TIMINGS['settings_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-_t = time.perf_counter()
 from orbit.store import create_default_store
-_MODULE_IMPORT_TIMINGS['store_ms'] = round((time.perf_counter() - _t) * 1000, 2)
-RUNTIME_ADAPTER_IMPORT_PROFILE_TIMINGS = dict(_MODULE_IMPORT_TIMINGS)
+
+RUNTIME_ADAPTER_IMPORT_PROFILE_TIMINGS: dict[str, float] = {}
 SESSION_MANAGER_IMPORT_PROFILE_TIMINGS = dict(SESSION_MANAGER_IMPORT_PROFILE_TIMINGS)
 
 from .adapter_protocol import RuntimeCliAdapter
@@ -61,21 +48,19 @@ class RuntimeAdapterConfig:
     enable_memory: bool = False
 
 
-def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev", enable_tools: bool = True, enable_mcp_filesystem: bool = False, enable_mcp_git: bool = False, enable_mcp_bash: bool = False, enable_mcp_process: bool = False, enable_mcp_pytest: bool = False, enable_mcp_ruff: bool = False, enable_mcp_mypy: bool = False, enable_mcp_browser: bool = False, enable_mcp_obsidian: bool = False, enable_memory: bool = False) -> SessionManager:
+def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev", enable_tools: bool = True, enable_mcp_filesystem: bool = False, enable_mcp_git: bool = False, enable_mcp_bash: bool = False, enable_mcp_process: bool = False, enable_mcp_pytest: bool = False, enable_mcp_ruff: bool = False, enable_mcp_mypy: bool = False, enable_mcp_browser: bool = False, enable_mcp_obsidian: bool = False, enable_memory: bool = False) -> tuple[SessionManager, RuntimeCapabilityComposer, RuntimeCapabilityBundle]:
     t0 = time.perf_counter()
     workspace_root = workspace_root_for_runtime_mode(runtime_mode)
     t1 = time.perf_counter()
+    store = create_default_store()
     backend = OpenAICodexExecutionBackend(
         config=OpenAICodexConfig(model=model, enable_tools=enable_tools),
         repo_root=REPO_ROOT,
         workspace_root=workspace_root,
     )
+    setattr(backend, 'store', store)
     t2 = time.perf_counter()
-    manager = SessionManager(
-        store=create_default_store(),
-        backend=backend,
-        workspace_root=str(workspace_root),
-        runtime_mode=runtime_mode,
+    profile = RuntimeCapabilityProfile(
         enable_mcp_filesystem=enable_mcp_filesystem,
         enable_mcp_git=enable_mcp_git,
         enable_mcp_bash=enable_mcp_bash,
@@ -87,19 +72,33 @@ def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev"
         enable_mcp_obsidian=enable_mcp_obsidian,
         enable_memory=enable_memory,
     )
+    composer = RuntimeCapabilityComposer(workspace_root=str(workspace_root), backend=backend)
+    bundle = composer.activate(profile)
+    t3 = time.perf_counter()
+    manager = SessionManager(
+        store=store,
+        backend=backend,
+        workspace_root=str(workspace_root),
+        runtime_mode=runtime_mode,
+        tool_registry=bundle.tool_registry,
+        embedding_service=bundle.embedding_service,
+        memory_service=bundle.memory_service,
+    )
     if hasattr(backend, "session_manager"):
         backend.session_manager = manager
-    t3 = time.perf_counter()
+    t4 = time.perf_counter()
     manager.metadata = {
         **getattr(manager, 'metadata', {}),
         "build_profile_timings": {
             "workspace_select_ms": round((t1 - t0) * 1000, 2),
             "backend_init_ms": round((t2 - t1) * 1000, 2),
-            "session_manager_init_ms": round((t3 - t2) * 1000, 2),
-            "total_ms": round((t3 - t0) * 1000, 2),
-        }
+            "capability_activate_ms": round((t3 - t2) * 1000, 2),
+            "session_manager_init_ms": round((t4 - t3) * 1000, 2),
+            "total_ms": round((t4 - t0) * 1000, 2),
+        },
+        "capability_activation_metrics": dict(bundle.activation_metrics),
     }
-    return manager
+    return manager, composer, bundle
 
 
 def get_pending_session_approval(session_manager: SessionManager, session_id: str) -> dict | None:
@@ -127,59 +126,14 @@ def resolve_pending_session_approval(session_manager: SessionManager, session_id
 
 class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
     def warmup_post_composer_capabilities(self) -> dict[str, float]:
-        t0 = time.perf_counter()
-        timings: dict[str, float] = {}
-        manager = self.session_manager
-
-        step = time.perf_counter()
-        manager._mount_mcp_filesystem()
-        timings['warmup_filesystem_ms'] = round((time.perf_counter() - step) * 1000, 2)
-
-        step = time.perf_counter()
-        manager._mount_mcp_git()
-        timings['warmup_git_ms'] = round((time.perf_counter() - step) * 1000, 2)
-
-        step = time.perf_counter()
-        manager._enable_memory_runtime()
-        # Pre-load the embedding model so the first turn's memory capture does not
-        # block the worker thread and cause a "stuck in streaming state" visual.
-        if getattr(manager, 'embedding_service', None) is not None:
-            try:
-                manager.embedding_service.embed_text("orbit_warmup_prefetch")
-            except Exception:
-                pass
-        timings['warmup_memory_ms'] = round((time.perf_counter() - step) * 1000, 2)
-
-        step = time.perf_counter()
-        manager._mount_mcp_bash()
-        timings['warmup_bash_ms'] = round((time.perf_counter() - step) * 1000, 2)
-
-        step = time.perf_counter()
-        manager._mount_mcp_process()
-        timings['warmup_process_ms'] = round((time.perf_counter() - step) * 1000, 2)
-
-        step = time.perf_counter()
-        manager._mount_mcp_pytest()
-        timings['warmup_pytest_ms'] = round((time.perf_counter() - step) * 1000, 2)
-
-        step = time.perf_counter()
-        manager._mount_mcp_ruff()
-        timings['warmup_ruff_ms'] = round((time.perf_counter() - step) * 1000, 2)
-
-        step = time.perf_counter()
-        manager._mount_mcp_mypy()
-        timings['warmup_mypy_ms'] = round((time.perf_counter() - step) * 1000, 2)
-
-        step = time.perf_counter()
-        manager._mount_mcp_browser()
-        timings['warmup_browser_ms'] = round((time.perf_counter() - step) * 1000, 2)
-
-        step = time.perf_counter()
-        manager._mount_mcp_obsidian()
-        timings['warmup_obsidian_ms'] = round((time.perf_counter() - step) * 1000, 2)
-
-        timings['warmup_total_ms'] = round((time.perf_counter() - t0) * 1000, 2)
+        if self.capability_composer is None or self.capability_bundle is None:
+            return {}
+        timings = self.capability_composer.warmup(self.capability_bundle)
         self.startup_metrics.update(timings)
+        self.session_manager.metadata = {
+            **getattr(self.session_manager, 'metadata', {}),
+            'capability_warmup_metrics': dict(timings),
+        }
         return timings
 
     """First real runtime adapter skeleton for the new CLI UI.
@@ -188,8 +142,10 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
     that the PTY workbench can absorb gradually.
     """
 
-    def __init__(self, session_manager: SessionManager, *, build_state_store: BuildStateStore | None = None, startup_metrics: dict[str, float] | None = None) -> None:
+    def __init__(self, session_manager: SessionManager, *, capability_composer: RuntimeCapabilityComposer | None = None, capability_bundle: RuntimeCapabilityBundle | None = None, build_state_store: BuildStateStore | None = None, startup_metrics: dict[str, float] | None = None) -> None:
         self.session_manager = session_manager
+        self.capability_composer = capability_composer
+        self.capability_bundle = capability_bundle
         self.build_state_store = build_state_store or BuildStateStore()
         self.startup_metrics = startup_metrics or {}
 
@@ -197,7 +153,7 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
     def build(cls, config: RuntimeAdapterConfig | None = None) -> "SessionManagerRuntimeAdapter":
         config = config or RuntimeAdapterConfig()
         t0 = time.perf_counter()
-        session_manager = build_codex_session_manager(
+        session_manager, capability_composer, capability_bundle = build_codex_session_manager(
             model=config.model,
             runtime_mode=config.runtime_mode,
             enable_tools=config.enable_tools,
@@ -217,6 +173,8 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         t2 = time.perf_counter()
         return cls(
             session_manager,
+            capability_composer=capability_composer,
+            capability_bundle=capability_bundle,
             build_state_store=build_state_store,
             startup_metrics={
                 'session_manager_build_ms': round((t1 - t0) * 1000, 2),
