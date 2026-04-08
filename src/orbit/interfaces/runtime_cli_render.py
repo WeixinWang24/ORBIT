@@ -346,7 +346,36 @@ def composer_lines(state: RuntimeCliState, width: int, *, pulse_tick: int | None
     return rendered.lines, rendered.cursor_row_offset, max(1, min(width, rendered.cursor_col))
 
 
-def build_chat_header(state: RuntimeCliState, session, width: int) -> list[str]:
+def _fmt_tokens(n: int) -> str:
+    """Compact token count: <1000 → int, >=1000 → 1.2k, >=1_000_000 → 1.2m."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}m"
+    if n >= 1000:
+        return f"{n / 1000:.1f}k"
+    return str(n)
+
+
+def _format_context_usage(projection: dict) -> str:
+    """Format context usage projection into a compact header string.
+
+    Example: Ctx 4.2k/612  Σ 18.4k/2.1k  Calls 5
+    Returns 'Ctx: n/a' when no usage has been recorded yet.
+    """
+    latest = projection.get("latest_call")
+    totals = projection.get("totals") or {}
+    call_count = totals.get("call_count", 0)
+
+    if not latest or call_count == 0:
+        return "Ctx: n/a"
+
+    li = _fmt_tokens(latest.get("input_tokens", 0))
+    lo = _fmt_tokens(latest.get("output_tokens", 0))
+    ti = _fmt_tokens(totals.get("total_input_tokens", 0))
+    to_ = _fmt_tokens(totals.get("total_output_tokens", 0))
+    return f"Ctx {li}/{lo}  \u03a3 {ti}/{to_}  Calls {call_count}"
+
+
+def build_chat_header(state: RuntimeCliState, session, width: int, *, usage_projection: dict | None = None) -> list[str]:
     import time
 
     title = ACCENT_SUCCESS + f"ORBIT · Agent Runtime Chat · {session.session_id} · {session.backend_name}/{session.model}" + T.RESET
@@ -359,8 +388,10 @@ def build_chat_header(state: RuntimeCliState, session, width: int) -> list[str]:
         if state._submit_thread_started_at is not None:
             busy_for = f" · busy_for={max(0.0, time.time() - state._submit_thread_started_at):.1f}s"
         lines.append(ACCENT_WARNING + fit_text(f"runtime busy{busy_for}", width) + T.RESET)
+    ctx_text = _format_context_usage(usage_projection) if usage_projection is not None else "Ctx: n/a"
     lines.extend([
         T.DIM + fit_text(f"session={session.session_id}  backend={session.backend_name}/{session.model}", width) + T.RESET,
+        T.DIM + fit_text(ctx_text, width) + T.RESET,
         divider(width),
     ])
     return lines
@@ -374,7 +405,15 @@ def build_chat_footer(state: RuntimeCliState, width: int, pulse_tick: int) -> tu
 def build_chat_frame(state: RuntimeCliState, adapter: RuntimeCliAdapter, *, width: int, height: int, pulse_tick: int) -> FrameRender:
     session_id = current_session_id(state, adapter)
     session = adapter.get_session(session_id)
-    header = build_chat_header(state, session, width)
+    # Fetch the per-session usage projection from the operation surface.
+    # The render layer only consumes already-projected data; no accounting here.
+    usage_projection: dict | None = None
+    if session_id:
+        try:
+            usage_projection = adapter.get_context_usage_projection(session_id)
+        except Exception:
+            pass
+    header = build_chat_header(state, session, width, usage_projection=usage_projection)
     footer, composer_row_offset, composer_col = build_chat_footer(state, width, pulse_tick)
     header_height = len(header)
     footer_height = len(footer)
