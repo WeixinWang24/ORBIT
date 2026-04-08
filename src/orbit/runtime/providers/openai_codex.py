@@ -222,6 +222,8 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
         text_parts: list[str] = []
         final_response_id: str | None = None
         final_status: str | None = None
+        final_usage: dict | None = None
+        final_model: str | None = None
         pending_tool_name: str | None = None
         pending_tool_arguments: str = ""
         completed_tool_payload: dict | None = None
@@ -266,6 +268,10 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
                         final_response_id = response.get("id")
                     if isinstance(response.get("status"), str):
                         final_status = response.get("status")
+                    if isinstance(response.get("usage"), dict):
+                        final_usage = response.get("usage")
+                    if isinstance(response.get("model"), str):
+                        final_model = response.get("model")
                     output = response.get("output")
                     if isinstance(output, list):
                         for item in output:
@@ -305,13 +311,37 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
                         "status": final_status,
                         "event_count": len(events),
                         "raw_tool_payload": completed_tool_payload,
+                        "usage": final_usage,
+                        "model": final_model,
                     },
                 )
                 return normalized_result_to_execution_plan(normalized)
 
         final_text = "".join(text_parts).strip()
         if final_text:
-            normalized = ProviderNormalizedResult(source_backend=self.backend_name, plan_label="openai-codex-final-text", final_text=final_text, metadata={"response_id": final_response_id, "status": final_status, "event_count": len(events)})
+            normalized = ProviderNormalizedResult(
+                source_backend=self.backend_name,
+                plan_label="openai-codex-final-text",
+                final_text=final_text,
+                metadata={
+                    "response_id": final_response_id,
+                    "status": final_status,
+                    "event_count": len(events),
+                    "usage": final_usage,
+                    "model": final_model,
+                },
+            )
             return normalized_result_to_execution_plan(normalized)
-        normalized = ProviderNormalizedResult(source_backend=self.backend_name, plan_label="openai-codex-malformed-response", failure=ProviderFailure(kind="malformed_response", message="Codex hosted response did not yield extractable final text or tool request"), metadata={"event_count": len(events), "response_id": final_response_id, "status": final_status})
+        normalized = ProviderNormalizedResult(
+            source_backend=self.backend_name,
+            plan_label="openai-codex-malformed-response",
+            failure=ProviderFailure(kind="malformed_response", message="Codex hosted response did not yield extractable final text or tool request"),
+            metadata={
+                "event_count": len(events),
+                "response_id": final_response_id,
+                "status": final_status,
+                "usage": final_usage,
+                "model": final_model,
+            },
+        )
         return normalized_result_to_execution_plan(normalized)
