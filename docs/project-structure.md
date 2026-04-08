@@ -13,6 +13,7 @@ This is a readability preference rather than a rigid mathematical law, but it sh
 ## Current root-level groups
 
 - `apps/` — runnable application entrypoints
+- `src/mcp_servers/apps/` — app-scoped MCP server entry modules such as Obsidian
 - `config/` — environment and configuration artifacts
 - `docs/` — repository-facing documentation
 - `notebooks/` — notebook-first demonstrations

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,25 @@ def _resolve_safe_note_path(path: str) -> Path:
     if not target.is_file() or target.suffix.lower() != ".md":
         raise ValueError("path is not a markdown note")
     return target
+
+
+def _is_hidden_or_excluded(path: Path) -> bool:
+    return any(part.startswith(".") for part in path.parts)
+
+
+def _iter_visible_paths(target: Path) -> list[Path]:
+    visible: list[Path] = []
+    for candidate in target.rglob("*"):
+        try:
+            rel = candidate.relative_to(target)
+        except ValueError:
+            continue
+        if not rel.parts:
+            continue
+        if _is_hidden_or_excluded(rel):
+            continue
+        visible.append(candidate)
+    return visible
 
 
 def _strip_code_fences(text: str) -> str:
@@ -382,6 +402,128 @@ def _get_note_links_result(path: str) -> dict[str, Any]:
     }
 
 
+def _check_availability_result() -> dict[str, Any]:
+    raw_root = os.environ.get(VAULT_ROOT_ENV, "").strip()
+    vault_root_configured = bool(raw_root)
+    resolved_vault_root: str | None = None
+    vault_root_exists = False
+    vault_root_readable = False
+    warnings: list[str] = []
+
+    if vault_root_configured:
+        candidate = Path(raw_root).expanduser().resolve()
+        resolved_vault_root = str(candidate)
+        vault_root_exists = candidate.exists() and candidate.is_dir()
+        vault_root_readable = os.access(candidate, os.R_OK) if vault_root_exists else False
+        if not vault_root_exists:
+            warnings.append("configured vault root does not exist or is not a directory")
+        elif not vault_root_readable:
+            warnings.append("configured vault root is not readable")
+    else:
+        warnings.append("vault root environment variable is not configured")
+
+    cli_path = shutil.which("obsidian")
+    obsidian_cli_found = bool(cli_path)
+    if not obsidian_cli_found:
+        warnings.append("obsidian CLI not found on PATH")
+
+    if vault_root_exists and vault_root_readable and obsidian_cli_found:
+        availability_level = "full"
+        recommended_mode = "mcp_vault_direct"
+        available = True
+    elif vault_root_exists and vault_root_readable:
+        availability_level = "vault_only"
+        recommended_mode = "mcp_vault_direct"
+        available = True
+    elif obsidian_cli_found:
+        availability_level = "fallback_only"
+        recommended_mode = "fallback"
+        available = True
+    else:
+        availability_level = "unavailable"
+        recommended_mode = "disabled"
+        available = False
+
+    return {
+        "available": available,
+        "availability_level": availability_level,
+        "vault_root_configured": vault_root_configured,
+        "vault_root_exists": vault_root_exists,
+        "vault_root_readable": vault_root_readable,
+        "vault_root": resolved_vault_root,
+        "obsidian_cli_found": obsidian_cli_found,
+        "obsidian_cli_path": cli_path,
+        "recommended_mode": recommended_mode,
+        "warnings": warnings,
+        "checks": {
+            "vault_root_env": vault_root_configured,
+            "vault_root_exists": vault_root_exists,
+            "vault_root_readable": vault_root_readable,
+            "obsidian_cli_found": obsidian_cli_found,
+        },
+    }
+
+
+def _get_vault_metadata_result(
+    path: str | None = None,
+    include_top_level_entries: bool | None = None,
+    max_entries: int | None = None,
+) -> dict[str, Any]:
+    root = _vault_root()
+    target = _resolve_safe_path(path)
+    if not target.is_dir():
+        raise ValueError("path is not a directory")
+
+    visible_paths = _iter_visible_paths(target)
+    note_count = sum(1 for item in visible_paths if item.is_file() and item.suffix.lower() == ".md")
+    directory_count = sum(1 for item in visible_paths if item.is_dir())
+    latest_modified_at_epoch = target.stat().st_mtime
+    for item in visible_paths:
+        try:
+            latest_modified_at_epoch = max(latest_modified_at_epoch, item.stat().st_mtime)
+        except OSError:
+            continue
+
+    include_entries = True if include_top_level_entries is None else bool(include_top_level_entries)
+    entry_limit = max_entries if isinstance(max_entries, int) and max_entries > 0 else _max_results()
+    top_level_entries: list[dict[str, Any]] = []
+    truncated_top_level_entries = False
+    if include_entries:
+        visible_children: list[Path] = []
+        for child in sorted(target.iterdir(), key=lambda item: item.name.lower()):
+            if _is_hidden_or_excluded(Path(child.name)):
+                continue
+            visible_children.append(child)
+        truncated_top_level_entries = len(visible_children) > entry_limit
+        for child in visible_children[:entry_limit]:
+            try:
+                modified_at = child.stat().st_mtime
+            except OSError:
+                modified_at = None
+            top_level_entries.append(
+                {
+                    "name": child.name,
+                    "path": str(child.relative_to(root)),
+                    "kind": "directory" if child.is_dir() else "file",
+                    "modified_at_epoch": modified_at,
+                }
+            )
+
+    return {
+        "vault_root": str(root),
+        "vault_name": root.name,
+        "path_scope": str(target.relative_to(root)) if target != root else "",
+        "resolved_path": str(target),
+        "generated_at_epoch": int(__import__("time").time()),
+        "note_count": note_count,
+        "directory_count": directory_count,
+        "latest_modified_at_epoch": latest_modified_at_epoch,
+        "excluded_hidden_entries": True,
+        "top_level_entries": top_level_entries,
+        "truncated_top_level_entries": truncated_top_level_entries,
+    }
+
+
 @server.list_tools()
 async def list_tools() -> list[types.Tool]:
     return [
@@ -445,6 +587,28 @@ async def list_tools() -> list[types.Tool]:
                 "additionalProperties": False,
             },
         ),
+        types.Tool(
+            name="obsidian_get_vault_metadata",
+            description="Return bounded metadata about the configured Obsidian vault or an optional vault-relative directory scope.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Optional vault-relative directory scope."},
+                    "includeTopLevelEntries": {"type": "boolean", "description": "Include bounded top-level entries for the selected scope."},
+                    "maxEntries": {"type": "integer", "description": "Maximum number of top-level entries to return."},
+                },
+                "additionalProperties": False,
+            },
+        ),
+        types.Tool(
+            name="obsidian_check_availability",
+            description="Check local Obsidian knowledge capability availability, including vault accessibility and optional CLI presence, so runtime code can degrade gracefully.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        ),
     ]
 
 
@@ -458,6 +622,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return _search_notes_result(arguments.get("query"), arguments.get("path"), arguments.get("maxResults"), arguments.get("searchIn"))
     if name == "obsidian_get_note_links":
         return _get_note_links_result(arguments.get("path"))
+    if name == "obsidian_get_vault_metadata":
+        return _get_vault_metadata_result(
+            arguments.get("path"),
+            arguments.get("includeTopLevelEntries"),
+            arguments.get("maxEntries"),
+        )
+    if name == "obsidian_check_availability":
+        return _check_availability_result()
     raise ValueError(f"unknown tool: {name}")
 
 

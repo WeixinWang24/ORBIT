@@ -39,6 +39,12 @@
   - `system/core/git/` — workspace-scoped read-only git MCP server assets
   - `system/core/bash/` — workspace-scoped bash MCP server assets
   - `system/core/process/` — workspace-scoped managed-process MCP server assets
+- `src/mcp_servers/`
+  - `system/core/filesystem/` — workspace-scoped filesystem MCP server assets
+  - `system/core/git/` — workspace-scoped read-only git MCP server assets
+  - `system/core/bash/` — workspace-scoped bash MCP server assets
+  - `system/core/process/` — workspace-scoped managed-process MCP server assets
+  - `apps/obsidian/` — Obsidian MCP server app-scoped entrypoint and vault-introspection/read/search assets for knowledge-management workflows
 
 ## Current posture
 

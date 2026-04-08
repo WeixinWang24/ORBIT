@@ -6,6 +6,7 @@ from orbit.runtime.mcp.models import McpCapabilityMetadata, McpClientBootstrap, 
 from orbit.runtime.mcp.naming import normalize_name_for_mcp
 
 ORBIT_CONDA_PYTHON = Path("/Users/visen24/anaconda3/envs/Orbit/bin/python")
+ORBIT_REPO_ROOT = Path(__file__).resolve().parents[4]
 
 # ---------------------------------------------------------------------------
 # Capability metadata declarations for filesystem and git families.
@@ -78,7 +79,10 @@ def bootstrap_local_git_mcp_server(*, workspace_root: str) -> McpClientBootstrap
 
 
 def bootstrap_local_obsidian_mcp_server(*, vault_root: str, max_read_chars: int | None = None, max_results: int | None = None) -> McpClientBootstrap:
-    env = {"ORBIT_OBSIDIAN_VAULT_ROOT": vault_root}
+    env = {
+        "ORBIT_OBSIDIAN_VAULT_ROOT": vault_root,
+        "PYTHONPATH": str(ORBIT_REPO_ROOT),
+    }
     if max_read_chars is not None:
         env["ORBIT_OBSIDIAN_MAX_READ_CHARS"] = str(max_read_chars)
     if max_results is not None:
@@ -86,7 +90,7 @@ def bootstrap_local_obsidian_mcp_server(*, vault_root: str, max_read_chars: int 
     config = McpStdioServerConfig(
         name="obsidian",
         command=str(ORBIT_CONDA_PYTHON),
-        args=["-m", "mcp_servers.system.core.obsidian.stdio_server"],
+        args=["-m", "src.mcp_servers.apps.obsidian.stdio_server"],
         env=env,
         continuity_mode="stateless",
         # TODO(capability-metadata): capability_metadata intentionally omitted for the
