@@ -1,3 +1,10 @@
+from .builds import (
+    BuildRecord,
+    BuildRecordStatus,
+    SelfChangePlan,
+    SelfChangePlanStatus,
+    ValidationStep,
+)
 from .core import (
     ApprovalDecision,
     ApprovalRequest,
@@ -35,6 +42,11 @@ from .session import (
 )
 
 __all__ = [
+    "BuildRecord",
+    "BuildRecordStatus",
+    "SelfChangePlan",
+    "SelfChangePlanStatus",
+    "ValidationStep",
     "ApprovalDecision",
     "ApprovalDecisionType",
     "ApprovalRequest",

@@ -24,6 +24,12 @@ class InterfaceSession(OrbitBaseModel):
     message_count: int = 0
     last_message_preview: str = ""
     status: str = "idle"
+    # self-change / build projection (first slice)
+    active_self_change_plan_id: str | None = None
+    active_build_record_id: str | None = None
+    last_build_status: str | None = None
+    last_build_summary: str | None = None
+    build_policy_profile: str = "none"
 
 
 class InterfaceMessage(OrbitBaseModel):
