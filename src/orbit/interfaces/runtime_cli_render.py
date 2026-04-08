@@ -358,21 +358,30 @@ def _fmt_tokens(n: int) -> str:
 def _format_context_usage(projection: dict) -> str:
     """Format context usage projection into a compact header string.
 
-    Example: Ctx 4.2k/612  Σ 18.4k/2.1k  Calls 5
-    Returns 'Ctx: n/a' when no usage has been recorded yet.
+    Full format (when provider returns token data):
+        Ctx 4.2k/612  Σ 18.4k/2.1k  Calls 5
+    Compact format (calls counted but provider returned no token data):
+        Calls 5
+    Fallback (no turns yet):
+        Ctx: n/a
     """
-    latest = projection.get("latest_call")
     totals = projection.get("totals") or {}
     call_count = totals.get("call_count", 0)
 
-    if not latest or call_count == 0:
+    if call_count == 0:
         return "Ctx: n/a"
 
+    ti = totals.get("total_input_tokens", 0)
+    to_ = totals.get("total_output_tokens", 0)
+
+    # If the provider returned no token data at all, show call count only.
+    if ti == 0 and to_ == 0:
+        return f"Calls {call_count}"
+
+    latest = projection.get("latest_call") or {}
     li = _fmt_tokens(latest.get("input_tokens", 0))
     lo = _fmt_tokens(latest.get("output_tokens", 0))
-    ti = _fmt_tokens(totals.get("total_input_tokens", 0))
-    to_ = _fmt_tokens(totals.get("total_output_tokens", 0))
-    return f"Ctx {li}/{lo}  \u03a3 {ti}/{to_}  Calls {call_count}"
+    return f"Ctx {li}/{lo}  \u03a3 {_fmt_tokens(ti)}/{_fmt_tokens(to_)}  Calls {call_count}"
 
 
 def build_chat_header(state: RuntimeCliState, session, width: int, *, usage_projection: dict | None = None) -> list[str]:

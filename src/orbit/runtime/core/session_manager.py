@@ -852,22 +852,29 @@ class SessionManager:
         return plan
 
     def _record_plan_usage_if_present(self, *, session: ConversationSession, plan: ExecutionPlan) -> None:
-        """Thin integration helper: extract usage from plan.metadata and record it.
+        """Thin integration helper: record one provider call into the accounting service.
 
         SessionManager does not implement token accounting itself. This method
         reads provider-extracted usage/model hints from the plan boundary and
         delegates all accounting logic to ContextAccountingService.
+
+        A call is always recorded so that call_count stays accurate even when
+        the provider does not return token usage data (e.g. the Codex endpoint
+        omits response.usage from its SSE stream).  Token fields default to zero
+        in that case and the UI renders them as absent rather than hiding the call.
         """
+        from orbit.runtime.operations.context_usage_models import ModelCallUsage
+
         metadata = plan.metadata if isinstance(plan.metadata, dict) else {}
         usage = metadata.get("usage")
-        if not usage:
-            return
         model = metadata.get("model") or getattr(getattr(self, "backend", None), "config", None) and getattr(self.backend.config, "model", "") or ""
         provider = getattr(getattr(self, "backend", None), "backend_name", "")
         svc = ContextAccountingService()
         call_usage = svc.normalize_provider_usage(usage=usage, provider=provider, model=model or "")
-        if call_usage is not None:
-            svc.record_observed_usage(session=session, call_usage=call_usage, store=self.store)
+        if call_usage is None:
+            # No token data from provider — still count the call with zero tokens.
+            call_usage = ModelCallUsage(provider=provider, model=model or "")
+        svc.record_observed_usage(session=session, call_usage=call_usage, store=self.store)
 
     def _plan_from_messages(self, *, session: ConversationSession, messages: list[ConversationMessage], on_assistant_partial_text=None, on_stream_completed=None) -> ExecutionPlan:
         """Use history-aware provider path when available, otherwise fallback."""

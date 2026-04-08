@@ -448,7 +448,8 @@ class TestSessionManagerUsageRecording(unittest.TestCase):
             self.assertEqual(snap.totals.total_input_tokens, 25)
             self.assertEqual(snap.latest_call.output_tokens, 8)
 
-    def test_no_usage_turn_does_not_fail(self):
+    def test_no_usage_turn_still_counts_call(self):
+        # Provider returns no token data — call is still recorded with zero tokens.
         with tempfile.TemporaryDirectory() as tmp:
             mgr = _make_manager(_NoUsagePlanBackend(), tmp)
             session = mgr.create_session(backend_name="test", model="gpt-test")
@@ -456,7 +457,9 @@ class TestSessionManagerUsageRecording(unittest.TestCase):
             session = mgr.get_session(session.session_id)
             svc = ContextAccountingService()
             snap = svc.get_usage_snapshot(session=session)
-            self.assertEqual(snap.totals.call_count, 0)
+            self.assertEqual(snap.totals.call_count, 1)
+            self.assertEqual(snap.totals.total_input_tokens, 0)
+            self.assertIsNotNone(snap.latest_call)
 
     def test_prompt_tokens_style_recorded(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -531,15 +534,16 @@ class TestRuntimeAdapterUsageProjection(unittest.TestCase):
                 1,
             )
 
-    def test_workbench_status_no_usage_session_safe(self):
+    def test_workbench_status_no_usage_session_counts_call(self):
+        # No token data from provider — call_count is still 1 after one turn.
         with tempfile.TemporaryDirectory() as tmp:
             adapter = self._make_adapter(_NoUsagePlanBackend(), tmp)
             s = adapter.create_session()
             adapter.send_user_message(s.session_id, "hi")
             status = adapter.get_workbench_status()
             proj = status["session_usage_projections"][s.session_id]
-            self.assertIsNone(proj["latest_call"])
-            self.assertEqual(proj["totals"]["call_count"], 0)
+            self.assertEqual(proj["totals"]["call_count"], 1)
+            self.assertEqual(proj["totals"]["total_input_tokens"], 0)
 
 
 # ---------------------------------------------------------------------------

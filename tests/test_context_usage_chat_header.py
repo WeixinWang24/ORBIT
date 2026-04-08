@@ -61,15 +61,23 @@ class TestFormatContextUsage(unittest.TestCase):
             "totals": {"call_count": calls, "total_input_tokens": total_in, "total_output_tokens": total_out},
         }
 
-    def test_no_usage_returns_fallback(self):
+    def test_zero_calls_returns_fallback(self):
         self.assertEqual(_format_context_usage(self._proj()), "Ctx: n/a")
 
-    def test_null_latest_call_returns_fallback(self):
+    def test_null_latest_call_zero_calls_returns_fallback(self):
         proj = {"latest_call": None, "totals": {"call_count": 0}}
         self.assertEqual(_format_context_usage(proj), "Ctx: n/a")
 
     def test_empty_projection_returns_fallback(self):
         self.assertEqual(_format_context_usage({}), "Ctx: n/a")
+
+    def test_calls_counted_but_no_token_data_shows_calls_only(self):
+        # Provider returned no usage (all zero tokens) — show call count, not n/a.
+        proj = self._proj(calls=3)  # zero tokens, 3 calls
+        s = _format_context_usage(proj)
+        self.assertEqual(s, "Calls 3")
+        self.assertNotIn("n/a", s)
+        self.assertNotIn("Ctx", s)
 
     def test_compact_format_with_usage(self):
         proj = self._proj(latest_in=4200, latest_out=612, total_in=18400, total_out=2100, calls=5)
@@ -125,6 +133,17 @@ class TestBuildChatHeader(unittest.TestCase):
         lines = build_chat_header(self._state(), FakeSession(), 120, usage_projection=proj)
         combined = "\n".join(lines)
         self.assertIn("Ctx: n/a", combined)
+
+    def test_calls_counted_no_tokens_shows_calls_not_na(self):
+        # Simulates Codex API (no token data): call_count > 0 but all tokens = 0.
+        proj = {
+            "latest_call": {"input_tokens": 0, "output_tokens": 0},
+            "totals": {"call_count": 2, "total_input_tokens": 0, "total_output_tokens": 0},
+        }
+        lines = build_chat_header(self._state(), FakeSession(), 120, usage_projection=proj)
+        combined = "\n".join(lines)
+        self.assertNotIn("n/a", combined)
+        self.assertIn("Calls 2", combined)
 
     def test_session_info_still_present_with_usage(self):
         proj = {
