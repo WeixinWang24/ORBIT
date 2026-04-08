@@ -226,6 +226,7 @@ def build_failure_records(
 
         excerpt, excerpt_truncated = _truncate_excerpt(body, max_excerpt_chars)
         records.append({
+            "status": item["status"],
             "node_id": node_id,
             "headline": headline,
             "excerpt": excerpt,
@@ -233,6 +234,101 @@ def build_failure_records(
         })
 
     return records, failures_truncated
+
+
+def classify_pytest_outcome(
+    *,
+    exit_code: int | None,
+    timed_out: bool,
+    counts: dict[str, Any],
+    short_items: list[dict[str, str]],
+    combined_output: str,
+) -> dict[str, Any]:
+    collection_signal = (
+        "ERROR collecting" in combined_output
+        or "collected 0 items / 1 error" in combined_output
+        or "collected 0 items /" in combined_output and "error" in combined_output.lower()
+    )
+
+    if timed_out:
+        return {
+            "success": False,
+            "outcome_kind": "timeout",
+            "failure_layer": "runtime_execution",
+            "failure_kind": "timeout",
+        }
+
+    if exit_code == _EXIT_OK:
+        return {
+            "success": True,
+            "outcome_kind": "passed",
+            "failure_layer": "none",
+            "failure_kind": "none",
+        }
+
+    if exit_code == _EXIT_NOTESTSCOLLECTED:
+        return {
+            "success": True,
+            "outcome_kind": "no_tests_collected",
+            "failure_layer": "none",
+            "failure_kind": "none",
+        }
+
+    if collection_signal:
+        return {
+            "success": False,
+            "outcome_kind": "collection_error",
+            "failure_layer": "test_collection",
+            "failure_kind": "collection_error",
+        }
+
+    if exit_code == _EXIT_INTERRUPTED:
+        return {
+            "success": False,
+            "outcome_kind": "interrupted",
+            "failure_layer": "runtime_execution",
+            "failure_kind": "interrupted",
+        }
+
+    if exit_code == _EXIT_INTERNALERROR:
+        return {
+            "success": False,
+            "outcome_kind": "internal_error",
+            "failure_layer": "tool_invocation",
+            "failure_kind": "internal_error",
+        }
+
+    if exit_code == _EXIT_USAGEERROR:
+        return {
+            "success": False,
+            "outcome_kind": "usage_error",
+            "failure_layer": "tool_invocation",
+            "failure_kind": "usage_error",
+        }
+
+    if exit_code == _EXIT_TESTSFAILED:
+        errors = counts.get("errors")
+        failed = counts.get("failed")
+        if errors and not failed:
+            return {
+                "success": False,
+                "outcome_kind": "collection_error",
+                "failure_layer": "test_collection",
+                "failure_kind": "collection_error",
+            }
+        return {
+            "success": False,
+            "outcome_kind": "failed",
+            "failure_layer": "test_execution",
+            "failure_kind": "assertion_failures",
+        }
+
+    return {
+        "success": False,
+        "outcome_kind": "failed",
+        "failure_layer": "tool_invocation",
+        "failure_kind": "unknown_pytest_failure",
+    }
 
 
 def parse_pytest_output(
@@ -260,16 +356,13 @@ def parse_pytest_output(
     failure_records, failures_truncated = build_failure_records(
         short_items, failure_blocks
     )
-
-    # Determine overall success
-    if timed_out:
-        success = False
-    elif exit_code == _EXIT_OK:
-        success = True
-    elif exit_code == _EXIT_NOTESTSCOLLECTED:
-        success = True  # no tests collected is not a failure; just informational
-    else:
-        success = False
+    classification = classify_pytest_outcome(
+        exit_code=exit_code,
+        timed_out=timed_out,
+        counts=counts,
+        short_items=short_items,
+        combined_output=combined,
+    )
 
     # parse_confidence: be honest about what was actually parsed
     got_counts = any(v is not None for v in (counts["passed"], counts["failed"], counts["skipped"], counts["errors"]))
@@ -286,6 +379,11 @@ def parse_pytest_output(
     raw_excerpt, raw_truncated = _truncate_excerpt(raw_text, MAX_RAW_OUTPUT_CHARS)
 
     return {
+        "result_kind": "pytest_structured",
+        "diagnostic_kind": "test_execution",
+        "outcome_kind": classification["outcome_kind"],
+        "failure_layer": classification["failure_layer"],
+        "failure_kind": classification["failure_kind"],
         "counts": {
             "collected": collected,
             "passed": counts["passed"],
@@ -295,7 +393,7 @@ def parse_pytest_output(
             "warnings": counts["warnings"],
             "duration_seconds": counts["duration_seconds"],
         },
-        "success": success,
+        "success": classification["success"],
         "exit_code": exit_code,
         "timed_out": timed_out,
         "failures": failure_records,
@@ -428,12 +526,21 @@ def invoke_pytest(
     src_path = str(Path(repo_root) / "src")
     env["PYTHONPATH"] = f"{src_path}:{existing_pythonpath}" if existing_pythonpath else src_path
 
+    selection_basis = "workspace_default"
+    if targets:
+        selection_basis = "targets"
+    elif path:
+        selection_basis = "path"
+
     invocation_meta: dict[str, Any] = {
         "cwd": str(workspace_root),
+        "workspace_root": str(workspace_root),
         "path": path,
         "targets": targets or [],
         "keyword": keyword,
         "max_failures": max_failures,
+        "timeout_seconds": effective_timeout,
+        "selection_basis": selection_basis,
         "command": " ".join(cmd),
     }
 
@@ -561,13 +668,22 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResul
         timeout_seconds=timeout_seconds,
     )
 
-    # Text summary for the content field (human-readable headline)
-    summary_parts = []
-    if result["timed_out"]:
-        summary_parts.append("pytest timed out")
-    elif result["success"]:
+    outcome = result["outcome_kind"]
+    if outcome == "passed":
         p = result["counts"].get("passed")
-        summary_parts.append(f"All tests passed" + (f" ({p} passed)" if p is not None else ""))
+        text_summary = f"pytest passed" + (f" ({p} passed)" if p is not None else "")
+    elif outcome == "no_tests_collected":
+        text_summary = "pytest completed: no tests collected"
+    elif outcome == "timeout":
+        text_summary = "pytest timed out"
+    elif outcome == "collection_error":
+        text_summary = "pytest collection error"
+    elif outcome == "internal_error":
+        text_summary = "pytest internal error"
+    elif outcome == "usage_error":
+        text_summary = "pytest usage error"
+    elif outcome == "interrupted":
+        text_summary = "pytest interrupted"
     else:
         f = result["counts"].get("failed")
         e = result["counts"].get("errors")
@@ -576,9 +692,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResul
             parts.append(f"{f} failed")
         if e:
             parts.append(f"{e} error{'s' if e != 1 else ''}")
-        summary_parts.append(", ".join(parts) if parts else "Tests failed")
-
-    text_summary = summary_parts[0] if summary_parts else "pytest completed"
+        text_summary = "pytest failed" + (f" ({', '.join(parts)})" if parts else "")
 
     return types.CallToolResult(
         content=[types.TextContent(type="text", text=text_summary)],

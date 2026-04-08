@@ -249,6 +249,11 @@ class TestParsePytestOutput(unittest.TestCase):
         self.assertEqual(result["failures_total"], 0)
         self.assertFalse(result["failures_truncated"])
         self.assertEqual(result["counts"]["passed"], 3)
+        self.assertEqual(result["result_kind"], "pytest_structured")
+        self.assertEqual(result["diagnostic_kind"], "test_execution")
+        self.assertEqual(result["outcome_kind"], "passed")
+        self.assertEqual(result["failure_layer"], "none")
+        self.assertEqual(result["failure_kind"], "none")
         self.assertIn(result["parse_confidence"], {"full", "partial", "minimal"})
 
     def test_one_fail_result(self):
@@ -257,6 +262,10 @@ class TestParsePytestOutput(unittest.TestCase):
         self.assertEqual(result["exit_code"], 1)
         self.assertEqual(result["failures_total"], 1)
         self.assertEqual(len(result["failures"]), 1)
+        self.assertEqual(result["outcome_kind"], "failed")
+        self.assertEqual(result["failure_layer"], "test_execution")
+        self.assertEqual(result["failure_kind"], "assertion_failures")
+        self.assertEqual(result["failures"][0]["status"], "FAILED")
         self.assertEqual(result["failures"][0]["node_id"], "tests/test_foo.py::test_fail")
         self.assertIn("AssertionError", result["failures"][0]["headline"])
 
@@ -265,11 +274,17 @@ class TestParsePytestOutput(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertTrue(result["timed_out"])
         self.assertIsNone(result["exit_code"])
+        self.assertEqual(result["outcome_kind"], "timeout")
+        self.assertEqual(result["failure_layer"], "runtime_execution")
+        self.assertEqual(result["failure_kind"], "timeout")
 
     def test_no_tests_collected(self):
         result = parse_pytest_output(_NO_TESTS_OUTPUT, "", exit_code=5)
         # No tests collected is not a failure
         self.assertTrue(result["success"])
+        self.assertEqual(result["outcome_kind"], "no_tests_collected")
+        self.assertEqual(result["failure_layer"], "none")
+        self.assertEqual(result["failure_kind"], "none")
 
     def test_result_shape_stability(self):
         """All expected fields must always be present regardless of output content."""
@@ -282,6 +297,7 @@ class TestParsePytestOutput(unittest.TestCase):
         ]:
             result = parse_pytest_output(output, "", exit_code=code)
             required_fields = {
+                "result_kind", "diagnostic_kind", "outcome_kind", "failure_layer", "failure_kind",
                 "success", "exit_code", "timed_out",
                 "failures", "failures_truncated", "failures_total",
                 "raw_output_excerpt", "raw_output_truncated",
@@ -289,6 +305,8 @@ class TestParsePytestOutput(unittest.TestCase):
             }
             for field in required_fields:
                 self.assertIn(field, result, f"field {field!r} missing for exit_code={code}")
+            self.assertEqual(result["result_kind"], "pytest_structured")
+            self.assertEqual(result["diagnostic_kind"], "test_execution")
             # counts sub-dict
             self.assertIn("counts", result)
             count_fields = {"collected", "passed", "failed", "skipped", "errors", "warnings", "duration_seconds"}
@@ -300,6 +318,13 @@ class TestParsePytestOutput(unittest.TestCase):
             result = parse_pytest_output(output, "", exit_code=code)
             self.assertIn(result["parse_confidence"], {"full", "partial", "minimal"})
 
+    def test_usage_error_classification(self):
+        result = parse_pytest_output("usage error", "", exit_code=4)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["outcome_kind"], "usage_error")
+        self.assertEqual(result["failure_layer"], "tool_invocation")
+        self.assertEqual(result["failure_kind"], "usage_error")
+
     def test_raw_output_truncated(self):
         large_output = "x\n" * (MAX_RAW_OUTPUT_CHARS + 1000)
         result = parse_pytest_output(large_output, "", exit_code=0)
@@ -310,6 +335,9 @@ class TestParsePytestOutput(unittest.TestCase):
         result = parse_pytest_output(_INTERNAL_ERROR_OUTPUT, "", exit_code=3)
         # Internal error = not success; parse_confidence should not claim "full"
         self.assertFalse(result["success"])
+        self.assertEqual(result["outcome_kind"], "internal_error")
+        self.assertEqual(result["failure_layer"], "tool_invocation")
+        self.assertEqual(result["failure_kind"], "internal_error")
         # At minimum, exit code is captured
         self.assertEqual(result["exit_code"], 3)
 
@@ -547,6 +575,10 @@ class TestInvokePytestIntegration(unittest.TestCase):
         self.assertIn("invocation", result)
         inv = result["invocation"]
         self.assertIn("cwd", inv)
+        self.assertIn("workspace_root", inv)
+        self.assertIn("timeout_seconds", inv)
+        self.assertIn("selection_basis", inv)
+        self.assertIn(inv["selection_basis"], {"workspace_default", "path", "targets"})
         self.assertIn("command", inv)
 
     def test_best_effort_on_collection_error(self):
@@ -565,13 +597,17 @@ class TestInvokePytestIntegration(unittest.TestCase):
         """)
         result = invoke_pytest(workspace_root=Path(self._tmpdir))
         # Should not raise; should return a valid result shape
-        required = {"success", "exit_code", "timed_out", "failures", "failures_total",
+        required = {"result_kind", "diagnostic_kind", "outcome_kind", "failure_layer", "failure_kind",
+                    "success", "exit_code", "timed_out", "failures", "failures_total",
                     "failures_truncated", "raw_output_excerpt", "raw_output_truncated",
                     "parse_confidence", "counts", "invocation"}
         for field in required:
             self.assertIn(field, result)
         # Collection error is not a success
         self.assertFalse(result["success"])
+        self.assertEqual(result["outcome_kind"], "collection_error")
+        self.assertEqual(result["failure_layer"], "test_collection")
+        self.assertEqual(result["failure_kind"], "collection_error")
 
 
 if __name__ == "__main__":
