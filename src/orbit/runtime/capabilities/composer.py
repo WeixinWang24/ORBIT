@@ -22,16 +22,16 @@ from orbit.tools.registry import ToolRegistry
 
 @dataclass
 class RuntimeCapabilityProfile:
-    enable_mcp_filesystem: bool = False
-    enable_mcp_git: bool = False
-    enable_mcp_bash: bool = False
-    enable_mcp_process: bool = False
-    enable_mcp_pytest: bool = False
-    enable_mcp_ruff: bool = False
-    enable_mcp_mypy: bool = False
-    enable_mcp_browser: bool = False
-    enable_mcp_obsidian: bool = False
-    enable_memory: bool = False
+    filesystem: bool = False
+    git: bool = False
+    bash: bool = False
+    process: bool = False
+    pytest: bool = False
+    ruff: bool = False
+    mypy: bool = False
+    browser: bool = False
+    obsidian: bool = False
+    memory: bool = False
 
 
 @dataclass
@@ -39,7 +39,7 @@ class RuntimeCapabilityBundle:
     tool_registry: ToolRegistry
     embedding_service: Any | None = None
     memory_service: Any | None = None
-    enabled_families: set[str] = field(default_factory=set)
+    enabled_capabilities: set[str] = field(default_factory=set)
     activation_metrics: dict[str, float] = field(default_factory=dict)
     warmup_metrics: dict[str, float] = field(default_factory=dict)
 
@@ -52,12 +52,12 @@ class RuntimeCapabilityComposer:
     def _record(self, bucket: dict[str, float], key: str, started_at: float) -> None:
         bucket[key] = round((time.perf_counter() - started_at) * 1000, 2)
 
-    def _activate_mcp_family(self, *, bundle: RuntimeCapabilityBundle, family: str, bootstrap_factory) -> None:
+    def _activate_mcp_family(self, *, bundle: RuntimeCapabilityBundle, capability: str, bootstrap_factory) -> None:
         t = time.perf_counter()
         bootstrap = bootstrap_factory()
         register_mcp_server_tools(registry=bundle.tool_registry, bootstrap=bootstrap)
-        self._record(bundle.activation_metrics, f'{family}_activation_ms', t)
-        bundle.enabled_families.add(family)
+        self._record(bundle.activation_metrics, f'{capability}_activation_ms', t)
+        bundle.enabled_capabilities.add(capability)
 
     def _maybe_enable_memory(self, *, bundle: RuntimeCapabilityBundle) -> None:
         if bundle.memory_service is not None:
@@ -75,71 +75,71 @@ class RuntimeCapabilityComposer:
             t = time.perf_counter()
             self.backend.memory_service = bundle.memory_service
             self._record(bundle.activation_metrics, 'backend_memory_service_bind_ms', t)
-        bundle.enabled_families.add('memory')
+        bundle.enabled_capabilities.add('memory')
 
     def activate(self, profile: RuntimeCapabilityProfile) -> RuntimeCapabilityBundle:
         t0 = time.perf_counter()
         bundle = RuntimeCapabilityBundle(tool_registry=ToolRegistry(Path(self.workspace_root)))
         bundle.activation_metrics['tool_registry_init_ms'] = round((time.perf_counter() - t0) * 1000, 2)
 
-        if profile.enable_mcp_filesystem:
+        if profile.filesystem:
             self._activate_mcp_family(
                 bundle=bundle,
-                family='filesystem',
+                capability='filesystem',
                 bootstrap_factory=lambda: bootstrap_local_filesystem_mcp_server(workspace_root=self.workspace_root),
             )
-        if profile.enable_mcp_git:
+        if profile.git:
             self._activate_mcp_family(
                 bundle=bundle,
-                family='git',
+                capability='git',
                 bootstrap_factory=lambda: bootstrap_local_git_mcp_server(workspace_root=self.workspace_root),
             )
-        if profile.enable_mcp_bash:
+        if profile.bash:
             self._activate_mcp_family(
                 bundle=bundle,
-                family='bash',
+                capability='bash',
                 bootstrap_factory=lambda: bootstrap_local_bash_mcp_server(workspace_root=self.workspace_root),
             )
-        if profile.enable_mcp_process:
+        if profile.process:
             self._activate_mcp_family(
                 bundle=bundle,
-                family='process',
+                capability='process',
                 bootstrap_factory=lambda: bootstrap_local_process_mcp_server(workspace_root=self.workspace_root),
             )
-        if profile.enable_mcp_pytest:
+        if profile.pytest:
             self._activate_mcp_family(
                 bundle=bundle,
-                family='pytest',
+                capability='pytest',
                 bootstrap_factory=lambda: bootstrap_local_pytest_mcp_server(workspace_root=self.workspace_root),
             )
-        if profile.enable_mcp_ruff:
+        if profile.ruff:
             self._activate_mcp_family(
                 bundle=bundle,
-                family='ruff',
+                capability='ruff',
                 bootstrap_factory=lambda: bootstrap_local_ruff_mcp_server(workspace_root=self.workspace_root),
             )
-        if profile.enable_mcp_mypy:
+        if profile.mypy:
             self._activate_mcp_family(
                 bundle=bundle,
-                family='mypy',
+                capability='mypy',
                 bootstrap_factory=lambda: bootstrap_local_mypy_mcp_server(workspace_root=self.workspace_root),
             )
-        if profile.enable_mcp_browser:
+        if profile.browser:
             self._activate_mcp_family(
                 bundle=bundle,
-                family='browser',
+                capability='browser',
                 bootstrap_factory=lambda: bootstrap_local_browser_mcp_server(workspace_root=self.workspace_root),
             )
-        if profile.enable_mcp_obsidian:
+        if profile.obsidian:
             import os
             vault_root = os.environ.get('ORBIT_OBSIDIAN_VAULT_ROOT', '').strip()
             if vault_root:
                 self._activate_mcp_family(
                     bundle=bundle,
-                    family='obsidian',
+                    capability='obsidian',
                     bootstrap_factory=lambda: bootstrap_local_obsidian_mcp_server(vault_root=vault_root),
                 )
-        if profile.enable_memory:
+        if profile.memory:
             self._maybe_enable_memory(bundle=bundle)
         else:
             bundle.activation_metrics['memory_enabled'] = False
@@ -151,9 +151,9 @@ class RuntimeCapabilityComposer:
         bundle.activation_metrics['total_ms'] = round(sum(v for v in bundle.activation_metrics.values() if isinstance(v, (int, float))), 2)
         return bundle
 
-    def warmup(self, bundle: RuntimeCapabilityBundle, *, families: list[str] | None = None) -> dict[str, float]:
+    def warmup(self, bundle: RuntimeCapabilityBundle, *, capabilities: list[str] | None = None) -> dict[str, float]:
         t0 = time.perf_counter()
-        selected = set(families or bundle.enabled_families)
+        selected = set(capabilities or bundle.enabled_capabilities)
         metrics: dict[str, float] = {}
         if 'memory' in selected and bundle.embedding_service is not None:
             step = time.perf_counter()

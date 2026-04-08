@@ -36,19 +36,19 @@ class RuntimeAdapterConfig:
     model: str = "gpt-5.4"
     runtime_mode: RuntimeMode = "dev"
     enable_tools: bool = True
-    enable_mcp_filesystem: bool = False
-    enable_mcp_git: bool = False
-    enable_mcp_bash: bool = False
-    enable_mcp_process: bool = False
-    enable_mcp_pytest: bool = False
-    enable_mcp_ruff: bool = False
-    enable_mcp_mypy: bool = False
-    enable_mcp_browser: bool = False
-    enable_mcp_obsidian: bool = False
-    enable_memory: bool = False
+    filesystem: bool = False
+    git: bool = False
+    bash: bool = False
+    process: bool = False
+    pytest: bool = False
+    ruff: bool = False
+    mypy: bool = False
+    browser: bool = False
+    obsidian: bool = False
+    memory: bool = False
 
 
-def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev", enable_tools: bool = True, enable_mcp_filesystem: bool = False, enable_mcp_git: bool = False, enable_mcp_bash: bool = False, enable_mcp_process: bool = False, enable_mcp_pytest: bool = False, enable_mcp_ruff: bool = False, enable_mcp_mypy: bool = False, enable_mcp_browser: bool = False, enable_mcp_obsidian: bool = False, enable_memory: bool = False) -> tuple[SessionManager, RuntimeCapabilityComposer, RuntimeCapabilityBundle]:
+def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev", enable_tools: bool = True, filesystem: bool = False, git: bool = False, bash: bool = False, process: bool = False, pytest: bool = False, ruff: bool = False, mypy: bool = False, browser: bool = False, obsidian: bool = False, memory: bool = False) -> tuple[SessionManager, RuntimeCapabilityComposer, RuntimeCapabilityBundle]:
     t0 = time.perf_counter()
     workspace_root = workspace_root_for_runtime_mode(runtime_mode)
     t1 = time.perf_counter()
@@ -61,16 +61,16 @@ def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev"
     setattr(backend, 'store', store)
     t2 = time.perf_counter()
     profile = RuntimeCapabilityProfile(
-        enable_mcp_filesystem=enable_mcp_filesystem,
-        enable_mcp_git=enable_mcp_git,
-        enable_mcp_bash=enable_mcp_bash,
-        enable_mcp_process=enable_mcp_process,
-        enable_mcp_pytest=enable_mcp_pytest,
-        enable_mcp_ruff=enable_mcp_ruff,
-        enable_mcp_mypy=enable_mcp_mypy,
-        enable_mcp_browser=enable_mcp_browser,
-        enable_mcp_obsidian=enable_mcp_obsidian,
-        enable_memory=enable_memory,
+        filesystem=filesystem,
+        git=git,
+        bash=bash,
+        process=process,
+        pytest=pytest,
+        ruff=ruff,
+        mypy=mypy,
+        browser=browser,
+        obsidian=obsidian,
+        memory=memory,
     )
     composer = RuntimeCapabilityComposer(workspace_root=str(workspace_root), backend=backend)
     bundle = composer.activate(profile)
@@ -157,16 +157,16 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             model=config.model,
             runtime_mode=config.runtime_mode,
             enable_tools=config.enable_tools,
-            enable_mcp_filesystem=config.enable_mcp_filesystem,
-            enable_mcp_git=config.enable_mcp_git,
-            enable_mcp_bash=config.enable_mcp_bash,
-            enable_mcp_process=config.enable_mcp_process,
-            enable_mcp_pytest=config.enable_mcp_pytest,
-            enable_mcp_ruff=config.enable_mcp_ruff,
-            enable_mcp_mypy=config.enable_mcp_mypy,
-            enable_mcp_browser=config.enable_mcp_browser,
-            enable_mcp_obsidian=config.enable_mcp_obsidian,
-            enable_memory=config.enable_memory,
+            filesystem=config.filesystem,
+            git=config.git,
+            bash=config.bash,
+            process=config.process,
+            pytest=config.pytest,
+            ruff=config.ruff,
+            mypy=config.mypy,
+            browser=config.browser,
+            obsidian=config.obsidian,
+            memory=config.memory,
         )
         t1 = time.perf_counter()
         build_state_store = BuildStateStore()
