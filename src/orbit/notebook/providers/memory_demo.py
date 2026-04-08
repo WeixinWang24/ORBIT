@@ -8,7 +8,6 @@ store/bootstrap/capture scaffolding repeatedly.
 from __future__ import annotations
 
 from pathlib import Path
-import tempfile
 
 import pandas as pd
 
@@ -51,8 +50,14 @@ class DemoMemoryEmbeddingService:
 
 
 def create_memory_showcase_bundle(*, db_path: Path | None = None, session_id: str = "session_memory_showcase", run_id: str = "run_memory_showcase") -> dict[str, object]:
-    """Create a deterministic store/session/service bundle for memory notebooks."""
-    db_path = db_path or Path(tempfile.mkdtemp(prefix="orbit_memory_showcase_")) / "orbit.db"
+    """Create a deterministic store/session/service bundle for memory notebooks.
+
+    By default, the showcase database now lives inside the ORBIT repo `.tmp`
+    tree so repeated notebook runs stay visible and easy to clean.
+    """
+    default_db_dir = Path('/Volumes/2TB/MAS/openclaw-core/ORBIT/.tmp/notebooks/memory_showcase')
+    default_db_dir.mkdir(parents=True, exist_ok=True)
+    db_path = db_path or (default_db_dir / 'orbit.db')
     db_path.unlink(missing_ok=True)
     store = SQLiteStore(db_path=db_path)
     service = MemoryService(store=store, embedding_service=DemoMemoryEmbeddingService())
