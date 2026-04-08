@@ -323,6 +323,8 @@ class SessionManager:
 
     def _capture_memory_after_turn(self, *, session: ConversationSession) -> None:
         """Persist a bounded first-slice memory summary after a completed turn."""
+        if self.memory_service is None:
+            return
         messages = self.list_messages(session.session_id)
         assistant_message = next((message for message in reversed(messages) if message.role == MessageRole.ASSISTANT and message.content.strip()), None)
         user_message = None
@@ -737,7 +739,7 @@ class SessionManager:
         }.get(tool_name)
 
     def maybe_make_filesystem_unchanged_result(self, *, session: ConversationSession | None, tool_request: ToolRequest) -> ToolResult | None:
-        if session is None or tool_request.tool_name != "read_file":
+        if session is None or tool_request.tool_name not in {"read_file", "native__read_file"}:
             return None
         path = tool_request.input_payload.get("path")
         if not isinstance(path, str) or not path:
@@ -773,7 +775,7 @@ class SessionManager:
         )
 
     def filesystem_grounding_kind_for_tool(self, tool_name: str, *, is_partial_view: bool) -> str | None:
-        if tool_name == "read_file":
+        if tool_name in {"read_file", "native__read_file"}:
             return "partial_read" if is_partial_view else "full_read"
         return None
 
@@ -980,6 +982,80 @@ class SessionManager:
                 plan_label="auth-failure",
                 failure_reason=failure_message,
             )
+
+        return self._finalize_session_plan(session=session, plan=plan, messages=messages)
+
+    def run_dummy_session_turn(self, *, session_id: str, user_input: str, dummy_scenario: str, on_assistant_partial_text=None, on_stream_completed=None) -> ExecutionPlan:
+        """Execute one deterministic dummy-backed session turn with an explicit scenario.
+
+        This helper exists so notebook/demo/testing surfaces can request a known
+        dummy scenario without overloading the normal user-input session path.
+        It keeps deterministic teaching scaffolds explicit rather than relying on
+        prompt wording or hidden fallback heuristics.
+        """
+        session = self.get_session(session_id)
+        if session is None:
+            raise ValueError(f"session not found: {session_id}")
+        if session.metadata.get("terminated"):
+            raise ValueError(f"session terminated: {session_id}")
+        pending = self._get_pending_approval(session)
+        if pending is not None:
+            raise ValueError(f"session has pending approval: {pending['approval_request_id']}")
+
+        mode_policy = session.metadata.get("mode_policy") if isinstance(session.metadata, dict) else None
+        descriptor = RunDescriptor(
+            session_key=f"session:{session.session_id}",
+            conversation_id=session.conversation_id,
+            runtime_mode=session.runtime_mode,
+            mode_policy=ModePolicyDescriptor(**mode_policy) if isinstance(mode_policy, dict) else ModePolicyDescriptor(),
+            workspace=WorkspaceDescriptor(cwd=self.workspace_root, writable_roots=[self.workspace_root]),
+            user_input=user_input,
+            dummy_scenario=dummy_scenario,
+        )
+        self.append_run_descriptor_for_session(session_id=session_id, descriptor=descriptor)
+        refreshed = self.get_session(session_id)
+        if refreshed is None:
+            raise ValueError(f"session not found after recording run descriptor: {session_id}")
+        session = refreshed
+
+        self.append_message(session_id=session_id, role=MessageRole.USER, content=user_input)
+        self.append_context_artifact_for_session(
+            session_id=session_id,
+            artifact_type="session_user_input",
+            content=user_input,
+            source="user_input",
+        )
+        self.emit_session_event(
+            session_id=session_id,
+            event_type=RuntimeEventType.RUN_STARTED,
+            payload={
+                "session_id": session_id,
+                "user_input": user_input,
+                "mode": "session_turn",
+                "has_run_descriptor": True,
+                "dummy_scenario": dummy_scenario,
+            },
+        )
+        messages = self.list_messages(session_id)
+        self.append_context_artifact_for_session(
+            session_id=session_id,
+            artifact_type="session_transcript_snapshot",
+            content=json.dumps([
+                {
+                    "role": getattr(message.role, "value", str(message.role)),
+                    "content": message.content,
+                    "turn_index": message.turn_index,
+                    "metadata": message.metadata,
+                }
+                for message in messages
+            ], indent=2, ensure_ascii=False),
+            source="runtime",
+        )
+        plan = self.backend.plan(descriptor)
+        self._consume_pending_turn_snapshots(session)
+        refreshed_after_plan = self.get_session(session_id)
+        if refreshed_after_plan is not None:
+            session = refreshed_after_plan
 
         return self._finalize_session_plan(session=session, plan=plan, messages=messages)
 

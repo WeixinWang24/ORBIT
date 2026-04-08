@@ -141,4 +141,4 @@ After the initial MVP closure, the mainline has also been hardened in several ta
 
 ## Current scope note
 
-This contract describes the active SessionManager-centered MVP loop, not the retired historical OrbitCoordinator scaffold.
+This contract describes the active SessionManager-centered MVP loop, not the retired coordinator scaffold that has now been removed from the active codebase.

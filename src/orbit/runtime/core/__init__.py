@@ -3,7 +3,7 @@
 Mainline core:
 - `SessionManager`
 
-Historical scaffolds now live under `orbit.runtime.historical`.
+Historical coordinator scaffolds have been removed from the active codebase.
 """
 
 from orbit.runtime.core.contracts import RunDescriptor

@@ -3,9 +3,7 @@
 Mainline runtime surface:
 - `SessionManager` is the active session agent loop host module.
 
-Historical/development scaffold surface:
-- `OrbitCoordinator` has been moved under `orbit.runtime.historical` for
-  teaching and development-history reference.
+Historical coordinator scaffolds have been removed from the active codebase.
 """
 
 from orbit.runtime.auth import *

@@ -4,7 +4,6 @@ from pathlib import Path
 
 from orbit.models import ConversationMessage, MessageRole
 from orbit.notebook import NotebookWorkbench, capture_memory_showcase_turns, create_memory_showcase_bundle
-from orbit.runtime.historical import OrbitCoordinator
 
 
 def test_notebook_workbench_exposes_memory_summary_bundle():
@@ -13,8 +12,7 @@ def test_notebook_workbench_exposes_memory_summary_bundle():
     session = bundle['session']
     service = bundle['service']
 
-    coordinator = OrbitCoordinator(store=store, workspace_root=Path('/Volumes/2TB/MAS/openclaw-core/ORBIT'))
-    workbench = NotebookWorkbench(coordinator)
+    workbench = NotebookWorkbench.from_store(store)
 
     capture_memory_showcase_turns(store=store, service=service, session=session)
     query_text = 'what are my concise orbit memory decisions and todos?'
