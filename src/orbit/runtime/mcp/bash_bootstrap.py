@@ -5,7 +5,17 @@ import sys
 from pathlib import Path
 
 from orbit.runtime.mcp.bootstrap import bootstrap_stdio_mcp_server
-from orbit.runtime.mcp.models import McpClientBootstrap, McpStdioServerConfig
+from orbit.runtime.mcp.models import McpCapabilityMetadata, McpClientBootstrap, McpStdioServerConfig
+
+# Bash: stateless access support. Each invocation is independent; truth comes
+# from the bounded result object. The MCP server process lifecycle is irrelevant.
+_BASH_CAPABILITY_METADATA = McpCapabilityMetadata(
+    capability_family="bash",
+    continuity_type="stateless",
+    truth_source="bounded_result_object",
+    layer_role="access_support",
+    transport_importance="irrelevant",
+)
 
 
 def bootstrap_local_bash_mcp_server(*, workspace_root: str) -> McpClientBootstrap:
@@ -19,5 +29,7 @@ def bootstrap_local_bash_mcp_server(*, workspace_root: str) -> McpClientBootstra
         command=sys.executable,
         args=[str(server_path)],
         env=env,
+        continuity_mode="stateless",
+        capability_metadata=_BASH_CAPABILITY_METADATA,
     )
     return bootstrap_stdio_mcp_server(config)
