@@ -55,4 +55,5 @@ def normalized_result_to_execution_plan(result: ProviderNormalizedResult) -> Exe
         tool_request=result.tool_request,
         should_finish_after_tool=result.should_finish_after_tool,
         failure_reason=result.failure.message if result.failure else None,
+        metadata=result.metadata or {},
     )
