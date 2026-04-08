@@ -1,7 +1,10 @@
 """First-slice data models for context usage accounting in ORBIT.
 
-This module defines minimal models for tracking observed token usage
-per provider call and cumulatively across session turns.
+This module lives on the Operation Surface: it is runtime observability
+infrastructure, not a Knowledge Surface concern.
+
+Tracks observed token usage per provider call and cumulatively across
+session turns.
 
 Out of scope for this first slice:
 - preflight estimates

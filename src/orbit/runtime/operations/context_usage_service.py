@@ -1,5 +1,8 @@
 """Context usage accounting service for ORBIT first-slice token tracking.
 
+This module lives on the Operation Surface: it is runtime observability
+infrastructure, not a Knowledge Surface concern.
+
 This service is the single owner of context usage normalization, recording,
 and projection. It is runtime- and provider-neutral: callers pass raw usage
 dicts from plan metadata; this service normalizes, accumulates, and persists.
@@ -15,7 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from orbit.runtime.knowledge.context_models import (
+from orbit.runtime.operations.context_usage_models import (
     ContextUsageSnapshot,
     ModelCallUsage,
     SessionUsageTotals,

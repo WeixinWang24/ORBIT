@@ -9,7 +9,7 @@ import time
 from typing import Any
 
 from orbit.runtime.core.session_manager import SESSION_MANAGER_IMPORT_PROFILE_TIMINGS, SessionManager
-from orbit.runtime.knowledge.context_accounting_service import ContextAccountingService
+from orbit.runtime.operations.context_usage_service import ContextAccountingService
 from orbit.runtime.capabilities.composer import RuntimeCapabilityBundle, RuntimeCapabilityComposer, RuntimeCapabilityProfile
 from orbit.runtime.governance.build_state_store import BuildStateStore
 from orbit.runtime.governance.protocol.mode import RuntimeMode, build_policy_profile_for_mode, mode_policy_summary, workspace_root_for_runtime_mode

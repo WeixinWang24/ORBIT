@@ -16,7 +16,7 @@ from orbit.runtime.execution.continuation_context import build_rejection_continu
 from orbit.runtime.governance.tool_approval_policy import PolicyDecision, PolicyEvaluationInput, evaluate_tool_approval_policy
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
 from orbit.runtime.auth.storage.openai_store import OpenAIAuthStoreError
-from orbit.runtime.knowledge.context_accounting_service import ContextAccountingService
+from orbit.runtime.operations.context_usage_service import ContextAccountingService
 from orbit.store.base import OrbitStore
 from orbit.tools.base import ToolResult
 from orbit.tools.registry import ToolRegistry
