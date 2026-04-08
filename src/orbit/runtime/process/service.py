@@ -232,6 +232,11 @@ class ProcessService:
                     self._wait_for_runner_startup(process.status_path, timeout_seconds=2.0)
 
                 # Step 2: SIGTERM to the entire process group (runner + child command).
+                # Invariant: process.pid == pgid because the runner was started with
+                # start_new_session=True (see start_process), which makes the runner
+                # the leader of a new process group where pgid == pid. If the launch
+                # path ever changes (e.g., a subprocess wrapper that changes the session),
+                # this killpg call would target the wrong group and must be re-evaluated.
                 try:
                     os.killpg(process.pid, signal.SIGTERM)
                 except OSError:

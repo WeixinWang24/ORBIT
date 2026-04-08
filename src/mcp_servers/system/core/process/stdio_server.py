@@ -22,7 +22,11 @@ DEFAULT_READ_MAX_CHARS = 12000
 server = Server(
     name=SERVER_NAME,
     version=SERVER_VERSION,
-    instructions="Workspace-scoped MCP process lifecycle server for ORBIT core capabilities.",
+    # Task-backed persistent process identity: process handles survive MCP server restarts.
+    # Lifecycle truth is grounded in persisted files (runner status file, stdout/stderr files,
+    # store record), not in server-local in-memory state. A fresh server instance re-derives
+    # full process state from those persisted artifacts on each tool call.
+    instructions="Workspace-scoped MCP server for task-backed persistent process lifecycle management. Process identity and output continuity are grounded in persisted runner status and output files, not MCP session state.",
 )
 
 
@@ -59,11 +63,18 @@ async def list_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name="start_process",
-            description="Start a non-interactive workspace-scoped background process and return a persistent process handle.",
+            description=(
+                "Start a non-interactive workspace-scoped background process and return a "
+                "task-backed persistent process handle. The handle survives MCP server restarts; "
+                "lifecycle truth is recovered from the runner status file and persisted output files."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "session_id": {"type": "string", "description": "Runtime-internal session id. Normally injected by ORBIT rather than supplied by the model."},
+                    # session_id grounds the process to the owning ORBIT session, enabling
+                    # cross-session process retrieval. SessionManager injects it automatically;
+                    # the model should not supply it.
+                    "session_id": {"type": "string", "description": "ORBIT session that owns this process. Injected by SessionManager — do not supply from the model side."},
                     "command": {"type": "string"},
                     "cwd": {"type": "string"},
                 },
@@ -73,7 +84,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="read_process_output",
-            description="Read incremental stdout/stderr from a persistent managed process.",
+            description="Read incremental stdout/stderr from a task-backed persistent process. Output is read from persisted files by offset; continuity survives MCP server restarts.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -86,7 +97,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="wait_process",
-            description="Wait for a persistent managed process to complete or timeout.",
+            description="Wait for a task-backed persistent process to complete or timeout. Terminal state is determined from the runner status file (primary truth), not in-memory session state.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -99,7 +110,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="terminate_process",
-            description="Terminate a running persistent managed process by process_id.",
+            description="Terminate a running task-backed persistent process by process_id. Termination is reconciled against the runner status file (primary truth), not an optimistic local write.",
             inputSchema={
                 "type": "object",
                 "properties": {

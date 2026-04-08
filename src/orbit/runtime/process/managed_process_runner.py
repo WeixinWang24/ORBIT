@@ -78,8 +78,12 @@ def main() -> int:
         # exit when it receives SIGTERM. The service recovery path handles a missing file.
         try:
             _write_status(status_path, state)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Write failure (e.g., disk full) must not prevent exit on SIGTERM.
+            # Log to stderr so the failure is visible in the captured stderr file
+            # even though the status file was not written. The service recovery path
+            # (_write_recovery_status_file) will attempt to fill in terminal truth.
+            print(f"runner: failed to write terminal status: {exc}", file=sys.stderr, flush=True)
         raise SystemExit(128 + signum)
 
     signal.signal(signal.SIGTERM, _handle_signal)

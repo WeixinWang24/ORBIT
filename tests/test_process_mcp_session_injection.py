@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from orbit.interfaces.runtime_adapter import build_codex_session_manager
 from orbit.runtime.execution.contracts.plans import ToolRequest
+from orbit.runtime.mcp.process_bootstrap import bootstrap_local_process_mcp_server
 
 
 class ProcessMcpSessionInjectionTests(unittest.TestCase):
+    def test_process_bootstrap_declares_persistent_preferred(self):
+        workspace_root = str(Path(__file__).resolve().parents[1])
+        bootstrap = bootstrap_local_process_mcp_server(workspace_root=workspace_root)
+        self.assertEqual(bootstrap.continuity_mode, "persistent_preferred")
+
     def test_start_process_executes_with_runtime_injected_session_id(self):
         sm = build_codex_session_manager(
             model="gpt-5.4",

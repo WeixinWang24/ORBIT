@@ -419,6 +419,54 @@ class ProcessRecoveryTests(unittest.TestCase):
         self.assertEqual(recovered.status, "killed")
 
     # ------------------------------------------------------------------
+    # H. Runner terminal truth must not be overridden by fallback pid polling
+    # ------------------------------------------------------------------
+
+    def test_runner_status_file_truth_not_overridden_by_pid_polling(self) -> None:
+        """
+        Truth-precedence invariant: when the runner status file shows a terminal state,
+        refresh_process must use it as the answer and must NOT consult pid polling.
+
+        Mechanism: after a real process completes, overwrite the runner status file with
+        a synthetic terminal entry containing a distinctive exit_code (77) and status
+        ('failed'). A fresh service instance calling refresh_process must return exactly
+        those values — demonstrating that the status file (not pid polling) is the source.
+
+        Pid polling for a long-exited process would return exit_code 1 (or raise
+        ChildProcessError), never 77, so any non-77 exit_code in the result would
+        indicate the invariant is broken.
+        """
+        svc1 = self._fresh_service()
+        proc = svc1.start_process(session_id="sess_precedence_h", command="echo precedence_test")
+        svc1.wait_process(proc.process_id, timeout_seconds=10.0)
+
+        # Overwrite the runner status file with a synthetic terminal state.
+        # exit_code=77 is deliberately unusual: pid polling cannot produce this value.
+        synthetic_terminal = {
+            "status": "failed",
+            "exit_code": 77,
+            "signal": None,
+            "written_at": "2026-04-06T00:00:00+00:00",
+            "source": "test_synthetic",
+        }
+        Path(proc.status_path).write_text(
+            json.dumps(synthetic_terminal, ensure_ascii=False), encoding="utf-8"
+        )
+
+        # Fresh service instance: no live handle, must derive truth from status file.
+        svc2 = self._fresh_service()
+        self.assertNotIn(proc.pid, svc2._live_handles)
+
+        recovered = svc2.refresh_process(proc.process_id)
+
+        # Must reflect the runner status file (primary truth), not pid polling.
+        self.assertEqual(recovered.status, "failed",
+                         "status must come from runner status file, not pid polling")
+        self.assertEqual(recovered.exit_code, 77,
+                         "exit_code 77 is only reachable via the runner status file; "
+                         "pid polling would never produce this value")
+
+    # ------------------------------------------------------------------
     # I. Cross-instance: start + complete + full read in separate instances
     # ------------------------------------------------------------------
 
