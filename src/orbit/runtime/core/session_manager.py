@@ -15,6 +15,7 @@ from orbit.runtime.extensions.metadata_channels import (
     set_core_runtime_metadata,
 )
 from orbit.runtime.extensions.capability_attach import RuntimeCoreMinimalCapabilityPolicy
+from orbit.runtime.core.continuation_planner import RuntimeContinuationPlanner
 from orbit.runtime.core.outcomes import ResolvedRuntimeOutcome
 from orbit.runtime.extensions.capability_surface import NoOpCapabilitySurface
 from orbit.runtime.governance.protocol.mode import ModePolicyDescriptor, RuntimeMode, build_mode_policy_snapshot
@@ -249,25 +250,9 @@ class SessionManager:
         )
 
 
-    def apply_runtime_outcome(
-        self,
-        *,
-        session_id: str,
-        outcome: ResolvedRuntimeOutcome,
-    ) -> ExecutionPlan | None:
-        session = self.get_session(session_id)
-        if session is None:
-            raise ValueError(f"session not found: {session_id}")
-        target = outcome.resolved_target
-        target_id = target.target_id
-        if target.target_kind != "capability_handoff":
-            raise ValueError(f"unsupported resolved runtime outcome target: {target}")
-        pending_key = str(target.anchor_handle.get("pending_key") or "pending_handoff")
-        pending = capability_metadata(session.metadata).get(pending_key)
-        if not isinstance(pending, dict) or pending.get("capability_request_id") != target_id:
-            raise ValueError(f"pending runtime outcome target not found: {target}")
+    def _apply_canonical_mutations(self, *, session: ConversationSession, mutations: list[dict[str, Any]]) -> dict[str, Any]:
         operation_state = operation_metadata(session.metadata)
-        for mutation in outcome.canonical_mutations:
+        for mutation in mutations:
             kind = mutation.get("kind")
             target_info = mutation.get("target") if isinstance(mutation.get("target"), dict) else {}
             scope = target_info.get("scope")
@@ -288,6 +273,26 @@ class SessionManager:
                     operation_state[key] = value
         session.updated_at = datetime.now(timezone.utc)
         self.store.save_session(session)
+        return operation_state
+
+    def apply_runtime_outcome(
+        self,
+        *,
+        session_id: str,
+        outcome: ResolvedRuntimeOutcome,
+    ) -> ExecutionPlan | None:
+        session = self.get_session(session_id)
+        if session is None:
+            raise ValueError(f"session not found: {session_id}")
+        target = outcome.resolved_target
+        target_id = target.target_id
+        if target.target_kind != "capability_handoff":
+            raise ValueError(f"unsupported resolved runtime outcome target: {target}")
+        pending_key = str(target.anchor_handle.get("pending_key") or "pending_handoff")
+        pending = capability_metadata(session.metadata).get(pending_key)
+        if not isinstance(pending, dict) or pending.get("capability_request_id") != target_id:
+            raise ValueError(f"pending runtime outcome target not found: {target}")
+        operation_state = self._apply_canonical_mutations(session=session, mutations=outcome.canonical_mutations)
         transcript_entry = outcome.transcript_entry if isinstance(outcome.transcript_entry, dict) else None
         if outcome.continuation_directive.append_transcript and transcript_entry is not None:
             self.append_message(
@@ -333,50 +338,16 @@ class SessionManager:
             return None
         if active_continuation.get("capability_request_id") != target_id:
             return None
-        acceptance_turn_index = pending.get("acceptance_turn_index")
         messages = self.list_messages(session_id)
-        if isinstance(acceptance_turn_index, int) and len(messages) != acceptance_turn_index + 1:
-            pending["status"] = "result_discarded_as_stale"
-            pending["discard_reason"] = "session_advanced_after_handoff"
-            pending["discarded_result_request_id"] = target_id
-            pending["continuation_state"] = "discarded_as_stale"
-            pending["session_turn_state"] = "turn_closed_continuation_discarded"
-            active_continuation.update(pending)
-            operation_state = operation_metadata(session.metadata)
-            operation_state["active_continuation"] = dict(active_continuation)
-            operation_state["session_activity"] = "continuation_discarded"
-            transition_log = operation_state.setdefault("continuation_transition_log", [])
-            if isinstance(transition_log, list):
-                transition_log.append(
-                    {
-                        "state": "continuation_discarded",
-                        "capability_request_id": target_id,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    }
-                )
-            session.updated_at = datetime.now(timezone.utc)
-            self.store.save_session(session)
+        continuation_plan = RuntimeContinuationPlanner().build(
+            target=target,
+            messages=messages,
+            pending=pending,
+        )
+        if continuation_plan.stale:
+            self._apply_canonical_mutations(session=session, mutations=continuation_plan.mutations_on_stale)
             return None
-        pending["status"] = "result_ingested"
-        pending["result_request_id"] = target_id
-        pending["result_ingested_at"] = datetime.now(timezone.utc).isoformat()
-        pending["continuation_state"] = "result_ingested"
-        pending["session_turn_state"] = "turn_reopening_from_capability_result"
-        active_continuation.update(pending)
-        operation_state = operation_metadata(session.metadata)
-        operation_state["active_continuation"] = dict(active_continuation)
-        operation_state["session_activity"] = "continuation_reopening_turn"
-        transition_log = operation_state.setdefault("continuation_transition_log", [])
-        if isinstance(transition_log, list):
-            transition_log.append(
-                {
-                    "state": "continuation_reopening_turn",
-                    "capability_request_id": target_id,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-            )
-        session.updated_at = datetime.now(timezone.utc)
-        self.store.save_session(session)
+        self._apply_canonical_mutations(session=session, mutations=continuation_plan.mutations_before_continue)
         self.append_message(
             session_id=session_id,
             role=MessageRole.TOOL,
@@ -397,25 +368,9 @@ class SessionManager:
         settled = self.get_session(session_id)
         if settled is not None:
             settled_capability = capability_metadata(settled.metadata)
-            active = settled_capability.get("active_continuation")
+            active = settled_capability.get(active_key)
             if isinstance(active, dict) and active.get("capability_request_id") == target_id:
-                active["continuation_state"] = "settled"
-                active["session_turn_state"] = "turn_reclosed_after_capability_result"
-                active["settled_at"] = datetime.now(timezone.utc).isoformat()
-                operation_state = operation_metadata(settled.metadata)
-                operation_state["active_continuation"] = dict(active)
-                operation_state["session_activity"] = "idle"
-                transition_log = operation_state.setdefault("continuation_transition_log", [])
-                if isinstance(transition_log, list):
-                    transition_log.append(
-                        {
-                            "state": "idle",
-                            "capability_request_id": target_id,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-                settled.updated_at = datetime.now(timezone.utc)
-                self.store.save_session(settled)
+                self._apply_canonical_mutations(session=settled, mutations=continuation_plan.mutations_after_settle)
         return finalized
 
     def _plan_from_messages(self, *, session: ConversationSession, messages: list[ConversationMessage], on_assistant_partial_text=None, on_stream_completed=None) -> ExecutionPlan:
