@@ -114,9 +114,12 @@ Why active:
 
 - `SessionManagerRuntimeAdapter.get_workbench_status(...)`
 - `ContextAccountingService.build_status_projection(...)`
+- `RuntimeOutcomeDispatcher.resolve(...)`
+- runtime outcome target resolution + continuation-directive classification before `SessionManager.apply_runtime_outcome(...)`
 
 Why active:
 - required for runtime status/CLI observability
+- required to keep target-resolution and hold/continue policy interpretation outside the SessionManager core shell
 
 ---
 

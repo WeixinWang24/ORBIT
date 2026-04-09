@@ -7,7 +7,9 @@ from typing import Protocol, Any
 
 from orbit.models import ConversationSession
 from orbit.models.core import new_id
-from orbit.runtime.execution.contracts.plans import ExecutionPlan
+from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
+from orbit.runtime.core.outcomes import RawRuntimeOutcome
+from orbit.runtime.extensions.capability_attach import CapabilityGovernanceStack, DetachedCapabilityGovernanceStack
 from orbit.runtime.extensions.capability_registry import CapabilityToolRegistry, RegistryBackedCapabilityToolRegistry
 from orbit.runtime.extensions.metadata_channels import capability_metadata
 from orbit.tools.registry import ToolRegistry
@@ -36,12 +38,9 @@ class CapabilityHandoff:
 
 
 @dataclass
-class CapabilityExecutionResult:
-    capability_request_id: str
-    tool_projection: dict[str, Any]
-    ok: bool
-    content: str
-    data: dict[str, Any] = field(default_factory=dict)
+class CapabilityExecutionResult(RawRuntimeOutcome):
+    tool_projection: dict[str, Any] = field(default_factory=dict)
+    ok: bool = False
     source: str = "capability_surface"
 
 
@@ -84,9 +83,10 @@ def _store_pending_handoff(*, session: ConversationSession, capability_request_i
 
 
 class CapabilitySurfaceRunner:
-    def __init__(self, *, session_manager, capability_surface: CapabilitySurface):
+    def __init__(self, *, session_manager, capability_surface: CapabilitySurface, outcome_dispatcher):
         self.session_manager = session_manager
         self.capability_surface = capability_surface
+        self.outcome_dispatcher = outcome_dispatcher
 
     def consume_handoff_async(self, *, session_id: str, capability_request_id: str) -> Thread:
         def _run() -> None:
@@ -96,10 +96,9 @@ class CapabilitySurfaceRunner:
             self.capability_surface.consume_handoff(
                 session=session,
                 capability_request_id=capability_request_id,
-                result_callback=lambda result: self.session_manager.ingest_capability_result(
+                result_callback=lambda result: self.session_manager.apply_runtime_outcome(
                     session_id=session_id,
-                    capability_request_id=result.capability_request_id,
-                    result_text=result.content,
+                    outcome=self.outcome_dispatcher.resolve(session=session, outcome=result),
                 ),
             )
 
@@ -153,11 +152,29 @@ class NoOpCapabilitySurface:
             raise ValueError(f"capability handoff not found: {capability_request_id}")
         tool_projection = pending.get("tool_projection") if isinstance(pending.get("tool_projection"), dict) else {}
         result = CapabilityExecutionResult(
-            capability_request_id=capability_request_id,
+            outcome_id=capability_request_id,
+            outcome_scope="capability",
+            patch_target={"target_kind": "capability_handoff", "target_id": capability_request_id},
             tool_projection=tool_projection,
             ok=False,
             content="Capability execution remains detached on the no-op capability surface.",
             data={"tool_projection": tool_projection},
+            canonical_patch={
+                "pending_handoff": {
+                    "status": "detached",
+                    "tool_projection": tool_projection,
+                }
+            },
+            transcript_entry={
+                "role": "tool",
+                "content": "Capability execution remains detached on the no-op capability surface.",
+                "metadata": {
+                    "message_kind": "capability_result",
+                    "capability_request_id": capability_request_id,
+                    "tool_projection": tool_projection,
+                },
+            },
+            continuation_action="hold",
             source="no_op_capability_surface",
         )
         result_callback(result)
@@ -165,9 +182,10 @@ class NoOpCapabilitySurface:
 
 
 class RegistryBackedCapabilitySurface:
-    def __init__(self, *, tool_registry: ToolRegistry | None = None, capability_tool_registry: CapabilityToolRegistry | None = None, enabled_capabilities: set[str] | None = None):
+    def __init__(self, *, tool_registry: ToolRegistry | None = None, capability_tool_registry: CapabilityToolRegistry | None = None, governance_stack: CapabilityGovernanceStack | None = None, enabled_capabilities: set[str] | None = None):
         self.tool_registry = tool_registry
         self.capability_tool_registry = capability_tool_registry or (RegistryBackedCapabilityToolRegistry(tool_registry=tool_registry) if tool_registry is not None else None)
+        self.governance_stack = governance_stack or DetachedCapabilityGovernanceStack()
         self.enabled_capabilities = enabled_capabilities or set()
 
     def snapshot(self, *, runtime_profile: str) -> CapabilitySurfaceSnapshot:
@@ -244,14 +262,79 @@ class RegistryBackedCapabilitySurface:
         tool_name = str(tool_projection.get("tool_name") or "")
         input_payload = pending.get("input_payload") if isinstance(pending.get("input_payload"), dict) else {}
         descriptor = registry.get_tool_descriptor(tool_name)
+        governance = self.governance_stack.evaluate(
+            session=session,
+            plan=ExecutionPlan(
+                source_backend="capability_surface",
+                plan_label="capability-governance-evaluation",
+                tool_request=ToolRequest(
+                    tool_name=tool_name,
+                    input_payload=input_payload,
+                    requires_approval=descriptor.requires_approval,
+                    side_effect_class=descriptor.side_effect_class,
+                    provider_call_id=pending.get("provider_call_id"),
+                ),
+            ),
+            runtime_profile=str(pending.get("runtime_profile") or "runtime_core_minimal"),
+            tool_projection=descriptor.model_dump(),
+            input_payload=input_payload,
+        )
+        governance_outcome = {
+            "runtime_result": governance.runtime_result.__dict__,
+            "substrate_result": governance.substrate_result.__dict__,
+            "effective_outcome": governance.effective_outcome,
+            "notes": governance.notes or {},
+        }
+        if governance.effective_outcome != "execute":
+            blocked_content = governance.runtime_result.note or governance.runtime_result.reason
+            if governance.substrate_result.decision in {"denied", "constrained"}:
+                blocked_content = governance.substrate_result.reason
+            elif governance.runtime_result.decision == "await_approval":
+                blocked_content = governance.runtime_result.note or "approval_required"
+            result = CapabilityExecutionResult(
+                outcome_id=capability_request_id,
+                outcome_scope="capability",
+                patch_target={"target_kind": "capability_handoff", "target_id": capability_request_id},
+                tool_projection=descriptor.model_dump(),
+                ok=False,
+                content=blocked_content,
+                data={
+                    "tool_projection": descriptor.model_dump(),
+                    "governance_outcome": governance_outcome,
+                },
+                canonical_patch={
+                    "pending_handoff": {
+                        "governance_outcome": governance_outcome,
+                        "status": "waiting_for_approval" if governance.runtime_result.decision == "await_approval" else "governance_blocked",
+                        "tool_projection": descriptor.model_dump(),
+                    },
+                    "pending_approval": {
+                        "tool_projection": descriptor.model_dump(),
+                        "input_payload": input_payload,
+                        "governance_outcome": governance_outcome,
+                    } if governance.runtime_result.decision == "await_approval" else None,
+                },
+                transcript_entry={
+                    "role": "tool",
+                    "content": blocked_content,
+                    "metadata": {
+                        "message_kind": "capability_result",
+                        "capability_request_id": capability_request_id,
+                        "provider_call_id": pending.get("provider_call_id"),
+                        "tool_projection": descriptor.model_dump(),
+                    },
+                },
+                continuation_action="hold",
+                source="registry_backed_capability_surface",
+            )
+            result_callback(result)
+            return result
         tool = registry.get_tool(tool_name)
         tool_result = tool.invoke(**input_payload)
-        pending["status"] = "executed"
-        pending["executed_at"] = datetime.now(timezone.utc).isoformat()
-        pending["result_ok"] = bool(tool_result.ok)
-        pending["tool_projection"] = descriptor.model_dump()
         result = CapabilityExecutionResult(
-            capability_request_id=capability_request_id,
+            outcome_id=capability_request_id,
+            outcome_scope="capability",
+            patch_target={"target_kind": "capability_handoff", "target_id": capability_request_id},
             tool_projection=descriptor.model_dump(),
             ok=tool_result.ok,
             content=tool_result.content,
@@ -259,6 +342,16 @@ class RegistryBackedCapabilitySurface:
                 **(tool_result.data or {}),
                 "tool_projection": descriptor.model_dump(),
             },
+            canonical_patch={
+                "pending_handoff": {
+                    "governance_outcome": governance_outcome,
+                    "status": "executed",
+                    "executed_at": datetime.now(timezone.utc).isoformat(),
+                    "result_ok": bool(tool_result.ok),
+                    "tool_projection": descriptor.model_dump(),
+                }
+            },
+            continuation_action="continue",
             source="registry_backed_capability_surface",
         )
         result_callback(result)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
+from typing import Any
 from orbit.models import ConversationMessage, ConversationSession, MessageRole
 from orbit.models.core import new_id
 from orbit.runtime.core.contracts import RunDescriptor, WorkspaceDescriptor
@@ -14,6 +15,7 @@ from orbit.runtime.extensions.metadata_channels import (
     set_core_runtime_metadata,
 )
 from orbit.runtime.extensions.capability_attach import RuntimeCoreMinimalCapabilityPolicy
+from orbit.runtime.core.outcomes import ResolvedRuntimeOutcome
 from orbit.runtime.extensions.capability_surface import NoOpCapabilitySurface
 from orbit.runtime.governance.protocol.mode import ModePolicyDescriptor, RuntimeMode, build_mode_policy_snapshot
 from orbit.runtime.execution.contracts.plans import ExecutionPlan
@@ -246,32 +248,93 @@ class SessionManager:
             plan=plan,
         )
 
-    def ingest_capability_result(
+
+    def apply_runtime_outcome(
         self,
         *,
         session_id: str,
-        capability_request_id: str,
+        outcome: ResolvedRuntimeOutcome,
+    ) -> ExecutionPlan | None:
+        session = self.get_session(session_id)
+        if session is None:
+            raise ValueError(f"session not found: {session_id}")
+        canonical_patch = outcome.canonical_patch if isinstance(outcome.canonical_patch, dict) else {}
+        target = outcome.resolved_target
+        target_id = target.target_id
+        if target.target_kind != "capability_handoff":
+            raise ValueError(f"unsupported resolved runtime outcome target: {target}")
+        pending_key = str(target.anchor_handle.get("pending_key") or "pending_handoff")
+        pending = capability_metadata(session.metadata).get(pending_key)
+        if not isinstance(pending, dict) or pending.get("capability_request_id") != target_id:
+            raise ValueError(f"pending runtime outcome target not found: {target}")
+        pending_patch = canonical_patch.get("pending_handoff") if isinstance(canonical_patch.get("pending_handoff"), dict) else None
+        if pending_patch is not None:
+            pending.update(pending_patch)
+        pending_approval_patch = canonical_patch.get("pending_approval") if isinstance(canonical_patch.get("pending_approval"), dict) else None
+        if pending_approval_patch is not None:
+            capability_metadata(session.metadata)["pending_approval"] = {
+                "capability_request_id": target_id,
+                **pending_approval_patch,
+            }
+        active = capability_metadata(session.metadata).get("active_continuation")
+        if isinstance(active, dict) and active.get("capability_request_id") == target_id and pending_patch is not None:
+            active.update(pending_patch)
+        operation_state = operation_metadata(session.metadata)
+        if pending_patch is not None and pending_patch.get("status") == "waiting_for_approval":
+            operation_state["session_activity"] = "waiting_for_approval"
+        session.updated_at = datetime.now(timezone.utc)
+        self.store.save_session(session)
+        transcript_entry = outcome.transcript_entry if isinstance(outcome.transcript_entry, dict) else None
+        if outcome.continuation_directive.append_transcript and transcript_entry is not None:
+            self.append_message(
+                session_id=session_id,
+                role=transcript_entry.get("role", MessageRole.TOOL),
+                content=transcript_entry.get("content", outcome.content),
+                metadata=transcript_entry.get("metadata", {}),
+            )
+        if outcome.continuation_directive.kind == "hold":
+            session = self.get_session(session_id)
+            if session is not None and operation_state.get("session_activity") != "waiting_for_approval":
+                operation_state = operation_metadata(session.metadata)
+                operation_state["session_activity"] = outcome.continuation_directive.activity or "paused"
+                session.updated_at = datetime.now(timezone.utc)
+                self.store.save_session(session)
+            return None
+        return self._continue_runtime_outcome_from_target(
+            session_id=session_id,
+            target=target,
+            result_text=outcome.content,
+        )
+
+    def _continue_runtime_outcome_from_target(
+        self,
+        *,
+        session_id: str,
+        target,
         result_text: str,
     ) -> ExecutionPlan | None:
         session = self.get_session(session_id)
         if session is None:
             raise ValueError(f"session not found: {session_id}")
-        pending = capability_metadata(session.metadata).get("pending_handoff") if isinstance(session.metadata, dict) else None
+        target_id = target.target_id
+        pending_key = str(target.anchor_handle.get("pending_key") or "pending_handoff")
+        active_key = str(target.anchor_handle.get("active_key") or "active_continuation")
+        pending = capability_metadata(session.metadata).get(pending_key) if isinstance(session.metadata, dict) else None
         if not isinstance(pending, dict):
             return None
-        active_continuation = capability_metadata(session.metadata).get("active_continuation")
-        if pending.get("capability_request_id") != capability_request_id:
+        active_continuation = capability_metadata(session.metadata).get(active_key)
+        if pending.get("capability_request_id") != target_id:
             return None
         if not isinstance(active_continuation, dict):
             return None
-        if active_continuation.get("capability_request_id") != capability_request_id:
+        if active_continuation.get("capability_request_id") != target_id:
             return None
         acceptance_turn_index = pending.get("acceptance_turn_index")
         messages = self.list_messages(session_id)
         if isinstance(acceptance_turn_index, int) and len(messages) != acceptance_turn_index + 1:
             pending["status"] = "result_discarded_as_stale"
             pending["discard_reason"] = "session_advanced_after_handoff"
-            pending["discarded_result_request_id"] = capability_request_id
+            pending["discarded_result_request_id"] = target_id
             pending["continuation_state"] = "discarded_as_stale"
             pending["session_turn_state"] = "turn_closed_continuation_discarded"
             active_continuation.update(pending)
@@ -283,7 +346,7 @@ class SessionManager:
                 transition_log.append(
                     {
                         "state": "continuation_discarded",
-                        "capability_request_id": capability_request_id,
+                        "capability_request_id": target_id,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
                 )
@@ -291,7 +354,7 @@ class SessionManager:
             self.store.save_session(session)
             return None
         pending["status"] = "result_ingested"
-        pending["result_request_id"] = capability_request_id
+        pending["result_request_id"] = target_id
         pending["result_ingested_at"] = datetime.now(timezone.utc).isoformat()
         pending["continuation_state"] = "result_ingested"
         pending["session_turn_state"] = "turn_reopening_from_capability_result"
@@ -304,7 +367,7 @@ class SessionManager:
             transition_log.append(
                 {
                     "state": "continuation_reopening_turn",
-                    "capability_request_id": capability_request_id,
+                    "capability_request_id": target_id,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
             )
@@ -316,7 +379,7 @@ class SessionManager:
             content=result_text,
             metadata={
                 "message_kind": "capability_result",
-                "capability_request_id": capability_request_id,
+                "capability_request_id": target_id,
                 "provider_call_id": pending.get("provider_call_id"),
                 "tool_projection": pending.get("tool_projection", {}),
             },
@@ -331,7 +394,7 @@ class SessionManager:
         if settled is not None:
             settled_capability = capability_metadata(settled.metadata)
             active = settled_capability.get("active_continuation")
-            if isinstance(active, dict) and active.get("capability_request_id") == capability_request_id:
+            if isinstance(active, dict) and active.get("capability_request_id") == target_id:
                 active["continuation_state"] = "settled"
                 active["session_turn_state"] = "turn_reclosed_after_capability_result"
                 active["settled_at"] = datetime.now(timezone.utc).isoformat()
@@ -343,7 +406,7 @@ class SessionManager:
                     transition_log.append(
                         {
                             "state": "idle",
-                            "capability_request_id": capability_request_id,
+                            "capability_request_id": target_id,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                         }
                     )

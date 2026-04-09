@@ -19,6 +19,7 @@ from orbit.runtime.providers.openai_codex import OpenAICodexConfig, OpenAICodexE
 from orbit.runtime.extensions.auxiliary_input import DetachedKnowledgeMemoryCollector
 from orbit.runtime.extensions.post_turn_observer import DetachedMemoryCaptureObserver, NoOpPostTurnObserver
 from orbit.runtime.extensions.capability_attach import RuntimeCoreMinimalCapabilityPolicy
+from orbit.runtime.core.outcome_dispatcher import RuntimeOutcomeDispatcher
 from orbit.runtime.extensions.capability_surface import CapabilitySurfaceRunner, NoOpCapabilitySurface, RegistryBackedCapabilitySurface
 from orbit.runtime.extensions.metadata_channels import capability_metadata, core_runtime_metadata, observer_metadata, operation_metadata, surface_projection_metadata
 from orbit.settings import REPO_ROOT
@@ -168,9 +169,11 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         self.capability_bundle = capability_bundle
         self.build_state_store = build_state_store or BuildStateStore()
         self.startup_metrics = startup_metrics or {}
+        self.runtime_outcome_dispatcher = RuntimeOutcomeDispatcher()
         self.capability_runner = CapabilitySurfaceRunner(
             session_manager=session_manager,
             capability_surface=session_manager.capability_surface,
+            outcome_dispatcher=self.runtime_outcome_dispatcher,
         )
         self.session_manager.capability_handoff_dispatcher = self.capability_runner.consume_handoff_async
 

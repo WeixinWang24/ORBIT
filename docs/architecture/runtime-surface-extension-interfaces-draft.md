@@ -193,6 +193,16 @@ Current concrete implementations:
 
 The default runtime-core-minimal path keeps capability exposure detached/no-op, but there is now an explicit surface layer available behind the attach boundary.
 
+A first `RuntimeOutcomeDispatcher` shell now also exists in:
+
+- `src/orbit/runtime/core/outcome_dispatcher.py`
+- `src/orbit/runtime/core/outcomes.py`
+
+Current role:
+- resolve raw surface outcomes into a `ResolvedRuntimeOutcome`
+- resolve runtime patch targets before SessionManager applies canonical mutation
+- classify continuation directives (`continue`, `waiting_for_approval`, `governance_blocked`, `substrate_blocked`, `detached`, fallback `paused`) outside the SessionManager core shell
+
 ### Allowed use cases
 
 - capability-enabled profiles
