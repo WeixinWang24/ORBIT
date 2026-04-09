@@ -17,6 +17,7 @@ from orbit.runtime.mcp.process_bootstrap import bootstrap_local_process_mcp_serv
 from orbit.runtime.mcp.pytest_bootstrap import bootstrap_local_pytest_mcp_server
 from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
 from orbit.runtime.mcp.ruff_bootstrap import bootstrap_local_ruff_mcp_server
+from orbit.runtime.extensions.capability_registry import RegistryBackedCapabilityToolRegistry
 from orbit.tools.registry import ToolRegistry
 
 
@@ -37,6 +38,7 @@ class RuntimeCapabilityProfile:
 @dataclass
 class RuntimeCapabilityBundle:
     tool_registry: ToolRegistry
+    capability_tool_registry: RegistryBackedCapabilityToolRegistry | None = None
     embedding_service: Any | None = None
     memory_service: Any | None = None
     enabled_capabilities: set[str] = field(default_factory=set)
@@ -80,6 +82,7 @@ class RuntimeCapabilityComposer:
     def activate(self, profile: RuntimeCapabilityProfile) -> RuntimeCapabilityBundle:
         t0 = time.perf_counter()
         bundle = RuntimeCapabilityBundle(tool_registry=ToolRegistry(Path(self.workspace_root)))
+        bundle.capability_tool_registry = RegistryBackedCapabilityToolRegistry(tool_registry=bundle.tool_registry)
         bundle.activation_metrics['tool_registry_init_ms'] = round((time.perf_counter() - t0) * 1000, 2)
 
         if profile.filesystem:
@@ -148,6 +151,10 @@ class RuntimeCapabilityComposer:
             t = time.perf_counter()
             self.backend.tool_registry = bundle.tool_registry
             self._record(bundle.activation_metrics, 'backend_tool_registry_bind_ms', t)
+        if hasattr(self.backend, 'capability_tool_registry'):
+            t = time.perf_counter()
+            self.backend.capability_tool_registry = bundle.capability_tool_registry
+            self._record(bundle.activation_metrics, 'backend_capability_tool_registry_bind_ms', t)
         bundle.activation_metrics['total_ms'] = round(sum(v for v in bundle.activation_metrics.values() if isinstance(v, (int, float))), 2)
         return bundle
 

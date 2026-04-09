@@ -30,6 +30,7 @@ class InterfaceSession(OrbitBaseModel):
     last_build_status: str | None = None
     last_build_summary: str | None = None
     build_policy_profile: str = "none"
+    operation_channel: dict = Field(default_factory=dict)
 
 
 class InterfaceMessage(OrbitBaseModel):
@@ -64,6 +65,14 @@ class InterfaceToolCall(OrbitBaseModel):
     requires_approval: bool = False
     summary: str = ""
     payload: dict = Field(default_factory=dict)
+
+
+class InterfaceToolDescriptor(OrbitBaseModel):
+    tool_name: str
+    side_effect_class: str = "safe"
+    requires_approval: bool = False
+    source: str = "native"
+    metadata: dict = Field(default_factory=dict)
 
 
 class InterfaceApproval(OrbitBaseModel):

@@ -1,12 +1,15 @@
-"""OpenAI Codex hosted-provider backend for ORBIT."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import os
 from pathlib import Path
+import time
 from typing import Callable
+
+from orbit.interfaces.pty_debug import debug_log
 
 from orbit.models import ConversationMessage, ConversationSession, MessageRole
 from orbit.runtime.auth.storage.openai import OpenAIOAuthCredential, ResolvedOpenAIAuthMaterial, resolve_openai_auth_material
@@ -16,11 +19,11 @@ from orbit.runtime.core.contracts import RunDescriptor
 from orbit.runtime.execution.normalization import ProviderFailure, ProviderNormalizedResult, normalized_result_to_execution_plan
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
 from orbit.runtime.execution.context_assembly import build_text_only_prompt_assembly_plan
-from orbit.knowledge.context_integration import knowledge_bundle_to_context_fragments, knowledge_preflight_to_context_fragments
-from orbit.knowledge.models import KnowledgeQuery
-from orbit.knowledge.obsidian_service import ObsidianKnowledgeService
-from orbit.knowledge.retrieval import retrieve_knowledge_bundle
 from orbit.runtime.execution.transcript_projection import messages_to_codex_input
+from orbit.runtime.extensions.auxiliary_input import DetachedKnowledgeMemoryCollector, NoOpAuxiliaryInputCollector
+from orbit.runtime.extensions.capability_registry import CapabilityToolRegistry, RegistryBackedCapabilityToolRegistry
+from orbit.runtime.extensions.metadata_channels import observer_metadata, operation_metadata, set_surface_projection_metadata, surface_projection_metadata
+from orbit.runtime.operations.context_usage_service import ContextAccountingService
 from orbit.runtime.mcp.bootstrap import bootstrap_local_filesystem_mcp_server, bootstrap_local_git_mcp_server
 from orbit.runtime.mcp.bash_bootstrap import bootstrap_local_bash_mcp_server
 from orbit.runtime.mcp.process_bootstrap import bootstrap_local_process_mcp_server
@@ -44,15 +47,17 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
     backend_name = "openai-codex"
 
     def _knowledge_enabled(self) -> bool:
-        raw = os.environ.get("ORBIT_ENABLE_KNOWLEDGE", "1").strip().lower()
+        raw = os.environ.get("ORBIT_ENABLE_KNOWLEDGE", "0").strip().lower()
         return raw not in {"0", "false", "no", "off"}
 
-    def __init__(self, config: OpenAICodexConfig | None = None, repo_root: Path | None = None, workspace_root: Path | None = None, tool_registry: ToolRegistry | None = None):
+    def __init__(self, config: OpenAICodexConfig | None = None, repo_root: Path | None = None, workspace_root: Path | None = None, tool_registry: ToolRegistry | None = None, capability_tool_registry: CapabilityToolRegistry | None = None):
         self.config = config or OpenAICodexConfig()
         self.repo_root = repo_root or Path.cwd()
         self.workspace_root = workspace_root or self.repo_root
         self.auth_store = OpenAIAuthStore(self.repo_root)
         self.tool_registry = tool_registry
+        self.capability_tool_registry = capability_tool_registry
+        self.auxiliary_input_collector = NoOpAuxiliaryInputCollector()
 
     def _effective_tool_registry(self) -> ToolRegistry:
         if self.tool_registry is not None:
@@ -75,27 +80,47 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
             bootstrap=bootstrap_local_process_mcp_server(workspace_root=str(self.workspace_root)),
         )
         self.tool_registry = registry
+        self.capability_tool_registry = RegistryBackedCapabilityToolRegistry(tool_registry=registry)
         return registry
+
+    def _effective_capability_tool_registry(self) -> CapabilityToolRegistry:
+        if self.capability_tool_registry is not None:
+            return self.capability_tool_registry
+        registry = self._effective_tool_registry()
+        self.capability_tool_registry = RegistryBackedCapabilityToolRegistry(tool_registry=registry)
+        return self.capability_tool_registry
 
     def plan(self, descriptor: RunDescriptor) -> ExecutionPlan:
         return self.plan_from_messages([ConversationMessage(session_id=descriptor.session_key, role=MessageRole.USER, content=descriptor.user_input, turn_index=1)], session=None)
 
     def plan_from_messages(self, messages: list[ConversationMessage], *, session: ConversationSession | None = None, on_partial_text: Callable[[str], None] | None = None, on_stream_completed: Callable[[], None] | None = None) -> ExecutionPlan:
+        total_started_at = time.perf_counter()
+        auth_started_at = time.perf_counter()
         credential = self.load_persisted_credential()
         auth = self.resolve_auth_material(credential)
         url = self.build_request_url()
         headers = self.build_request_headers(auth)
+        auth_elapsed_ms = round((time.perf_counter() - auth_started_at) * 1000, 2)
+        payload_started_at = time.perf_counter()
         payload = self.build_request_payload_from_messages(messages, session=session)
+        payload_elapsed_ms = round((time.perf_counter() - payload_started_at) * 1000, 2)
         if session is not None:
-            session.metadata["last_provider_payload"] = payload
+            set_surface_projection_metadata(session.metadata, "last_provider_payload", payload)
         try:
             events: list[OpenAICodexSSEEvent] = []
             accumulated_text_parts: list[str] = []
+            stream_started_at = time.perf_counter()
+            first_event_ms: float | None = None
+            first_text_delta_ms: float | None = None
             for event in stream_sse_events(url=url, headers=headers, payload=payload, timeout_seconds=self.config.timeout_seconds):
+                if first_event_ms is None:
+                    first_event_ms = round((time.perf_counter() - stream_started_at) * 1000, 2)
                 events.append(event)
-                if on_partial_text is not None:
-                    event_type = event.payload.get("type")
-                    if event_type == "response.output_text.delta":
+                event_type = event.payload.get("type")
+                if event_type == "response.output_text.delta":
+                    if first_text_delta_ms is None:
+                        first_text_delta_ms = round((time.perf_counter() - stream_started_at) * 1000, 2)
+                    if on_partial_text is not None:
                         delta = event.payload.get("delta")
                         if isinstance(delta, str):
                             accumulated_text_parts.append(delta)
@@ -103,19 +128,56 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
                                 on_partial_text("".join(accumulated_text_parts))
                             except Exception:
                                 pass
+            stream_elapsed_ms = round((time.perf_counter() - stream_started_at) * 1000, 2)
         except OpenAICodexHttpError as exc:
             normalized = ProviderNormalizedResult(source_backend=self.backend_name, plan_label="openai-codex-transport-failure", failure=ProviderFailure(kind="transport_error", message=str(exc)), metadata={"payload_shape": "codex_messages_projection"})
             return normalized_result_to_execution_plan(normalized)
-        # SSE stream has ended — notify the UI so it can clear the streaming banner
-        # before we enter the potentially slow post-stream work (normalize, memory capture).
         if on_stream_completed is not None:
             try:
                 on_stream_completed()
             except Exception:
                 pass
-        # on_partial_text already fired incrementally above; pass None to avoid
-        # re-firing the same callbacks during final normalization.
-        return self.normalize_events(events, on_partial_text=None)
+        normalize_started_at = time.perf_counter()
+        plan = self.normalize_events(events, on_partial_text=None)
+        normalize_elapsed_ms = round((time.perf_counter() - normalize_started_at) * 1000, 2)
+        try:
+            debug_log(
+                "openai_codex:plan_from_messages "
+                + json.dumps(
+                    {
+                        "session_id": getattr(session, "session_id", None),
+                        "message_count": len(messages),
+                        "auth_ms": auth_elapsed_ms,
+                        "payload_build_ms": payload_elapsed_ms,
+                        "first_event_ms": first_event_ms,
+                        "first_text_delta_ms": first_text_delta_ms,
+                        "stream_ms": stream_elapsed_ms,
+                        "normalize_ms": normalize_elapsed_ms,
+                        "total_ms": round((time.perf_counter() - total_started_at) * 1000, 2),
+                        "event_count": len(events),
+                        "tool_count": len(payload.get("tools") or []),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        except Exception:
+            pass
+        if session is not None:
+            usage_service = ContextAccountingService()
+            call_usage = usage_service.normalize_provider_usage(
+                usage=plan.metadata.get("usage") if isinstance(plan.metadata, dict) else None,
+                provider=self.backend_name,
+                model=self.config.model,
+            )
+            if call_usage is not None:
+                usage_service.record_observed_usage(session=session, call_usage=call_usage, store=getattr(self, "store", None))
+                operation_state = operation_metadata(session.metadata)
+                operation_state["usage_projection"] = usage_service.build_status_projection(session=session)
+                store = getattr(self, "store", None)
+                if store is not None:
+                    session.updated_at = datetime.now(timezone.utc)
+                    store.save_session(session)
+        return plan
 
     def load_persisted_credential(self) -> OpenAIOAuthCredential:
         return self.auth_store.load_fresh()
@@ -133,54 +195,30 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
         return self.build_request_payload_from_messages([ConversationMessage(session_id=descriptor.session_key, role=MessageRole.USER, content=descriptor.user_input, turn_index=1)], session=None)
 
     def build_tool_definitions(self) -> list[dict]:
-        registry = self.tool_registry if self.tool_registry is not None else self._effective_tool_registry()
-        return [codex_function_definition(tool) for tool in registry.list_tools()]
+        registry = self._effective_capability_tool_registry()
+        return registry.build_provider_tool_definitions()
 
     def build_request_payload_from_messages(self, messages: list[ConversationMessage], *, session: ConversationSession | None = None) -> dict:
+        build_started_at = time.perf_counter()
         latest_user = next((message for message in reversed(messages) if message.role == MessageRole.USER and message.content.strip()), None)
         query_text = latest_user.content if latest_user is not None else messages[-1].content if messages else ""
 
-        memory_fragments = []
-        if session is not None and hasattr(self, "memory_service"):
-            memory_fragments = self.memory_service.retrieve_memory_fragments(
-                session_id=session.session_id,
-                query_text=query_text,
-                limit=5,
-            )
-
-        knowledge_fragments = []
-        if session is not None and query_text.strip() and self._knowledge_enabled():
-            try:
-                vault_root = getattr(getattr(self, "session_manager", None), "_obsidian_vault_root", None)
-                resolved_vault_root = vault_root() if callable(vault_root) else os.environ.get("ORBIT_OBSIDIAN_VAULT_ROOT", "")
-                knowledge_service = ObsidianKnowledgeService(vault_root=resolved_vault_root)
-
-                availability = knowledge_service.check_availability()
-                vault_metadata = None
-                if availability.get("availability_level") in {"full", "vault_only"}:
-                    vault_metadata = knowledge_service.get_vault_metadata(max_entries=5)
-                preflight_fragments = knowledge_preflight_to_context_fragments(
-                    availability=availability,
-                    vault_metadata=vault_metadata,
-                )
-                knowledge_fragments.extend(preflight_fragments)
-                session.metadata["last_knowledge_availability"] = availability
-                if vault_metadata is not None:
-                    session.metadata["last_knowledge_vault_metadata"] = vault_metadata
-
-                if availability.get("availability_level") in {"full", "vault_only"}:
-                    knowledge_bundle = retrieve_knowledge_bundle(
-                        query=KnowledgeQuery(query_text=query_text, limit=5),
-                        obsidian_service=knowledge_service,
-                    )
-                    knowledge_fragments.extend(knowledge_bundle_to_context_fragments(knowledge_bundle))
-                    session.metadata["last_knowledge_bundle"] = knowledge_bundle.model_dump(mode="json")
-            except Exception as exc:
-                if session is not None:
-                    session.metadata["last_knowledge_error"] = repr(exc)
-
-        auxiliary_fragments = [*memory_fragments, *knowledge_fragments]
+        collector = getattr(self, "auxiliary_input_collector", None) or NoOpAuxiliaryInputCollector()
+        auxiliary = collector.collect(
+            session=session,
+            messages=messages,
+            runtime_profile=getattr(getattr(self, "session_manager", None), "metadata", {}).get("runtime_profile", "runtime_core_minimal") if session is not None else "runtime_core_minimal",
+            query_text=query_text,
+        )
+        auxiliary_fragments = list(auxiliary.fragments)
+        memory_retrieval_ms = auxiliary.timings.get("memory_retrieval_ms", 0.0)
+        knowledge_setup_ms = auxiliary.timings.get("knowledge_setup_ms", 0.0)
+        knowledge_preflight_ms = auxiliary.timings.get("knowledge_preflight_ms", 0.0)
+        knowledge_retrieval_ms = auxiliary.timings.get("knowledge_retrieval_ms", 0.0)
+        if session is not None and isinstance(auxiliary.metadata, dict):
+            observer_metadata(session.metadata).update(auxiliary.metadata)
         runtime_mode = session.runtime_mode if session is not None else "dev"
+        assembly_started_at = time.perf_counter()
         assembly_plan = build_text_only_prompt_assembly_plan(
             backend_name=self.backend_name,
             model=self.config.model,
@@ -189,8 +227,12 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
             runtime_mode=runtime_mode,
             auxiliary_fragments=auxiliary_fragments,
         )
+        assembly_plan_ms = round((time.perf_counter() - assembly_started_at) * 1000, 2)
         instructions = assembly_plan.effective_instructions
+        transcript_projection_started_at = time.perf_counter()
         projected_input = messages_to_codex_input(messages)
+        transcript_projection_ms = round((time.perf_counter() - transcript_projection_started_at) * 1000, 2)
+        payload_dict_started_at = time.perf_counter()
         payload = {
             "model": self.config.model,
             "store": False,
@@ -200,6 +242,7 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
             "text": {"verbosity": "medium"},
             "include": ["reasoning.encrypted_content"],
         }
+        payload_dict_ms = round((time.perf_counter() - payload_dict_started_at) * 1000, 2)
         tools = []
         if self.config.enable_tools:
             payload["tool_choice"] = "auto"
@@ -207,15 +250,54 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
             tools = self.build_tool_definitions()
             if tools:
                 payload["tools"] = tools
+        session_snapshot_write_ms = 0.0
         if session is not None:
+            snapshot_write_started_at = time.perf_counter()
             snapshot = assembly_plan.to_snapshot_dict()
             snapshot["tooling"] = {
                 "enable_tools": self.config.enable_tools,
                 "tool_count": len(tools),
             }
-            session.metadata["_pending_context_assembly"] = snapshot
-            session.metadata["_pending_provider_payload"] = payload.copy()
+            set_surface_projection_metadata(session.metadata, "_pending_context_assembly", snapshot)
+            set_surface_projection_metadata(session.metadata, "_pending_provider_payload", payload.copy())
             payload["prompt_cache_key"] = session.session_id
+            session_snapshot_write_ms = round((time.perf_counter() - snapshot_write_started_at) * 1000, 2)
+            set_surface_projection_metadata(session.metadata, "last_submit_timing_probe", {
+                "memory_retrieval_ms": memory_retrieval_ms,
+                "knowledge_setup_ms": knowledge_setup_ms,
+                "knowledge_preflight_ms": knowledge_preflight_ms,
+                "knowledge_retrieval_ms": knowledge_retrieval_ms,
+                "assembly_plan_ms": assembly_plan_ms,
+                "transcript_projection_ms": transcript_projection_ms,
+                "payload_dict_ms": payload_dict_ms,
+                "session_snapshot_write_ms": session_snapshot_write_ms,
+                "payload_build_total_ms": round((time.perf_counter() - build_started_at) * 1000, 2),
+                "tool_count": len(tools),
+            })
+        try:
+            debug_log(
+                "openai_codex:build_request_payload "
+                + json.dumps(
+                    {
+                        "session_id": getattr(session, "session_id", None),
+                        "message_count": len(messages),
+                        "query_preview": query_text[:80],
+                        "memory_retrieval_ms": memory_retrieval_ms,
+                        "knowledge_setup_ms": knowledge_setup_ms,
+                        "knowledge_preflight_ms": knowledge_preflight_ms,
+                        "knowledge_retrieval_ms": knowledge_retrieval_ms,
+                        "assembly_plan_ms": assembly_plan_ms,
+                        "transcript_projection_ms": transcript_projection_ms,
+                        "payload_dict_ms": payload_dict_ms,
+                        "session_snapshot_write_ms": session_snapshot_write_ms,
+                        "tool_count": len(tools),
+                        "payload_build_total_ms": round((time.perf_counter() - build_started_at) * 1000, 2),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        except Exception:
+            pass
         return payload
 
     def normalize_events(self, events: list[OpenAICodexSSEEvent], *, on_partial_text: Callable[[str], None] | None = None) -> ExecutionPlan:
@@ -230,6 +312,15 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
         for event in events:
             payload = event.payload
             event_type = payload.get("type")
+
+            if final_response_id is None and isinstance(payload.get("response_id"), str):
+                final_response_id = payload.get("response_id")
+            if final_status is None and isinstance(payload.get("status"), str):
+                final_status = payload.get("status")
+            if final_model is None and isinstance(payload.get("model"), str):
+                final_model = payload.get("model")
+            if final_usage is None and isinstance(payload.get("usage"), dict):
+                final_usage = payload.get("usage")
             if event_type == "response.output_text.delta":
                 delta = payload.get("delta")
                 if isinstance(delta, str):
@@ -294,16 +385,34 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
                     input_payload = json.loads(arguments_text)
                 except json.JSONDecodeError:
                     input_payload = {"raw_arguments": arguments_text}
-                registry = self._effective_tool_registry()
-                tool = registry.get(tool_name)
+                registry = self._effective_capability_tool_registry()
+                descriptor = registry.get_tool_descriptor(tool_name)
+                try:
+                    debug_log(
+                        "openai_codex:normalize_events tool_request "
+                        + json.dumps(
+                            {
+                                "event_count": len(events),
+                                "response_id": final_response_id,
+                                "status": final_status,
+                                "model": final_model,
+                                "usage": final_usage,
+                                "tool_name": tool_name,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                except Exception:
+                    pass
                 normalized = ProviderNormalizedResult(
                     source_backend=self.backend_name,
                     plan_label="openai-codex-tool-request",
                     tool_request=ToolRequest(
                         tool_name=tool_name,
                         input_payload=input_payload if isinstance(input_payload, dict) else {"value": input_payload},
-                        requires_approval=tool.requires_approval,
-                        side_effect_class=tool.side_effect_class,
+                        requires_approval=descriptor.requires_approval,
+                        side_effect_class=descriptor.side_effect_class,
+                        provider_call_id=(completed_tool_payload.get("call_id") if isinstance(completed_tool_payload, dict) and isinstance(completed_tool_payload.get("call_id"), str) else None),
                     ),
                     should_finish_after_tool=False,
                     metadata={
@@ -319,6 +428,23 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
 
         final_text = "".join(text_parts).strip()
         if final_text:
+            try:
+                debug_log(
+                    "openai_codex:normalize_events final_text "
+                    + json.dumps(
+                        {
+                            "event_count": len(events),
+                            "response_id": final_response_id,
+                            "status": final_status,
+                            "model": final_model,
+                            "usage": final_usage,
+                            "text_len": len(final_text),
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            except Exception:
+                pass
             normalized = ProviderNormalizedResult(
                 source_backend=self.backend_name,
                 plan_label="openai-codex-final-text",

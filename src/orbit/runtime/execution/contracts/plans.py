@@ -20,6 +20,7 @@ class ToolRequest(OrbitBaseModel):
     input_payload: dict = Field(default_factory=dict)
     requires_approval: bool = False
     side_effect_class: str = "safe"
+    provider_call_id: str | None = None
 
 
 class ExecutionPlan(OrbitBaseModel):

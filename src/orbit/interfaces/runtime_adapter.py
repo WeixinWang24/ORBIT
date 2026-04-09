@@ -1,4 +1,3 @@
-"""Runtime adapter for the active runtime-first ORBIT PTY CLI."""
 
 from __future__ import annotations
 
@@ -8,6 +7,8 @@ import sys
 import time
 from typing import Any
 
+from orbit.interfaces.pty_debug import debug_log
+
 from orbit.runtime.core.session_manager import SESSION_MANAGER_IMPORT_PROFILE_TIMINGS, SessionManager
 from orbit.runtime.operations.context_usage_service import ContextAccountingService
 from orbit.runtime.capabilities.composer import RuntimeCapabilityBundle, RuntimeCapabilityComposer, RuntimeCapabilityProfile
@@ -15,6 +16,11 @@ from orbit.runtime.governance.build_state_store import BuildStateStore
 from orbit.runtime.governance.protocol.mode import RuntimeMode, build_policy_profile_for_mode, mode_policy_summary, workspace_root_for_runtime_mode
 from orbit.runtime.auth.storage.openai_store import OpenAIAuthStoreError
 from orbit.runtime.providers.openai_codex import OpenAICodexConfig, OpenAICodexExecutionBackend
+from orbit.runtime.extensions.auxiliary_input import DetachedKnowledgeMemoryCollector
+from orbit.runtime.extensions.post_turn_observer import DetachedMemoryCaptureObserver, NoOpPostTurnObserver
+from orbit.runtime.extensions.capability_attach import RuntimeCoreMinimalCapabilityPolicy
+from orbit.runtime.extensions.capability_surface import CapabilitySurfaceRunner, NoOpCapabilitySurface, RegistryBackedCapabilitySurface
+from orbit.runtime.extensions.metadata_channels import capability_metadata, core_runtime_metadata, observer_metadata, operation_metadata, surface_projection_metadata
 from orbit.settings import REPO_ROOT
 from orbit.store import create_default_store
 
@@ -29,6 +35,7 @@ from .contracts import (
     InterfaceMessage,
     InterfaceSession,
     InterfaceToolCall,
+    InterfaceToolDescriptor,
 )
 
 
@@ -36,6 +43,7 @@ from .contracts import (
 class RuntimeAdapterConfig:
     model: str = "gpt-5.4"
     runtime_mode: RuntimeMode = "dev"
+    runtime_profile: str = "runtime_core_minimal"
     enable_tools: bool = True
     filesystem: bool = False
     git: bool = False
@@ -49,7 +57,7 @@ class RuntimeAdapterConfig:
     memory: bool = False
 
 
-def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev", enable_tools: bool = True, filesystem: bool = False, git: bool = False, bash: bool = False, process: bool = False, pytest: bool = False, ruff: bool = False, mypy: bool = False, browser: bool = False, obsidian: bool = False, memory: bool = False) -> tuple[SessionManager, RuntimeCapabilityComposer, RuntimeCapabilityBundle]:
+def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev", runtime_profile: str = "runtime_core_minimal", enable_tools: bool = True, filesystem: bool = False, git: bool = False, bash: bool = False, process: bool = False, pytest: bool = False, ruff: bool = False, mypy: bool = False, browser: bool = False, obsidian: bool = False, memory: bool = False) -> tuple[SessionManager, RuntimeCapabilityComposer, RuntimeCapabilityBundle]:
     t0 = time.perf_counter()
     workspace_root = workspace_root_for_runtime_mode(runtime_mode)
     t1 = time.perf_counter()
@@ -60,6 +68,12 @@ def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev"
         workspace_root=workspace_root,
     )
     setattr(backend, 'store', store)
+    backend.auxiliary_input_collector = DetachedKnowledgeMemoryCollector(
+        enable_knowledge=False,
+        enable_memory=False,
+        memory_service=None,
+        session_manager=None,
+    )
     t2 = time.perf_counter()
     profile = RuntimeCapabilityProfile(
         filesystem=filesystem,
@@ -81,15 +95,25 @@ def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev"
         backend=backend,
         workspace_root=str(workspace_root),
         runtime_mode=runtime_mode,
-        tool_registry=bundle.tool_registry,
-        embedding_service=bundle.embedding_service,
-        memory_service=bundle.memory_service,
     )
+    manager.minimal_runtime_core = runtime_profile == "runtime_core_minimal"
+    manager.capability_surface = RegistryBackedCapabilitySurface(
+        tool_registry=bundle.tool_registry,
+        capability_tool_registry=bundle.capability_tool_registry,
+        enabled_capabilities=bundle.enabled_capabilities,
+    )
+    manager.post_turn_observer = NoOpPostTurnObserver()
     if hasattr(backend, "session_manager"):
         backend.session_manager = manager
+    if hasattr(backend, "auxiliary_input_collector") and hasattr(backend.auxiliary_input_collector, "session_manager"):
+        backend.auxiliary_input_collector.session_manager = manager
+    if hasattr(backend, "auxiliary_input_collector") and hasattr(backend.auxiliary_input_collector, "memory_service"):
+        backend.auxiliary_input_collector.memory_service = bundle.memory_service
+    manager.post_turn_observer = DetachedMemoryCaptureObserver(memory_service=None)
     t4 = time.perf_counter()
     manager.metadata = {
         **getattr(manager, 'metadata', {}),
+        "runtime_profile": runtime_profile,
         "build_profile_timings": {
             "workspace_select_ms": round((t1 - t0) * 1000, 2),
             "backend_init_ms": round((t2 - t1) * 1000, 2),
@@ -106,7 +130,7 @@ def get_pending_session_approval(session_manager: SessionManager, session_id: st
     session = session_manager.get_session(session_id)
     if session is None or not isinstance(session.metadata, dict):
         return None
-    pending = session.metadata.get("pending_approval")
+    pending = capability_metadata(session.metadata).get("pending_approval")
     return pending if isinstance(pending, dict) else None
 
 
@@ -137,11 +161,6 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         }
         return timings
 
-    """First real runtime adapter skeleton for the new CLI UI.
-
-    The adapter mirrors the capability envelope of `cli_session.py` in a form
-    that the PTY workbench can absorb gradually.
-    """
 
     def __init__(self, session_manager: SessionManager, *, capability_composer: RuntimeCapabilityComposer | None = None, capability_bundle: RuntimeCapabilityBundle | None = None, build_state_store: BuildStateStore | None = None, startup_metrics: dict[str, float] | None = None) -> None:
         self.session_manager = session_manager
@@ -149,6 +168,11 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         self.capability_bundle = capability_bundle
         self.build_state_store = build_state_store or BuildStateStore()
         self.startup_metrics = startup_metrics or {}
+        self.capability_runner = CapabilitySurfaceRunner(
+            session_manager=session_manager,
+            capability_surface=session_manager.capability_surface,
+        )
+        self.session_manager.capability_handoff_dispatcher = self.capability_runner.consume_handoff_async
 
     @classmethod
     def build(cls, config: RuntimeAdapterConfig | None = None) -> "SessionManagerRuntimeAdapter":
@@ -157,6 +181,7 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         session_manager, capability_composer, capability_bundle = build_codex_session_manager(
             model=config.model,
             runtime_mode=config.runtime_mode,
+            runtime_profile=config.runtime_profile,
             enable_tools=config.enable_tools,
             filesystem=config.filesystem,
             git=config.git,
@@ -272,12 +297,44 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             for call in tool_calls
         ]
 
+    def list_available_tools(self) -> list[InterfaceToolDescriptor]:
+        registry = getattr(self.capability_bundle, "capability_tool_registry", None)
+        if registry is None:
+            return []
+        return [
+            InterfaceToolDescriptor(
+                tool_name=item.name,
+                side_effect_class=item.side_effect_class,
+                requires_approval=item.requires_approval,
+                source=item.source,
+                metadata=item.metadata,
+            )
+            for item in registry.list_tool_descriptors()
+        ]
+
     def list_open_approvals(self) -> list[InterfaceApproval]:
         approvals = self.session_manager.list_open_session_approvals()
         return [self._map_open_approval(item) for item in approvals]
 
     def send_user_message(self, session_id: str, text: str, on_assistant_partial_text=None, on_stream_completed=None) -> list[InterfaceMessage]:
-        self.session_manager.run_session_turn(session_id=session_id, user_input=text, on_assistant_partial_text=on_assistant_partial_text, on_stream_completed=on_stream_completed)
+        started_at = time.perf_counter()
+        try:
+            self.session_manager.run_session_turn(session_id=session_id, user_input=text, on_assistant_partial_text=on_assistant_partial_text, on_stream_completed=on_stream_completed)
+        finally:
+            try:
+                debug_log(
+                    "runtime_adapter:send_user_message "
+                    + json.dumps(
+                        {
+                            "session_id": session_id,
+                            "text_len": len(text),
+                            "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            except Exception:
+                pass
         pending = self.get_pending_approval(session_id)
         if pending is not None:
             self.append_system_message(
@@ -324,20 +381,20 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         )
 
     def get_context_usage_projection(self, session_id: str) -> dict[str, Any]:
-        """Return the context usage projection for a single session.
-
-        Delegates entirely to ContextAccountingService — no accounting logic here.
-        Returns safe empty defaults when no usage has been recorded yet.
-        """
         session = self.session_manager.get_session(session_id)
         if session is None:
             return {"latest_call": None, "totals": {"total_input_tokens": 0, "total_output_tokens": 0, "total_cache_creation_input_tokens": 0, "total_cache_read_input_tokens": 0, "total_reasoning_tokens": 0, "call_count": 0}}
-        svc = ContextAccountingService()
-        return svc.build_status_projection(session=session)
+        operation_channel = operation_metadata(session.metadata) if isinstance(session.metadata, dict) else {}
+        usage_projection = operation_channel.get("usage_projection") if isinstance(operation_channel.get("usage_projection"), dict) else None
+        if usage_projection is not None:
+            return usage_projection
+        return {"latest_call": None, "totals": {"total_input_tokens": 0, "total_output_tokens": 0, "total_cache_creation_input_tokens": 0, "total_cache_read_input_tokens": 0, "total_reasoning_tokens": 0, "call_count": 0}}
 
     def get_workbench_status(self) -> dict[str, Any]:
         sessions = self.list_sessions()
-        tool_names = sorted(tool.name for tool in self.session_manager.tool_registry.list_tools())
+        runtime_profile = getattr(self.session_manager, 'metadata', {}).get('runtime_profile', 'runtime_core_minimal')
+        tool_names = []
+        capability_surface_snapshot = None
         policy = mode_policy_summary(self.session_manager.runtime_mode)
         activation = self.build_state_store.load_activation_pointer()
         metadata = getattr(self.session_manager, 'metadata', {}) if hasattr(self.session_manager, 'metadata') else {}
@@ -345,21 +402,43 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         session_manager_profile_timings = metadata.get('session_manager_profile_timings', {})
         runtime_mode = self.session_manager.runtime_mode
         build_policy_profile = build_policy_profile_for_mode(runtime_mode)
-        # Aggregate self-change/build state across all sessions for the status surface
         active_self_change_plan_ids = [s.active_self_change_plan_id for s in sessions if s.active_self_change_plan_id]
         active_build_record_ids = [s.active_build_record_id for s in sessions if s.active_build_record_id]
         last_build_statuses = [s.last_build_status for s in sessions if s.last_build_status]
-        # Context usage: expose per-session projection for each active session.
-        # Strategy: build a map {session_id: usage_projection} for all known sessions.
-        # Consumers that have a focused session_id can look up their slice directly.
-        svc = ContextAccountingService()
-        session_usage_projections: dict[str, Any] = {}
-        for raw_session in self.session_manager.store.list_sessions():
-            proj = svc.build_status_projection(session=raw_session)
-            session_usage_projections[raw_session.session_id] = proj
+        session_usage_projections: dict[str, Any] = {
+            session.session_id: self.get_context_usage_projection(session.session_id)
+            for session in sessions
+        }
+        active_continuation_sessions = []
+        continuation_transition_overview = []
+        for session in sessions:
+            operation_channel = getattr(session, "operation_channel", {}) or {}
+            session_activity = operation_channel.get("session_activity")
+            if session_activity and session_activity != "idle":
+                active_continuation_sessions.append(
+                    {
+                        "session_id": session.session_id,
+                        "status": session.status,
+                        "session_activity": session_activity,
+                        "active_continuation": operation_channel.get("active_continuation"),
+                    }
+                )
+            transition_log = operation_channel.get("continuation_transition_log")
+            if isinstance(transition_log, list) and transition_log:
+                continuation_transition_overview.append(
+                    {
+                        "session_id": session.session_id,
+                        "latest_transition": transition_log[-1],
+                        "transition_count": len(transition_log),
+                    }
+                )
+        available_tools = [tool.model_dump(mode="json") for tool in self.list_available_tools()]
         return {
             "adapter_kind": "session_manager_runtime",
             "runtime_mode": runtime_mode,
+            "runtime_profile": metadata.get("runtime_profile", "runtime_core_minimal"),
+            "minimal_runtime_core": bool(getattr(self.session_manager, "minimal_runtime_core", False)),
+            "capability_surface": capability_surface_snapshot.metadata if capability_surface_snapshot is not None else {"surface_state": "unbound"},
             "workspace_root": self.session_manager.workspace_root,
             **policy,
             "build_profile_timings": profile_timings,
@@ -369,53 +448,27 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             "candidate_build_id": activation.candidate_build_id,
             "last_known_good_build_id": activation.last_known_good_build_id,
             "session_count": len(sessions),
-            "approval_count": len(self.list_open_approvals()),
-            "registered_tool_count": len(tool_names),
-            "registered_tool_names": tool_names,
-            # self-change / build management projection
+            "approval_count": 0,
+            "registered_tool_count": len(available_tools),
+            "registered_tool_names": [tool["tool_name"] for tool in available_tools],
+            "available_tools": available_tools,
             "build_policy_profile": build_policy_profile,
             "active_self_change_plan_ids": active_self_change_plan_ids,
             "active_build_record_ids": active_build_record_ids,
             "last_build_statuses": last_build_statuses,
-            # context usage projection (per-session, first-slice)
             "session_usage_projections": session_usage_projections,
+            "active_continuation_sessions": active_continuation_sessions,
+            "continuation_transition_overview": continuation_transition_overview,
         }
 
     def get_pending_approval(self, session_id: str) -> InterfaceApproval | None:
-        session = self.session_manager.get_session(session_id)
-        if session is None or not isinstance(session.metadata, dict):
-            return None
-        pending = session.metadata.get("pending_approval")
-        if not isinstance(pending, dict):
-            return None
-        return self._map_open_approval({"session_id": session_id, **pending})
+        return None
 
     def resolve_pending_approval(self, session_id: str, decision: str, note: str | None = None):
-        session = self.session_manager.get_session(session_id)
-        if session is None or not isinstance(session.metadata, dict):
-            return None
-        pending = session.metadata.get("pending_approval")
-        if not isinstance(pending, dict):
-            return None
-        approval_request_id = pending.get("approval_request_id")
-        if not isinstance(approval_request_id, str) or not approval_request_id:
-            return None
-        return self.session_manager.resolve_session_approval(
-            session_id=session_id,
-            approval_request_id=approval_request_id,
-            decision=decision,
-            note=note,
-        )
+        return None
 
     def reauthorize_tool_path(self, session_id: str, tool_name: str, note: str | None = None, source: str = "runtime_cli"):
-        from orbit.runtime.governance.tool_governance_service import ToolGovernanceService
-
-        return ToolGovernanceService(self.session_manager).reauthorize_tool_path(
-            session_id=session_id,
-            tool_name=tool_name,
-            note=note,
-            source=source,
-        )
+        return None
 
     def get_session_state_payload(self, session_id: str) -> dict[str, Any] | None:
         session = self.session_manager.get_session(session_id)
@@ -460,7 +513,6 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         return self.clear_all_sessions()
 
     def _extract_build_projection(self, session) -> dict[str, Any]:
-        """Extract self-change and build summary fields from session metadata."""
         meta = session.metadata if isinstance(session.metadata, dict) else {}
         sc = meta.get("self_change", {}) if isinstance(meta.get("self_change"), dict) else {}
         bm = meta.get("build_management", {}) if isinstance(meta.get("build_management"), dict) else {}
@@ -476,9 +528,41 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             "build_policy_profile": build_policy,
         }
 
+    def _diagnose_operation_channel(self, session, *, operation_channel: dict | None = None) -> dict[str, Any]:
+        operation_channel = operation_channel if isinstance(operation_channel, dict) else (operation_metadata(session.metadata) if isinstance(session.metadata, dict) else {})
+        active = operation_channel.get("active_continuation") if isinstance(operation_channel, dict) else None
+        diagnosis: dict[str, Any] = {
+            "session_activity": operation_channel.get("session_activity") if isinstance(operation_channel, dict) else None,
+            "orphaned": False,
+            "stale_view": False,
+            "recommended_action": None,
+        }
+        if not isinstance(active, dict):
+            return diagnosis
+        continuation_state = active.get("continuation_state")
+        messages = self.session_manager.list_messages(session.session_id)
+        has_assistant = any(getattr(message.role, "value", str(message.role)) == "assistant" for message in messages)
+        if continuation_state == "result_ingested" and has_assistant:
+            diagnosis["stale_view"] = True
+            diagnosis["recommended_action"] = "operation_view_should_treat_as_settled"
+        elif continuation_state == "awaiting_capability_result":
+            diagnosis["orphaned"] = True
+            diagnosis["recommended_action"] = "inspect_or_resume_capability_runner"
+        return diagnosis
+
     def _map_session_summary(self, session) -> InterfaceSession:
         policy = mode_policy_summary(session.runtime_mode)
         build = self._extract_build_projection(session)
+        operation_channel = operation_metadata(session.metadata) if isinstance(session.metadata, dict) else {}
+        diagnosis = self._diagnose_operation_channel(session, operation_channel=operation_channel)
+        session_activity = diagnosis.get("session_activity")
+        status = "active"
+        if session_activity == "continuation_pending":
+            status = "active_continuation"
+        elif session_activity == "continuation_reopening_turn":
+            status = "continuation_reopening_turn"
+        elif session_activity == "continuation_discarded":
+            status = "continuation_discarded"
         return InterfaceSession(
             session_id=session.session_id,
             conversation_id=session.conversation_id,
@@ -492,7 +576,8 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             updated_at=session.updated_at,
             message_count=0,
             last_message_preview="",
-            status="active",
+            status=status,
+            operation_channel={**operation_channel, "diagnosis": diagnosis},
             **build,
         )
 
@@ -500,7 +585,16 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         messages = self.session_manager.list_messages(session.session_id)
         last_message = messages[-1].content if messages else ""
         pending = self.get_pending_approval(session.session_id)
+        operation_channel = operation_metadata(session.metadata) if isinstance(session.metadata, dict) else {}
+        diagnosis = self._diagnose_operation_channel(session, operation_channel=operation_channel)
         status = "waiting_for_approval" if pending is not None else "active"
+        session_activity = diagnosis.get("session_activity")
+        if session_activity == "continuation_pending":
+            status = "active_continuation"
+        elif session_activity == "continuation_reopening_turn":
+            status = "continuation_reopening_turn"
+        elif session_activity == "continuation_discarded":
+            status = "continuation_discarded"
         policy = mode_policy_summary(session.runtime_mode)
         build = self._extract_build_projection(session)
         return InterfaceSession(
@@ -517,6 +611,7 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             message_count=len(messages),
             last_message_preview=last_message[:120],
             status=status,
+            operation_channel={**operation_channel, "diagnosis": diagnosis},
             **build,
         )
 

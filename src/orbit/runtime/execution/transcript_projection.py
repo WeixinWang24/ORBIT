@@ -21,7 +21,7 @@ def _message_kind(message: ConversationMessage) -> str | None:
 def _chat_completions_compat_content(message: ConversationMessage) -> str:
     """Return a compatibility-safe textual projection for current chat backends."""
     kind = _message_kind(message)
-    if message.role == MessageRole.TOOL and kind == "tool_result":
+    if message.role == MessageRole.TOOL and kind in {"tool_result", "capability_result"}:
         return message.content
     if kind == "approval_request":
         tool_name = message.metadata.get("tool_name")
@@ -76,6 +76,14 @@ def _codex_metadata(message: ConversationMessage) -> dict:
             data[key] = value
     return data
 
+
+
+def _codex_function_call_output_item(*, call_id: str, output_text: str) -> dict:
+    return {
+        "type": "function_call_output",
+        "call_id": call_id,
+        "output": output_text,
+    }
 
 
 def _codex_user_input_item(*, text: str, metadata: dict | None = None) -> dict:
@@ -136,12 +144,21 @@ def messages_to_codex_input(messages: list[ConversationMessage]) -> list[dict]:
             projected.append(_codex_user_input_item(text=message.content))
             continue
         if message.role == MessageRole.TOOL:
-            projected.append(
-                _codex_user_input_item(
-                    text=message.content,
-                    metadata=_codex_metadata(message),
+            provider_call_id = message.metadata.get("provider_call_id")
+            if isinstance(provider_call_id, str) and provider_call_id:
+                projected.append(
+                    _codex_function_call_output_item(
+                        call_id=provider_call_id,
+                        output_text=message.content,
+                    )
                 )
-            )
+            else:
+                projected.append(
+                    _codex_user_input_item(
+                        text=message.content,
+                        metadata=_codex_metadata(message),
+                    )
+                )
             continue
         if kind in {"approval_request", "approval_decision", "continuation_bridge"}:
             projected.append(
