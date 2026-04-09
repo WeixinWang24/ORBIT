@@ -17,7 +17,7 @@ from orbit.runtime.governance.protocol.mode import RuntimeMode, build_policy_pro
 from orbit.runtime.auth.storage.openai_store import OpenAIAuthStoreError
 from orbit.runtime.providers.openai_codex import OpenAICodexConfig, OpenAICodexExecutionBackend
 from orbit.runtime.extensions.auxiliary_input import DetachedKnowledgeMemoryCollector
-from orbit.runtime.extensions.post_turn_observer import DetachedMemoryCaptureObserver, NoOpPostTurnObserver
+from orbit.runtime.extensions.post_turn_observer import CompositePostTurnObserver, DetachedKnowledgePostTurnObserver, DetachedMemoryCaptureObserver, NoOpPostTurnObserver
 from orbit.runtime.extensions.capability_attach import RuntimeCoreMinimalCapabilityPolicy
 from orbit.runtime.core.outcome_dispatcher import RuntimeOutcomeDispatcher
 from orbit.runtime.extensions.capability_surface import CapabilitySurfaceRunner, NoOpCapabilitySurface, RegistryBackedCapabilitySurface
@@ -69,12 +69,6 @@ def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev"
         workspace_root=workspace_root,
     )
     setattr(backend, 'store', store)
-    backend.auxiliary_input_collector = DetachedKnowledgeMemoryCollector(
-        enable_knowledge=False,
-        enable_memory=False,
-        memory_service=None,
-        session_manager=None,
-    )
     t2 = time.perf_counter()
     profile = RuntimeCapabilityProfile(
         filesystem=filesystem,
@@ -104,13 +98,18 @@ def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev"
         enabled_capabilities=bundle.enabled_capabilities,
     )
     manager.post_turn_observer = NoOpPostTurnObserver()
+    manager.auxiliary_input_collector = DetachedKnowledgeMemoryCollector(
+        enable_knowledge=obsidian,
+        enable_memory=memory,
+        memory_service=bundle.memory_service,
+        session_manager=manager,
+    )
     if hasattr(backend, "session_manager"):
         backend.session_manager = manager
-    if hasattr(backend, "auxiliary_input_collector") and hasattr(backend.auxiliary_input_collector, "session_manager"):
-        backend.auxiliary_input_collector.session_manager = manager
-    if hasattr(backend, "auxiliary_input_collector") and hasattr(backend.auxiliary_input_collector, "memory_service"):
-        backend.auxiliary_input_collector.memory_service = bundle.memory_service
-    manager.post_turn_observer = DetachedMemoryCaptureObserver(memory_service=None)
+    manager.post_turn_observer = CompositePostTurnObserver(
+        DetachedKnowledgePostTurnObserver(),
+        DetachedMemoryCaptureObserver(memory_service=bundle.memory_service if memory else None),
+    )
     t4 = time.perf_counter()
     manager.metadata = {
         **getattr(manager, 'metadata', {}),

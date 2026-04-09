@@ -17,6 +17,7 @@ from orbit.runtime.extensions.metadata_channels import (
 from orbit.runtime.extensions.capability_attach import RuntimeCoreMinimalCapabilityPolicy
 from orbit.runtime.core.continuation_planner import RuntimeContinuationPlanner
 from orbit.runtime.core.outcomes import ResolvedRuntimeOutcome
+from orbit.runtime.extensions.auxiliary_input import AuxiliaryInputCollection, NoOpAuxiliaryInputCollector
 from orbit.runtime.extensions.capability_surface import NoOpCapabilitySurface
 from orbit.runtime.governance.protocol.mode import ModePolicyDescriptor, RuntimeMode, build_mode_policy_snapshot
 from orbit.runtime.execution.contracts.plans import ExecutionPlan
@@ -45,6 +46,7 @@ class SessionManager:
         timings: dict[str, float] = self.metadata['session_manager_profile_timings']
 
         self.post_turn_observer = None
+        self.auxiliary_input_collector = NoOpAuxiliaryInputCollector()
         self.capability_surface = NoOpCapabilitySurface()
         self.capability_handoff_dispatcher = None
         self.minimal_runtime_core = True
@@ -98,6 +100,27 @@ class SessionManager:
             observer_metadata(session.metadata).update(result.metadata)
             session.updated_at = datetime.now(timezone.utc)
             self.store.save_session(session)
+
+    def _collect_auxiliary_input(self, *, session: ConversationSession, messages: list[ConversationMessage]) -> AuxiliaryInputCollection:
+        collector = getattr(self, "auxiliary_input_collector", None)
+        if collector is None:
+            return AuxiliaryInputCollection(fragments=[], metadata={}, timings={})
+        latest_user = next((message for message in reversed(messages) if message.role == MessageRole.USER and message.content.strip()), None)
+        query_text = latest_user.content if latest_user is not None else messages[-1].content if messages else ""
+        auxiliary = collector.collect(
+            session=session,
+            messages=messages,
+            runtime_profile=getattr(self, "metadata", {}).get("runtime_profile", "runtime_core_minimal"),
+            query_text=query_text,
+        )
+        if isinstance(auxiliary.metadata, dict) and auxiliary.metadata:
+            observer_metadata(session.metadata).update(auxiliary.metadata)
+        if isinstance(auxiliary.timings, dict) and auxiliary.timings:
+            operation_metadata(session.metadata)["auxiliary_input_timings"] = dict(auxiliary.timings)
+        if auxiliary.metadata or auxiliary.timings:
+            session.updated_at = datetime.now(timezone.utc)
+            self.store.save_session(session)
+        return auxiliary
 
     def set_active_run_descriptor(self, *, session_id: str, descriptor: RunDescriptor) -> None:
         session = self.get_session(session_id)
@@ -221,6 +244,8 @@ class SessionManager:
                 "capability_request_id": handoff.capability_request_id,
                 "capability_status": handoff.status,
                 "provider_call_id": continuation.get("provider_call_id"),
+                "tool_name": plan.tool_request.tool_name if plan.tool_request else None,
+                "input_payload": plan.tool_request.input_payload if plan.tool_request else None,
                 "tool_projection": handoff.tool_projection,
             },
         )
@@ -338,6 +363,9 @@ class SessionManager:
             return None
         if active_continuation.get("capability_request_id") != target_id:
             return None
+        # Snapshot provider_call_id before canonical mutations can mutate pending.
+        snapshot_provider_call_id = pending.get("provider_call_id")
+        snapshot_tool_projection = dict(pending.get("tool_projection") or {})
         messages = self.list_messages(session_id)
         continuation_plan = RuntimeContinuationPlanner().build(
             target=target,
@@ -355,8 +383,8 @@ class SessionManager:
             metadata={
                 "message_kind": "capability_result",
                 "capability_request_id": target_id,
-                "provider_call_id": pending.get("provider_call_id"),
-                "tool_projection": pending.get("tool_projection", {}),
+                "provider_call_id": snapshot_provider_call_id,
+                "tool_projection": snapshot_tool_projection,
             },
         )
         refreshed = self.get_session(session_id)
@@ -374,8 +402,15 @@ class SessionManager:
         return finalized
 
     def _plan_from_messages(self, *, session: ConversationSession, messages: list[ConversationMessage], on_assistant_partial_text=None, on_stream_completed=None) -> ExecutionPlan:
+        auxiliary = self._collect_auxiliary_input(session=session, messages=messages)
         if hasattr(self.backend, "plan_from_messages"):
-            return self.backend.plan_from_messages(messages, session=session, on_partial_text=on_assistant_partial_text, on_stream_completed=on_stream_completed)
+            return self.backend.plan_from_messages(
+                messages,
+                session=session,
+                auxiliary_fragments=auxiliary.fragments,
+                on_partial_text=on_assistant_partial_text,
+                on_stream_completed=on_stream_completed,
+            )
         latest_user = next((message for message in reversed(messages) if message.role == MessageRole.USER), None)
         if latest_user is None:
             raise ValueError("cannot fallback to descriptor path without a user message")

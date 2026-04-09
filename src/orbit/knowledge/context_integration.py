@@ -8,6 +8,13 @@ if TYPE_CHECKING:
     from orbit.runtime.execution.context_assembly import ContextFragment
 
 
+def _truncate(text: str | None, limit: int) -> str:
+    value = (text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 1)].rstrip() + "…"
+
+
 def knowledge_preflight_to_context_fragments(*, availability: dict, vault_metadata: dict | None = None) -> list["ContextFragment"]:
     from orbit.runtime.execution.context_assembly import ContextFragment
 
@@ -72,7 +79,7 @@ def knowledge_bundle_to_context_fragments(bundle: KnowledgeBundle) -> list["Cont
             ContextFragment(
                 fragment_name="knowledge_guidance_summary",
                 visibility_scope="knowledge_guidance",
-                content=bundle.summary,
+                content=_truncate(bundle.summary, 400),
                 priority=58,
                 metadata={
                     "query_text": bundle.query_text,
@@ -86,7 +93,7 @@ def knowledge_bundle_to_context_fragments(bundle: KnowledgeBundle) -> list["Cont
             ContextFragment(
                 fragment_name="knowledge_planning_guidance",
                 visibility_scope="knowledge_guidance",
-                content=bundle.planning_guidance,
+                content=_truncate(bundle.planning_guidance, 400),
                 priority=60,
                 metadata={
                     "query_text": bundle.query_text,
@@ -101,9 +108,9 @@ def knowledge_bundle_to_context_fragments(bundle: KnowledgeBundle) -> list["Cont
                 fragment_name=f"knowledge_primary_anchor:{bundle.primary_anchor.note.path}",
                 visibility_scope="knowledge_retrieval",
                 content=(
-                    f"Primary anchor: {bundle.primary_anchor.note.title}\n"
+                    f"Primary anchor: {_truncate(bundle.primary_anchor.note.title, 120)}\n"
                     f"Type: {bundle.primary_anchor.anchor_kind}\n"
-                    f"Summary: {bundle.primary_anchor.note.summary}"
+                    f"Summary: {_truncate(bundle.primary_anchor.note.summary, 240)}"
                 ).strip(),
                 priority=57,
                 metadata={
@@ -120,9 +127,12 @@ def knowledge_bundle_to_context_fragments(bundle: KnowledgeBundle) -> list["Cont
             ContextFragment(
                 fragment_name="knowledge_decision_notes",
                 visibility_scope="knowledge_retrieval",
-                content="\n".join(f"- {note.title}: {note.summary}" for note in bundle.decision_notes[:3]),
+                content="\n".join(
+                    f"- {_truncate(note.title, 120)}: {_truncate(note.summary, 180)}"
+                    for note in bundle.decision_notes[:2]
+                ),
                 priority=56,
-                metadata={"count": len(bundle.decision_notes)},
+                metadata={"count": min(len(bundle.decision_notes), 2)},
             )
         )
     if bundle.procedural_notes:
@@ -130,9 +140,12 @@ def knowledge_bundle_to_context_fragments(bundle: KnowledgeBundle) -> list["Cont
             ContextFragment(
                 fragment_name="knowledge_procedural_notes",
                 visibility_scope="knowledge_retrieval",
-                content="\n".join(f"- {note.title}: {note.summary}" for note in bundle.procedural_notes[:3]),
+                content="\n".join(
+                    f"- {_truncate(note.title, 120)}: {_truncate(note.summary, 180)}"
+                    for note in bundle.procedural_notes[:2]
+                ),
                 priority=55,
-                metadata={"count": len(bundle.procedural_notes)},
+                metadata={"count": min(len(bundle.procedural_notes), 2)},
             )
         )
     return fragments

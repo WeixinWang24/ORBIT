@@ -18,16 +18,11 @@ from orbit.runtime.execution.backends import ExecutionBackend
 from orbit.runtime.core.contracts import RunDescriptor
 from orbit.runtime.execution.normalization import ProviderFailure, ProviderNormalizedResult, normalized_result_to_execution_plan
 from orbit.runtime.execution.contracts.plans import ExecutionPlan, ToolRequest
-from orbit.runtime.execution.context_assembly import build_text_only_prompt_assembly_plan
+from orbit.runtime.execution.context_assembly import ContextFragment, build_text_only_prompt_assembly_plan
 from orbit.runtime.execution.transcript_projection import messages_to_codex_input
-from orbit.runtime.extensions.auxiliary_input import DetachedKnowledgeMemoryCollector, NoOpAuxiliaryInputCollector
 from orbit.runtime.extensions.capability_registry import CapabilityToolRegistry, RegistryBackedCapabilityToolRegistry
-from orbit.runtime.extensions.metadata_channels import observer_metadata, operation_metadata, set_surface_projection_metadata, surface_projection_metadata
+from orbit.runtime.extensions.metadata_channels import operation_metadata, set_surface_projection_metadata
 from orbit.runtime.operations.context_usage_service import ContextAccountingService
-from orbit.runtime.mcp.bootstrap import bootstrap_local_filesystem_mcp_server, bootstrap_local_git_mcp_server
-from orbit.runtime.mcp.bash_bootstrap import bootstrap_local_bash_mcp_server
-from orbit.runtime.mcp.process_bootstrap import bootstrap_local_process_mcp_server
-from orbit.runtime.mcp.registry_loader import register_mcp_server_tools
 from orbit.runtime.transports.openai_codex_http import OpenAICodexHttpError, OpenAICodexSSEEvent, stream_sse_events
 from orbit.tools.registry import ToolRegistry
 from orbit.runtime.providers.tool_schema_utils import codex_function_definition
@@ -46,10 +41,6 @@ class OpenAICodexConfig:
 class OpenAICodexExecutionBackend(ExecutionBackend):
     backend_name = "openai-codex"
 
-    def _knowledge_enabled(self) -> bool:
-        raw = os.environ.get("ORBIT_ENABLE_KNOWLEDGE", "0").strip().lower()
-        return raw not in {"0", "false", "no", "off"}
-
     def __init__(self, config: OpenAICodexConfig | None = None, repo_root: Path | None = None, workspace_root: Path | None = None, tool_registry: ToolRegistry | None = None, capability_tool_registry: CapabilityToolRegistry | None = None):
         self.config = config or OpenAICodexConfig()
         self.repo_root = repo_root or Path.cwd()
@@ -57,43 +48,22 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
         self.auth_store = OpenAIAuthStore(self.repo_root)
         self.tool_registry = tool_registry
         self.capability_tool_registry = capability_tool_registry
-        self.auxiliary_input_collector = NoOpAuxiliaryInputCollector()
-
-    def _effective_tool_registry(self) -> ToolRegistry:
-        if self.tool_registry is not None:
-            return self.tool_registry
-        registry = ToolRegistry(self.workspace_root)
-        register_mcp_server_tools(
-            registry=registry,
-            bootstrap=bootstrap_local_filesystem_mcp_server(workspace_root=str(self.workspace_root)),
-        )
-        register_mcp_server_tools(
-            registry=registry,
-            bootstrap=bootstrap_local_git_mcp_server(workspace_root=str(self.workspace_root)),
-        )
-        register_mcp_server_tools(
-            registry=registry,
-            bootstrap=bootstrap_local_bash_mcp_server(workspace_root=str(self.workspace_root)),
-        )
-        register_mcp_server_tools(
-            registry=registry,
-            bootstrap=bootstrap_local_process_mcp_server(workspace_root=str(self.workspace_root)),
-        )
-        self.tool_registry = registry
-        self.capability_tool_registry = RegistryBackedCapabilityToolRegistry(tool_registry=registry)
-        return registry
 
     def _effective_capability_tool_registry(self) -> CapabilityToolRegistry:
         if self.capability_tool_registry is not None:
             return self.capability_tool_registry
-        registry = self._effective_tool_registry()
-        self.capability_tool_registry = RegistryBackedCapabilityToolRegistry(tool_registry=registry)
-        return self.capability_tool_registry
+        if self.tool_registry is not None:
+            self.capability_tool_registry = RegistryBackedCapabilityToolRegistry(tool_registry=self.tool_registry)
+            return self.capability_tool_registry
+        raise RuntimeError(
+            "capability_tool_registry or tool_registry must be bound by "
+            "runtime capability composition before provider planning"
+        )
 
     def plan(self, descriptor: RunDescriptor) -> ExecutionPlan:
         return self.plan_from_messages([ConversationMessage(session_id=descriptor.session_key, role=MessageRole.USER, content=descriptor.user_input, turn_index=1)], session=None)
 
-    def plan_from_messages(self, messages: list[ConversationMessage], *, session: ConversationSession | None = None, on_partial_text: Callable[[str], None] | None = None, on_stream_completed: Callable[[], None] | None = None) -> ExecutionPlan:
+    def plan_from_messages(self, messages: list[ConversationMessage], *, session: ConversationSession | None = None, auxiliary_fragments: list[ContextFragment] | None = None, on_partial_text: Callable[[str], None] | None = None, on_stream_completed: Callable[[], None] | None = None) -> ExecutionPlan:
         total_started_at = time.perf_counter()
         auth_started_at = time.perf_counter()
         credential = self.load_persisted_credential()
@@ -102,7 +72,7 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
         headers = self.build_request_headers(auth)
         auth_elapsed_ms = round((time.perf_counter() - auth_started_at) * 1000, 2)
         payload_started_at = time.perf_counter()
-        payload = self.build_request_payload_from_messages(messages, session=session)
+        payload = self.build_request_payload_from_messages(messages, session=session, auxiliary_fragments=auxiliary_fragments)
         payload_elapsed_ms = round((time.perf_counter() - payload_started_at) * 1000, 2)
         if session is not None:
             set_surface_projection_metadata(session.metadata, "last_provider_payload", payload)
@@ -198,25 +168,8 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
         registry = self._effective_capability_tool_registry()
         return registry.build_provider_tool_definitions()
 
-    def build_request_payload_from_messages(self, messages: list[ConversationMessage], *, session: ConversationSession | None = None) -> dict:
+    def build_request_payload_from_messages(self, messages: list[ConversationMessage], *, session: ConversationSession | None = None, auxiliary_fragments: list[ContextFragment] | None = None) -> dict:
         build_started_at = time.perf_counter()
-        latest_user = next((message for message in reversed(messages) if message.role == MessageRole.USER and message.content.strip()), None)
-        query_text = latest_user.content if latest_user is not None else messages[-1].content if messages else ""
-
-        collector = getattr(self, "auxiliary_input_collector", None) or NoOpAuxiliaryInputCollector()
-        auxiliary = collector.collect(
-            session=session,
-            messages=messages,
-            runtime_profile=getattr(getattr(self, "session_manager", None), "metadata", {}).get("runtime_profile", "runtime_core_minimal") if session is not None else "runtime_core_minimal",
-            query_text=query_text,
-        )
-        auxiliary_fragments = list(auxiliary.fragments)
-        memory_retrieval_ms = auxiliary.timings.get("memory_retrieval_ms", 0.0)
-        knowledge_setup_ms = auxiliary.timings.get("knowledge_setup_ms", 0.0)
-        knowledge_preflight_ms = auxiliary.timings.get("knowledge_preflight_ms", 0.0)
-        knowledge_retrieval_ms = auxiliary.timings.get("knowledge_retrieval_ms", 0.0)
-        if session is not None and isinstance(auxiliary.metadata, dict):
-            observer_metadata(session.metadata).update(auxiliary.metadata)
         runtime_mode = session.runtime_mode if session is not None else "dev"
         assembly_started_at = time.perf_counter()
         assembly_plan = build_text_only_prompt_assembly_plan(
@@ -258,15 +211,12 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
                 "enable_tools": self.config.enable_tools,
                 "tool_count": len(tools),
             }
+            snapshot["auxiliary_context_fragments"] = [fragment.model_dump(mode="json") for fragment in list(auxiliary_fragments or [])]
             set_surface_projection_metadata(session.metadata, "_pending_context_assembly", snapshot)
             set_surface_projection_metadata(session.metadata, "_pending_provider_payload", payload.copy())
             payload["prompt_cache_key"] = session.session_id
             session_snapshot_write_ms = round((time.perf_counter() - snapshot_write_started_at) * 1000, 2)
             set_surface_projection_metadata(session.metadata, "last_submit_timing_probe", {
-                "memory_retrieval_ms": memory_retrieval_ms,
-                "knowledge_setup_ms": knowledge_setup_ms,
-                "knowledge_preflight_ms": knowledge_preflight_ms,
-                "knowledge_retrieval_ms": knowledge_retrieval_ms,
                 "assembly_plan_ms": assembly_plan_ms,
                 "transcript_projection_ms": transcript_projection_ms,
                 "payload_dict_ms": payload_dict_ms,
@@ -274,6 +224,10 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
                 "payload_build_total_ms": round((time.perf_counter() - build_started_at) * 1000, 2),
                 "tool_count": len(tools),
             })
+            store = getattr(self, "store", None)
+            if store is not None:
+                session.updated_at = datetime.now(timezone.utc)
+                store.save_session(session)
         try:
             debug_log(
                 "openai_codex:build_request_payload "
@@ -281,11 +235,6 @@ class OpenAICodexExecutionBackend(ExecutionBackend):
                     {
                         "session_id": getattr(session, "session_id", None),
                         "message_count": len(messages),
-                        "query_preview": query_text[:80],
-                        "memory_retrieval_ms": memory_retrieval_ms,
-                        "knowledge_setup_ms": knowledge_setup_ms,
-                        "knowledge_preflight_ms": knowledge_preflight_ms,
-                        "knowledge_retrieval_ms": knowledge_retrieval_ms,
                         "assembly_plan_ms": assembly_plan_ms,
                         "transcript_projection_ms": transcript_projection_ms,
                         "payload_dict_ms": payload_dict_ms,
