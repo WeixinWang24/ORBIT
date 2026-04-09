@@ -38,6 +38,7 @@ class ResolvedRuntimeOutcome:
     outcome_scope: str
     resolved_target: ResolvedRuntimeTarget
     canonical_patch: dict[str, Any] = field(default_factory=dict)
+    canonical_mutations: list[dict[str, Any]] = field(default_factory=list)
     transcript_entry: dict[str, Any] | None = None
     continuation_directive: RuntimeContinuationDirective = field(
         default_factory=lambda: RuntimeContinuationDirective(kind="hold", activity="paused", continue_turn=False)

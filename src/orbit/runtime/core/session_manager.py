@@ -258,7 +258,6 @@ class SessionManager:
         session = self.get_session(session_id)
         if session is None:
             raise ValueError(f"session not found: {session_id}")
-        canonical_patch = outcome.canonical_patch if isinstance(outcome.canonical_patch, dict) else {}
         target = outcome.resolved_target
         target_id = target.target_id
         if target.target_kind != "capability_handoff":
@@ -267,21 +266,26 @@ class SessionManager:
         pending = capability_metadata(session.metadata).get(pending_key)
         if not isinstance(pending, dict) or pending.get("capability_request_id") != target_id:
             raise ValueError(f"pending runtime outcome target not found: {target}")
-        pending_patch = canonical_patch.get("pending_handoff") if isinstance(canonical_patch.get("pending_handoff"), dict) else None
-        if pending_patch is not None:
-            pending.update(pending_patch)
-        pending_approval_patch = canonical_patch.get("pending_approval") if isinstance(canonical_patch.get("pending_approval"), dict) else None
-        if pending_approval_patch is not None:
-            capability_metadata(session.metadata)["pending_approval"] = {
-                "capability_request_id": target_id,
-                **pending_approval_patch,
-            }
-        active = capability_metadata(session.metadata).get("active_continuation")
-        if isinstance(active, dict) and active.get("capability_request_id") == target_id and pending_patch is not None:
-            active.update(pending_patch)
         operation_state = operation_metadata(session.metadata)
-        if pending_patch is not None and pending_patch.get("status") == "waiting_for_approval":
-            operation_state["session_activity"] = "waiting_for_approval"
+        for mutation in outcome.canonical_mutations:
+            kind = mutation.get("kind")
+            target_info = mutation.get("target") if isinstance(mutation.get("target"), dict) else {}
+            scope = target_info.get("scope")
+            key = target_info.get("key")
+            value = mutation.get("value")
+            if scope == "capability_metadata" and isinstance(key, str):
+                bucket = capability_metadata(session.metadata)
+                current = bucket.get(key)
+                target_mutation_id = target_info.get("target_id")
+                if kind == "merge_dict" and isinstance(value, dict) and isinstance(current, dict) and current.get("capability_request_id") == target_mutation_id:
+                    current.update(value)
+                elif kind == "set_dict" and isinstance(value, dict):
+                    bucket[key] = value
+            elif scope == "operation_metadata" and isinstance(key, str):
+                if kind == "set_scalar":
+                    operation_state[key] = value
+                elif kind == "set_dict" and isinstance(value, dict):
+                    operation_state[key] = value
         session.updated_at = datetime.now(timezone.utc)
         self.store.save_session(session)
         transcript_entry = outcome.transcript_entry if isinstance(outcome.transcript_entry, dict) else None

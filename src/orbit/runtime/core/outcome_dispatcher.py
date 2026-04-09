@@ -18,6 +18,7 @@ class RuntimeOutcomeDispatcher:
             outcome_scope=outcome.outcome_scope,
             resolved_target=target,
             canonical_patch=outcome.canonical_patch,
+            canonical_mutations=self._resolve_canonical_mutations(target=target, outcome=outcome, directive=directive),
             transcript_entry=outcome.transcript_entry,
             continuation_directive=directive,
             content=outcome.content,
@@ -35,6 +36,67 @@ class RuntimeOutcomeDispatcher:
             anchor_scope="capability_metadata",
             anchor_handle={"pending_key": "pending_handoff", "active_key": "active_continuation"},
         )
+
+    def _resolve_canonical_mutations(
+        self,
+        *,
+        target: ResolvedRuntimeTarget,
+        outcome: RawRuntimeOutcome,
+        directive: RuntimeContinuationDirective,
+    ) -> list[dict]:
+        mutations: list[dict] = []
+        pending_patch = outcome.canonical_patch.get("pending_handoff") if isinstance(outcome.canonical_patch.get("pending_handoff"), dict) else None
+        if pending_patch is not None:
+            mutations.append(
+                {
+                    "kind": "merge_dict",
+                    "target": {
+                        "scope": target.anchor_scope,
+                        "key": str(target.anchor_handle.get("pending_key") or "pending_handoff"),
+                        "target_id": target.target_id,
+                    },
+                    "value": pending_patch,
+                }
+            )
+            mutations.append(
+                {
+                    "kind": "merge_dict",
+                    "target": {
+                        "scope": target.anchor_scope,
+                        "key": str(target.anchor_handle.get("active_key") or "active_continuation"),
+                        "target_id": target.target_id,
+                    },
+                    "value": pending_patch,
+                }
+            )
+        pending_approval_patch = outcome.canonical_patch.get("pending_approval") if isinstance(outcome.canonical_patch.get("pending_approval"), dict) else None
+        if pending_approval_patch is not None:
+            mutations.append(
+                {
+                    "kind": "set_dict",
+                    "target": {
+                        "scope": target.anchor_scope,
+                        "key": "pending_approval",
+                        "target_id": target.target_id,
+                    },
+                    "value": {
+                        "capability_request_id": target.target_id,
+                        **pending_approval_patch,
+                    },
+                }
+            )
+        if directive.activity is not None:
+            mutations.append(
+                {
+                    "kind": "set_scalar",
+                    "target": {
+                        "scope": "operation_metadata",
+                        "key": "session_activity",
+                    },
+                    "value": directive.activity,
+                }
+            )
+        return mutations
 
     def _resolve_continuation_directive(self, *, outcome: RawRuntimeOutcome) -> RuntimeContinuationDirective:
         pending_patch = outcome.canonical_patch.get("pending_handoff") if isinstance(outcome.canonical_patch.get("pending_handoff"), dict) else None
