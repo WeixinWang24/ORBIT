@@ -54,11 +54,12 @@ class RuntimeAdapterConfig:
     ruff: bool = False
     mypy: bool = False
     browser: bool = False
-    obsidian: bool = False
+    obsidian_tools: bool = False
+    knowledge_augmentation: bool = False
     memory: bool = False
 
 
-def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev", runtime_profile: str = "runtime_core_minimal", enable_tools: bool = True, filesystem: bool = False, git: bool = False, bash: bool = False, process: bool = False, pytest: bool = False, ruff: bool = False, mypy: bool = False, browser: bool = False, obsidian: bool = False, memory: bool = False) -> tuple[SessionManager, RuntimeCapabilityComposer, RuntimeCapabilityBundle]:
+def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev", runtime_profile: str = "runtime_core_minimal", enable_tools: bool = True, filesystem: bool = False, git: bool = False, bash: bool = False, process: bool = False, pytest: bool = False, ruff: bool = False, mypy: bool = False, browser: bool = False, obsidian_tools: bool = False, knowledge_augmentation: bool = False, memory: bool = False) -> tuple[SessionManager, RuntimeCapabilityComposer, RuntimeCapabilityBundle]:
     t0 = time.perf_counter()
     workspace_root = workspace_root_for_runtime_mode(runtime_mode)
     t1 = time.perf_counter()
@@ -79,7 +80,7 @@ def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev"
         ruff=ruff,
         mypy=mypy,
         browser=browser,
-        obsidian=obsidian,
+        obsidian=obsidian_tools,
         memory=memory,
     )
     composer = RuntimeCapabilityComposer(workspace_root=str(workspace_root), backend=backend)
@@ -99,7 +100,7 @@ def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev"
     )
     manager.post_turn_observer = NoOpPostTurnObserver()
     manager.auxiliary_input_collector = DetachedKnowledgeMemoryCollector(
-        enable_knowledge=obsidian,
+        enable_knowledge=knowledge_augmentation,
         enable_memory=memory,
         memory_service=bundle.memory_service,
         session_manager=manager,
@@ -161,6 +162,56 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         }
         return timings
 
+    def background_activate_capabilities(
+        self,
+        capabilities: list[str],
+        *,
+        on_capability_activated: Any | None = None,
+        on_capability_failed: Any | None = None,
+    ) -> dict[str, float]:
+        """Incrementally activate capabilities into the live bundle.
+
+        Returns timing metrics for each capability activation.
+        Callbacks are invoked after each capability succeeds or fails.
+        """
+        if self.capability_composer is None or self.capability_bundle is None:
+            return {}
+        import logging
+        logger = logging.getLogger(__name__)
+        metrics: dict[str, float] = {}
+        for cap in capabilities:
+            t = time.perf_counter()
+            try:
+                activated = self.capability_composer.ensure_capability(self.capability_bundle, cap)
+                elapsed = round((time.perf_counter() - t) * 1000, 2)
+                metrics[f'bg_{cap}_activation_ms'] = elapsed
+                if activated:
+                    logger.info("background capability activated: %s (%.1fms)", cap, elapsed)
+                    # Update the capability surface so new tools are visible
+                    if hasattr(self.session_manager, 'capability_surface'):
+                        surface = self.session_manager.capability_surface
+                        if hasattr(surface, 'enabled_capabilities'):
+                            surface.enabled_capabilities = self.capability_bundle.enabled_capabilities
+                    if callable(on_capability_activated):
+                        on_capability_activated(cap, elapsed)
+            except Exception as exc:
+                elapsed = round((time.perf_counter() - t) * 1000, 2)
+                metrics[f'bg_{cap}_activation_ms'] = elapsed
+                metrics[f'bg_{cap}_error'] = str(exc)
+                logger.warning("background capability activation failed: %s (%s)", cap, exc)
+                if callable(on_capability_failed):
+                    on_capability_failed(cap, exc)
+        metrics['bg_activation_total_ms'] = round(
+            sum(v for k, v in metrics.items() if k.endswith('_activation_ms') and isinstance(v, (int, float))),
+            2,
+        )
+        self.startup_metrics.update(metrics)
+        self.session_manager.metadata = {
+            **getattr(self.session_manager, 'metadata', {}),
+            'background_activation_metrics': dict(metrics),
+        }
+        return metrics
+
 
     def __init__(self, session_manager: SessionManager, *, capability_composer: RuntimeCapabilityComposer | None = None, capability_bundle: RuntimeCapabilityBundle | None = None, build_state_store: BuildStateStore | None = None, startup_metrics: dict[str, float] | None = None) -> None:
         self.session_manager = session_manager
@@ -193,7 +244,8 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
             ruff=config.ruff,
             mypy=config.mypy,
             browser=config.browser,
-            obsidian=config.obsidian,
+            obsidian_tools=config.obsidian_tools,
+            knowledge_augmentation=config.knowledge_augmentation,
             memory=config.memory,
         )
         t1 = time.perf_counter()

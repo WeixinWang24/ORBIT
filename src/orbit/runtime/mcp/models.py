@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 
-McpTransportKind = Literal["stdio"]
+McpTransportKind = Literal["stdio", "unix_socket"]
 McpContinuityMode = Literal["stateless", "persistent_preferred", "persistent_required"]
 
 # ---------------------------------------------------------------------------
@@ -91,6 +91,14 @@ class McpClientBootstrap:
     # registry_loader and McpToolWrapper so the runtime can inspect posture
     # without reconstructing it from server name or continuity_mode heuristics.
     capability_metadata: McpCapabilityMetadata | None = None
+
+    # --- Daemon/socket transport fields (used when transport="unix_socket") ---
+    # Path to the Unix domain socket the daemon listens on.
+    socket_path: str | None = None
+    # Deterministic identity key for the running daemon instance. Used by
+    # lifecycle management to decide whether an existing daemon can be reused
+    # or must be restarted (e.g., after code or config changes).
+    server_instance_key: str | None = None
 
 
 @dataclass

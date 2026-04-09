@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from .base import Tool
@@ -11,6 +12,7 @@ from .introspection import DescribeToolTool, ListAvailableToolsTool
 
 class ToolRegistry:
     def __init__(self, workspace_root: Path, *, enable_native_browser_tools: bool = False):
+        self._lock = threading.Lock()
         self._tools: dict[str, Tool] = {}
         tools = [
             ReadFileTool(workspace_root),
@@ -35,21 +37,26 @@ class ToolRegistry:
         self._tools = {tool.name: tool for tool in tools}
 
     def register(self, tool: Tool) -> None:
-        self._tools[tool.name] = tool
+        with self._lock:
+            self._tools[tool.name] = tool
 
     def register_many(self, tools: list[Tool]) -> None:
-        for tool in tools:
-            self.register(tool)
+        with self._lock:
+            for tool in tools:
+                self._tools[tool.name] = tool
 
     def get(self, name: str) -> Tool:
-        try:
-            return self._tools[name]
-        except KeyError as exc:
-            available = ", ".join(sorted(self._tools.keys()))
-            raise KeyError(f"tool not found: {name}. available tools: {available}") from exc
+        with self._lock:
+            try:
+                return self._tools[name]
+            except KeyError as exc:
+                available = ", ".join(sorted(self._tools.keys()))
+                raise KeyError(f"tool not found: {name}. available tools: {available}") from exc
 
     def list_names(self) -> list[str]:
-        return sorted(self._tools.keys())
+        with self._lock:
+            return sorted(self._tools.keys())
 
     def list_tools(self) -> list[Tool]:
-        return [self._tools[name] for name in self.list_names()]
+        with self._lock:
+            return [self._tools[name] for name in sorted(self._tools.keys())]

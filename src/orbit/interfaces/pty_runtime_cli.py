@@ -68,23 +68,40 @@ def _append_pty_input_debug(path: Path | None, *, stage: str, state: RuntimeCliS
         pass
 
 
+DEFERRED_CAPABILITIES = ['git', 'bash', 'process', 'obsidian_tools']
+
+
 def _build_default_adapter(*, runtime_mode: str = "dev") -> RuntimeCliAdapter:
     adapter_import_started_at = time.perf_counter()
     from .runtime_adapter import RUNTIME_ADAPTER_IMPORT_PROFILE_TIMINGS, SESSION_MANAGER_IMPORT_PROFILE_TIMINGS, RuntimeAdapterConfig, SessionManagerRuntimeAdapter
     deferred_import_ms = round((time.perf_counter() - adapter_import_started_at) * 1000, 2)
     debug_log(f"pty_runtime_cli:runtime_adapter_deferred_import_ms={deferred_import_ms}")
     adapter_build_started_at = time.perf_counter()
-    adapter = SessionManagerRuntimeAdapter.build(RuntimeAdapterConfig(runtime_mode=runtime_mode))
+    # Minimal baseline: only filesystem is synchronous.
+    # git/bash/process/obsidian are activated in background after session-ready.
+    adapter = SessionManagerRuntimeAdapter.build(
+        RuntimeAdapterConfig(
+            runtime_mode=runtime_mode,
+            filesystem=True,
+            git=False,
+            bash=False,
+            process=False,
+            obsidian_tools=False,
+            knowledge_augmentation=False,
+        )
+    )
     debug_log(f"pty_runtime_cli:session_manager_runtime_adapter_build_ms={round((time.perf_counter() - adapter_build_started_at) * 1000, 2)}")
     if hasattr(adapter, 'startup_metrics') and isinstance(adapter.startup_metrics, dict):
         adapter.startup_metrics['runtime_adapter_deferred_import_ms'] = deferred_import_ms
+        adapter.startup_metrics['lazy_activation_baseline'] = ['filesystem']
+        adapter.startup_metrics['lazy_activation_deferred'] = list(DEFERRED_CAPABILITIES)
         heavy_runtime_adapter_imports = {k: v for k, v in RUNTIME_ADAPTER_IMPORT_PROFILE_TIMINGS.items() if isinstance(v, (int, float)) and v >= 50}
         if heavy_runtime_adapter_imports:
             adapter.startup_metrics['runtime_adapter_import_profile_timings'] = heavy_runtime_adapter_imports
         heavy_session_manager_imports = {k: v for k, v in SESSION_MANAGER_IMPORT_PROFILE_TIMINGS.items() if isinstance(v, (int, float)) and v >= 50}
         if heavy_session_manager_imports:
             adapter.startup_metrics['session_manager_import_profile_timings'] = heavy_session_manager_imports
-    debug_log("pty_runtime_cli:using_session_manager_runtime_adapter")
+    debug_log("pty_runtime_cli:using_session_manager_runtime_adapter (lazy baseline)")
     return adapter
 
 
@@ -96,15 +113,33 @@ def _start_background_submit(state: RuntimeCliState, adapter: RuntimeCliAdapter)
         state.runtime_busy = False
         return
 
+    submit_started_perf = time.perf_counter()
+    try:
+        debug_log(
+            f"pty_runtime_cli:submit_thread_start session_id={session_id} text_len={len(text)} approval={approval_resolution is not None}"
+        )
+    except Exception:
+        pass
+
     def _worker() -> None:
+        stream_completed_perf: float | None = None
+
         def _handle_partial_text(partial: str) -> None:
             state.assistant_inflight_text = partial
             state.assistant_inflight_dirty = True
 
         def _handle_stream_completed() -> None:
+            nonlocal stream_completed_perf
             # Called right after the SSE stream ends, before slow post-stream work
             # (normalize_events, memory capture). Clears the streaming banner
             # immediately so the UI does not appear stuck in streaming state.
+            stream_completed_perf = time.perf_counter()
+            try:
+                debug_log(
+                    f"pty_runtime_cli:stream_completed session_id={session_id} elapsed_ms={round((stream_completed_perf - submit_started_perf) * 1000, 2)}"
+                )
+            except Exception:
+                pass
             state.assistant_inflight_text = None
             state.assistant_inflight_dirty = True
 
@@ -132,6 +167,15 @@ def _start_background_submit(state: RuntimeCliState, adapter: RuntimeCliAdapter)
                     on_assistant_partial_text=_handle_partial_text,
                     on_stream_completed=_handle_stream_completed,
                 )
+                try:
+                    returned_at = time.perf_counter()
+                    debug_log(
+                        "pty_runtime_cli:adapter_send_returned "
+                        f"session_id={session_id} elapsed_ms={round((returned_at - submit_started_perf) * 1000, 2)} "
+                        f"post_stream_ms={round((returned_at - stream_completed_perf) * 1000, 2) if stream_completed_perf is not None else 'n/a'}"
+                    )
+                except Exception:
+                    pass
                 state.completed_submit_banner = f"Submitted to {session_id}"
                 state.completed_submit_error = None
         except Exception as exc:
@@ -146,6 +190,15 @@ def _start_background_submit(state: RuntimeCliState, adapter: RuntimeCliAdapter)
             state.completed_submit_banner = "Submit failed"
             state.completed_submit_error = repr(exc)
         finally:
+            busy_clear_at = time.perf_counter()
+            try:
+                debug_log(
+                    "pty_runtime_cli:submit_thread_finalize "
+                    f"session_id={session_id} total_ms={round((busy_clear_at - submit_started_perf) * 1000, 2)} "
+                    f"post_stream_to_busy_clear_ms={round((busy_clear_at - stream_completed_perf) * 1000, 2) if stream_completed_perf is not None else 'n/a'}"
+                )
+            except Exception:
+                pass
             state.runtime_busy = False
             state.pending_submit_text = ""
             state.pending_submit_session_id = None
@@ -196,14 +249,67 @@ def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None, *, runtime_mode
 
     def _warmup_worker() -> None:
         nonlocal runtime_adapter
-        if runtime_adapter is None or not hasattr(runtime_adapter, 'warmup_post_composer_capabilities'):
+        if runtime_adapter is None:
             state.warmup_done = True
+            state.bg_activation_done = True
             return
         try:
             state.warmup_started = True
             warmup_started_at = time.perf_counter()
-            timings = runtime_adapter.warmup_post_composer_capabilities()
-            state.startup_metrics.update(timings)
+
+            # Phase 1: legacy warmup (embedding prefetch etc.)
+            if hasattr(runtime_adapter, 'warmup_post_composer_capabilities'):
+                timings = runtime_adapter.warmup_post_composer_capabilities()
+                state.startup_metrics.update(timings)
+
+            # Phase 2: real background incremental activation of deferred capabilities
+            # Map obsidian_tools -> obsidian for the composer capability name
+            cap_map = {'obsidian_tools': 'obsidian'}
+            deferred = [cap_map.get(c, c) for c in DEFERRED_CAPABILITIES]
+            state.bg_capabilities_pending = list(deferred)
+            if state.bg_capabilities_pending and not state.runtime_busy:
+                state.banner = (
+                    "Session ready · loading extended tools in background: "
+                    + ", ".join(state.bg_capabilities_pending)
+                )
+
+            if hasattr(runtime_adapter, 'background_activate_capabilities'):
+                def _on_activated(cap: str, elapsed: float) -> None:
+                    if cap in state.bg_capabilities_pending:
+                        state.bg_capabilities_pending.remove(cap)
+                    state.bg_capabilities_activated.append(cap)
+                    if not state.runtime_busy:
+                        if state.bg_capabilities_pending:
+                            state.banner = (
+                                "Session ready · loading extended tools in background: "
+                                + ", ".join(state.bg_capabilities_pending)
+                            )
+                        else:
+                            state.banner = "Extended tools loaded"
+                    debug_log(f"pty_runtime_cli:bg_activated {cap} ({elapsed:.1f}ms)")
+
+                def _on_failed(cap: str, exc: Exception) -> None:
+                    if cap in state.bg_capabilities_pending:
+                        state.bg_capabilities_pending.remove(cap)
+                    state.bg_capabilities_failed.append(cap)
+                    if not state.runtime_busy:
+                        if state.bg_capabilities_pending:
+                            state.banner = (
+                                "Session ready · loading extended tools in background: "
+                                + ", ".join(state.bg_capabilities_pending)
+                            )
+                        else:
+                            state.banner = "Extended tool loading finished with some failures"
+                    debug_log(f"pty_runtime_cli:bg_failed {cap} ({exc!r})")
+
+                bg_metrics = runtime_adapter.background_activate_capabilities(
+                    deferred,
+                    on_capability_activated=_on_activated,
+                    on_capability_failed=_on_failed,
+                )
+                state.startup_metrics.update(bg_metrics)
+
+            state.bg_activation_done = True
             state.startup_metrics['warmup_worker_total_ms'] = round((time.perf_counter() - warmup_started_at) * 1000, 2)
             state.warmup_done = True
             state.warmup_error = None
@@ -222,6 +328,7 @@ def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None, *, runtime_mode
         except Exception as exc:
             state.warmup_error = repr(exc)
             state.warmup_done = True
+            state.bg_activation_done = True
             state.pending_warmup_submit = False
             debug_log(f"pty_runtime_cli:warmup_failed={exc!r}")
 

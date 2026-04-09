@@ -174,6 +174,8 @@ def status_body_lines(state: RuntimeCliState, adapter: RuntimeCliAdapter, width:
         "",
         f"adapter_kind={payload.get('adapter_kind')}",
         f"runtime_mode={payload.get('runtime_mode')}",
+        f"runtime_profile={payload.get('runtime_profile')}",
+        f"minimal_runtime_core={payload.get('minimal_runtime_core')}",
         f"workspace_root={payload.get('workspace_root')}",
         f"mode_policy_profile={payload.get('mode_policy_profile')}",
         f"active_build_id={payload.get('active_build_id')}",
@@ -217,6 +219,18 @@ def status_body_lines(state: RuntimeCliState, adapter: RuntimeCliAdapter, width:
                 details.extend(f"    {nested_key}={nested_value}" for nested_key, nested_value in filtered.items())
             else:
                 details.append(f"  {key}={value}")
+    # Background capability activation status
+    if state.bg_capabilities_activated or state.bg_capabilities_pending or state.bg_capabilities_failed:
+        details.append("")
+        details.append("background_capability_activation:")
+        if state.bg_capabilities_activated:
+            details.append(f"  activated: {', '.join(state.bg_capabilities_activated)}")
+        if state.bg_capabilities_pending:
+            details.append(f"  pending: {', '.join(state.bg_capabilities_pending)}")
+        if state.bg_capabilities_failed:
+            details.append(f"  failed: {', '.join(state.bg_capabilities_failed)}")
+        details.append(f"  done: {state.bg_activation_done}")
+
     for name in payload.get("registered_tool_names", []):
         details.append(f"  - {name}")
 

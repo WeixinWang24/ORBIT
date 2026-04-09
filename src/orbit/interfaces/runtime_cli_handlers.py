@@ -55,7 +55,7 @@ def is_printable_text_key(event: ParsedKey) -> bool:
 
 def handle_chat_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event: ParsedKey) -> bool:
     name = event.name
-    if name in {"left", "right"}:
+    if name in {"pageup", "pagedown"}:
         sessions = adapter.list_sessions()
         if not sessions:
             return False
@@ -65,7 +65,7 @@ def handle_chat_key(state: RuntimeCliState, adapter: RuntimeCliAdapter, event: P
                 if session.session_id == state.active_session_id:
                     current_index = index
                     break
-        delta = -1 if name == "left" else 1
+        delta = -1 if name == "pageup" else 1
         next_index = max(0, min(len(sessions) - 1, current_index + delta))
         target = sessions[next_index]
         state.selected_session = next_index

@@ -267,6 +267,23 @@ class TestCodexNormalizeEventsUsage(unittest.TestCase):
         self.assertIsNone(plan.metadata.get("usage"))
         self.assertIsNone(plan.metadata.get("model"))
 
+    def test_top_level_completion_usage_fallback_is_propagated(self):
+        backend = self._make_backend()
+        events = [
+            self._make_event({"type": "response.output_text.delta", "delta": "hi"}),
+            self._make_event({
+                "type": "response.completed",
+                "response_id": "r3",
+                "status": "completed",
+                "model": "gpt-5.4",
+                "usage": {"input_tokens": 22, "output_tokens": 9},
+            }),
+        ]
+        plan = backend.normalize_events(events)
+        self.assertEqual(plan.metadata["usage"], {"input_tokens": 22, "output_tokens": 9})
+        self.assertEqual(plan.metadata["model"], "gpt-5.4")
+        self.assertEqual(plan.metadata["response_id"], "r3")
+
 
 # ---------------------------------------------------------------------------
 # 4. Context accounting models
@@ -555,6 +572,21 @@ class TestUsageRecordedOnAllPlanningPaths(unittest.TestCase):
     and the rejection-continuation replan path, not only on the main turn path.
     """
 
+    def test_usage_survives_pending_snapshot_consumption(self):
+        """Main turn path: snapshot persistence must not overwrite freshly recorded
+        context usage with an older in-memory session object.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            mgr = _make_manager(_UsagePlanBackend(), tmp)
+            session = mgr.create_session(backend_name="test", model="gpt-test")
+            mgr.run_session_turn(session_id=session.session_id, user_input="hello")
+            session = mgr.get_session(session.session_id)
+            svc = ContextAccountingService()
+            snap = svc.get_usage_snapshot(session=session)
+            self.assertEqual(snap.totals.call_count, 1)
+            self.assertEqual(snap.totals.total_input_tokens, 25)
+            self.assertEqual(snap.totals.total_output_tokens, 8)
+
     def test_tool_closure_replan_records_usage(self):
         """Non-approval tool turn: both the initial plan and the post-tool replan
         should each contribute one usage record (2 total call_count).
@@ -587,7 +619,7 @@ class TestUsageRecordedOnAllPlanningPaths(unittest.TestCase):
             self.assertEqual(snap_after_request.totals.call_count, 1)
 
             # Reject the approval — triggers continuation replan (second provider call).
-            pending = session.metadata.get("pending_approval", {})
+            pending = ((session.metadata.get("capability_metadata") or {}).get("pending_approval") or {})
             approval_request_id = pending.get("approval_request_id")
             mgr.resolve_session_approval(
                 session_id=session.session_id,

@@ -73,3 +73,8 @@ class RuntimeCliState(RuntimeShellState):
     warmup_done: bool = False
     warmup_error: str | None = None
     pending_warmup_submit: bool = False
+    # Background capability activation state
+    bg_capabilities_pending: list[str] = field(default_factory=list)
+    bg_capabilities_activated: list[str] = field(default_factory=list)
+    bg_capabilities_failed: list[str] = field(default_factory=list)
+    bg_activation_done: bool = False

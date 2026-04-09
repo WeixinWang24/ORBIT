@@ -65,7 +65,7 @@ def bootstrap_local_filesystem_mcp_server(*, workspace_root: str, max_read_bytes
         command=str(ORBIT_CONDA_PYTHON),
         args=["-m", "mcp_servers.system.core.filesystem.stdio_server"],
         env=env,
-        continuity_mode="stateless",
+        continuity_mode="persistent_preferred",
         capability_metadata=_FILESYSTEM_CAPABILITY_METADATA,
     )
     return bootstrap_stdio_mcp_server(config)
@@ -78,10 +78,86 @@ def bootstrap_local_git_mcp_server(*, workspace_root: str) -> McpClientBootstrap
         command=str(ORBIT_CONDA_PYTHON),
         args=["-m", "mcp_servers.system.core.git.stdio_server"],
         env=env,
-        continuity_mode="stateless",
+        continuity_mode="persistent_preferred",
         capability_metadata=_GIT_CAPABILITY_METADATA,
     )
     return bootstrap_stdio_mcp_server(config)
+
+
+def bootstrap_local_filesystem_mcp_daemon(
+    *,
+    workspace_root: str,
+    max_read_bytes: int | None = None,
+) -> McpClientBootstrap:
+    """Bootstrap a filesystem MCP client that connects to a daemon over a Unix socket.
+
+    This creates the *client-side* bootstrap record only.  It does NOT start
+    the daemon process — that is handled by the lifecycle layer (phase 2).
+
+    The returned ``McpClientBootstrap`` carries all the information the future
+    connection layer needs: socket path, instance identity key, and capability
+    metadata.
+    """
+    from orbit.runtime.mcp.daemon_paths import filesystem_socket_path
+    from orbit.runtime.mcp.server_identity import build_filesystem_server_instance_key
+
+    sock = filesystem_socket_path(workspace_root)
+    instance_key = build_filesystem_server_instance_key(
+        workspace_root=workspace_root,
+        max_read_bytes=max_read_bytes,
+    )
+
+    return McpClientBootstrap(
+        server_name="filesystem",
+        normalized_name=normalize_name_for_mcp("filesystem"),
+        tool_prefix="",
+        transport="unix_socket",
+        # stdio fields — not used for daemon transport, but the dataclass
+        # requires them.  Empty string signals "not applicable".
+        command="",
+        args=[],
+        env={},
+        continuity_mode="persistent_preferred",
+        capability_metadata=_FILESYSTEM_CAPABILITY_METADATA,
+        socket_path=str(sock),
+        server_instance_key=instance_key,
+    )
+
+
+def bootstrap_local_obsidian_mcp_daemon(
+    *,
+    workspace_root: str,
+    vault_root: str,
+    max_read_chars: int | None = None,
+    max_results: int | None = None,
+) -> McpClientBootstrap:
+    """Bootstrap an Obsidian MCP client that connects to a daemon over a Unix socket.
+
+    This creates the *client-side* bootstrap record only.  It does NOT start
+    the daemon process — that is handled by the lifecycle layer.
+    """
+    from orbit.runtime.mcp.daemon_paths import obsidian_socket_path
+    from orbit.runtime.mcp.server_identity import build_obsidian_server_instance_key
+
+    sock = obsidian_socket_path(workspace_root)
+    instance_key = build_obsidian_server_instance_key(
+        vault_root=vault_root,
+        max_read_chars=max_read_chars,
+        max_results=max_results,
+    )
+
+    return McpClientBootstrap(
+        server_name="obsidian",
+        normalized_name=normalize_name_for_mcp("obsidian"),
+        tool_prefix="",
+        transport="unix_socket",
+        command="",
+        args=[],
+        env={},
+        continuity_mode="persistent_preferred",
+        socket_path=str(sock),
+        server_instance_key=instance_key,
+    )
 
 
 def bootstrap_local_obsidian_mcp_server(*, vault_root: str, max_read_chars: int | None = None, max_results: int | None = None) -> McpClientBootstrap:

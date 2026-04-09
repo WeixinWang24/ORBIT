@@ -29,7 +29,7 @@ def bootstrap_local_bash_mcp_server(*, workspace_root: str) -> McpClientBootstra
         command=sys.executable,
         args=[str(server_path)],
         env=env,
-        continuity_mode="stateless",
+        continuity_mode="persistent_preferred",
         capability_metadata=_BASH_CAPABILITY_METADATA,
     )
     return bootstrap_stdio_mcp_server(config)

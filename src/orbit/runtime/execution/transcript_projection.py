@@ -8,6 +8,8 @@ compatibility projection.
 
 from __future__ import annotations
 
+import json
+
 from orbit.models import ConversationMessage, MessageRole
 
 
@@ -76,6 +78,17 @@ def _codex_metadata(message: ConversationMessage) -> dict:
             data[key] = value
     return data
 
+
+
+def _codex_function_call_item(*, call_id: str, name: str, arguments: str) -> dict:
+    """Build a Codex-compatible function_call input item (assistant-side tool invocation)."""
+    return {
+        "type": "function_call",
+        "call_id": call_id,
+        "name": name,
+        "arguments": arguments,
+        "status": "completed",
+    }
 
 
 def _codex_function_call_output_item(*, call_id: str, output_text: str) -> dict:
@@ -176,6 +189,20 @@ def messages_to_codex_input(messages: list[ConversationMessage]) -> list[dict]:
                 )
             )
             continue
+        if message.role == MessageRole.ASSISTANT and kind == "tool_request_handoff":
+            provider_call_id = message.metadata.get("provider_call_id")
+            tool_name = message.metadata.get("tool_name")
+            input_payload = message.metadata.get("input_payload")
+            if isinstance(provider_call_id, str) and provider_call_id and isinstance(tool_name, str) and tool_name:
+                arguments_str = json.dumps(input_payload, default=str) if isinstance(input_payload, dict) else "{}"
+                projected.append(
+                    _codex_function_call_item(
+                        call_id=provider_call_id,
+                        name=tool_name,
+                        arguments=arguments_str,
+                    )
+                )
+                continue
         if message.role == MessageRole.ASSISTANT:
             projected.append(
                 {

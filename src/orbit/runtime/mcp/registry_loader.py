@@ -11,6 +11,10 @@ from orbit.tools.registry import ToolRegistry
 
 def _build_runtime_mcp_client(bootstrap: McpClientBootstrap):
     """Select the MCP client according to declared capability continuity posture."""
+    if bootstrap.transport == "unix_socket":
+        # Daemon socket clients are inherently persistent (the daemon stays
+        # alive); no need to route through the persistent stdio registry.
+        return build_mcp_client(bootstrap)
     mode = getattr(bootstrap, "continuity_mode", "stateless")
     if mode in {"persistent_preferred", "persistent_required"}:
         return PERSISTENT_MCP_CLIENT_REGISTRY.get_or_create(bootstrap)

@@ -174,6 +174,6 @@ class LongSessionScenarioRunner:
             turns=results,
             final_transcript=final_transcript,
             final_governed_tool_state=final_session.governed_tool_state.model_dump(mode='json') if final_session.governed_tool_state else None,
-            session_terminated=bool(final_session.metadata.get('terminated')),
-            termination_reason=final_session.metadata.get('termination_reason'),
+            session_terminated=bool((final_session.metadata.get('core_runtime_metadata') or {}).get('terminated')),
+            termination_reason=(final_session.metadata.get('core_runtime_metadata') or {}).get('termination_reason'),
         )

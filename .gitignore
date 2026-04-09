@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .idea/
 .orbit/
+.orbit_mcp/
 workspace/*
 !workspace/.gitkeep
 !workspace/PROMPT.md

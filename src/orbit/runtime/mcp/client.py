@@ -285,7 +285,85 @@ def _tool_result_from_mcp_result(result: Any) -> ToolResult:
     )
 
 
+@dataclass
+class UnixSocketMcpClient:
+    """MCP client that talks to a filesystem daemon over a Unix domain socket.
+
+    Uses the ORBIT-local daemon socket protocol (see ``socket_protocol.py``),
+    NOT standard MCP-over-stdio.  This is a transitional phase 3 transport
+    scoped to the filesystem daemon.  The protocol is request-per-connection
+    newline-delimited JSON.
+    """
+    bootstrap: McpClientBootstrap
+    timeout_seconds: float = 30.0
+
+    def __post_init__(self) -> None:
+        if not self.bootstrap.socket_path:
+            raise ValueError(
+                "unix_socket transport requires a socket_path in the bootstrap, "
+                f"but got None for server={self.bootstrap.server_name!r}"
+            )
+
+    def _send(self, request: dict[str, Any]) -> dict[str, Any]:
+        from orbit.runtime.mcp.socket_protocol import send_request
+        return send_request(
+            self.bootstrap.socket_path,
+            request,
+            timeout_seconds=self.timeout_seconds,
+        )
+
+    def list_tools(self) -> list[McpToolDescriptor]:
+        resp = self._send({"kind": "list_tools"})
+        if not resp.get("ok"):
+            raise RuntimeError(f"daemon list_tools failed: {resp.get('error', 'unknown')}")
+        descriptors: list[McpToolDescriptor] = []
+        for item in resp.get("payload", []):
+            name = item.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            descriptors.append(McpToolDescriptor(
+                server_name=self.bootstrap.server_name,
+                original_name=name,
+                orbit_tool_name=name,
+                description=item.get("description"),
+                input_schema=item.get("inputSchema"),
+            ))
+        return descriptors
+
+    async def async_list_tools(self) -> list[McpToolDescriptor]:
+        return self.list_tools()
+
+    def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> ToolResult:
+        resp = self._send({"kind": "call_tool", "tool_name": tool_name, "arguments": arguments})
+        if not resp.get("ok"):
+            return ToolResult(ok=False, content=resp.get("error", "daemon call_tool failed"), data=None)
+        payload = resp.get("payload", {})
+        content = payload.get("content", "")
+        is_error = bool(payload.get("isError", False))
+        structured = payload.get("structuredContent")
+        failure_layer = structured.get("failure_layer") if isinstance(structured, dict) else None
+        return ToolResult(
+            ok=(not is_error) and failure_layer is None,
+            content=content,
+            data={"failure_layer": failure_layer, "raw_result": payload},
+        )
+
+    async def async_call_tool(self, tool_name: str, arguments: dict[str, Any]) -> ToolResult:
+        return self.call_tool(tool_name, arguments)
+
+    def list_resources(self) -> list[McpResourceDescriptor]:
+        return []
+
+    def read_resource(self, uri: str) -> list[McpResourceContent]:
+        raise NotImplementedError("resource reads not supported over daemon socket transport")
+
+    def close(self) -> None:
+        pass
+
+
 def build_mcp_client(bootstrap: McpClientBootstrap) -> McpClient:
     if bootstrap.transport == "stdio":
         return StdioMcpClient(bootstrap=bootstrap)
+    if bootstrap.transport == "unix_socket":
+        return UnixSocketMcpClient(bootstrap=bootstrap)
     raise ValueError(f"unsupported MCP transport: {bootstrap.transport}")

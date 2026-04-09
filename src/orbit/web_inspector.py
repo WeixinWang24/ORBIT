@@ -521,12 +521,14 @@ def _html_page(*, sessions, current_session, transcript, events, artifacts, meta
     )
 
     metadata_json = json.dumps(metadata, indent=2, ensure_ascii=False)
+    surface_meta = metadata.get("surface_projection_metadata") if isinstance(metadata.get("surface_projection_metadata"), dict) else {}
+    payload_snapshot = surface_meta.get("last_provider_payload")
     payload_json = (
-        json.dumps(metadata.get("last_provider_payload"), indent=2, ensure_ascii=False)
-        if metadata.get("last_provider_payload") is not None
+        json.dumps(payload_snapshot, indent=2, ensure_ascii=False)
+        if payload_snapshot is not None
         else "No payload snapshot available."
     )
-    context_data = metadata.get("last_context_assembly")
+    context_data = surface_meta.get("last_context_assembly")
 
     title = current_session_id or "No session selected"
     transcript_tab_class = "tab active" if active_tab == "transcript" else "tab"
@@ -570,8 +572,8 @@ def _html_page(*, sessions, current_session, transcript, events, artifacts, meta
             "assembly_version": (context_data or {}).get("assembly_version"),
             "workspace_prompt_source": (context_data or {}).get("workspace_prompt_source"),
             "workspace_prompt_sha1": (context_data or {}).get("workspace_prompt_sha1"),
-            "last_context_assembly": metadata.get("last_context_assembly"),
-            "last_provider_payload": metadata.get("last_provider_payload"),
+            "last_context_assembly": surface_meta.get("last_context_assembly"),
+            "last_provider_payload": surface_meta.get("last_provider_payload"),
             "last_auth_failure": metadata.get("last_auth_failure"),
         },
         indent=2,

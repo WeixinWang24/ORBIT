@@ -8,6 +8,7 @@ from orbit.models.core import new_id
 from orbit.runtime.core.events import RuntimeEventType
 from orbit.runtime.execution.contracts.plans import ExecutionPlan
 from orbit.runtime.governance.tool_approval_policy import PolicyDecision, PolicyEvaluationInput, evaluate_tool_approval_policy
+from orbit.runtime.extensions.metadata_channels import capability_metadata
 
 
 class ToolGovernanceService:
@@ -143,7 +144,7 @@ class ToolGovernanceService:
         self.set_governed_tool_state(session, current.transition(new_state, note=note))
 
     def set_pending_approval(self, session, pending: dict) -> None:
-        session.metadata["pending_approval"] = pending
+        capability_metadata(session.metadata)["pending_approval"] = pending
         governed_state = GovernedToolState(
             tool_name=pending["tool_request"].get("tool_name", "unknown"),
             state="waiting_for_approval",
@@ -154,7 +155,7 @@ class ToolGovernanceService:
         self.set_governed_tool_state(session, governed_state)
 
     def clear_pending_approval(self, session) -> None:
-        session.metadata.pop("pending_approval", None)
+        capability_metadata(session.metadata).pop("pending_approval", None)
         session.updated_at = datetime.now(timezone.utc)
         self.session_manager.store.save_session(session)
 
@@ -276,7 +277,7 @@ class ToolGovernanceService:
         session = self.session_manager.get_session(session_id)
         if session is None:
             raise ValueError(f"session not found: {session_id}")
-        if session.metadata.get("terminated"):
+        if (session.metadata.get("core_runtime_metadata") or {}).get("terminated"):
             raise ValueError(f"cannot reauthorize terminated session: {session_id}")
 
         tracking = session.metadata.setdefault("policy_tracking", {})

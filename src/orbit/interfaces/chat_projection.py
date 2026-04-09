@@ -59,6 +59,32 @@ class ChatProjection:
     assistant_inflight_text: str | None = None
 
 
+def _compact_tool_result_label(msg, width: int) -> str:
+    metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+    tool_projection = metadata.get("tool_projection") if isinstance(metadata.get("tool_projection"), dict) else {}
+    tool_name = tool_projection.get("tool_name") or metadata.get("tool_name") or "unknown"
+    message_kind = msg.message_kind or metadata.get("message_kind") or "tool_result"
+    if message_kind == "capability_result":
+        status = "ok"
+    elif message_kind == "approval_result":
+        status = "waiting for approval"
+    elif message_kind == "runtime_failure":
+        status = "error"
+    else:
+        lowered = (msg.content or "").strip().lower()
+        if "outside_allowed_root" in lowered or "blocked" in lowered or "deny" in lowered:
+            status = "blocked"
+        elif lowered:
+            status = "ok"
+        else:
+            status = "done"
+    line = f"Tool result · {tool_name} · {status}"
+    max_width = max(20, width)
+    if len(line) > max_width:
+        line = line[: max(0, max_width - 1)] + "…"
+    return line
+
+
 def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy: bool, pending_submit_session_id: str | None, pending_submit_text: str, submit_started_at: float | None, assistant_inflight_text: str | None, accent_user: str, accent_assistant: str, accent_warning: str, accent_muted: str, content_user: str = "", content_assistant: str = "", approval_picker_index: int = 0, approval_action_pending: bool = False, approval_action_label: str | None = None, chat_history_limit: int = 20) -> ChatProjection:
     lines: list[str] = []
     body: list[str] = []
@@ -78,26 +104,8 @@ def build_chat_projection(*, adapter, session_id: str, width: int, runtime_busy:
         label = msg.role.upper() if not msg.message_kind else f"{msg.role.upper()} [{msg.message_kind}]"
 
         # ── TOOL result ───────────────────────────────────────────────────
-        if msg.message_kind == "tool_result":
-            tool_name = None
-            tool_ok = None
-            if isinstance(msg.metadata, dict):
-                tool_name = msg.metadata.get("tool_name")
-                tool_ok = msg.metadata.get("tool_ok")
-            tool_label = f"TOOL [tool_result] tool={tool_name or 'unknown'}"
-            status_text = " status=ok" if tool_ok is True else " status=error" if tool_ok is False else ""
-            compact = (tool_label + status_text).replace("\n", " ")
-            max_width = max(20, width)
-            if len(compact) > max_width:
-                compact = compact[: max(0, max_width - 1)] + "…"
-                status_text = ""          # may have been trimmed away
-                tool_label = compact
-            status_color = T.FG_GREEN if tool_ok is True else T.FG_RED if tool_ok is False else ""
-            # TOOL label in assistant purple; status suffix keeps green/red.
-            body.append(
-                accent_assistant + tool_label + T.RESET
-                + status_color + status_text + T.RESET
-            )
+        if msg.role == "tool" or msg.message_kind in {"tool_result", "capability_result"}:
+            body.append(accent_assistant + _compact_tool_result_label(msg, width) + T.RESET)
             body.append("")
             continue
 
