@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from orbit.runtime.project_env import get_obsidian_vault_root
+
 from orbit.runtime.mcp.bootstrap import (
     bootstrap_local_filesystem_mcp_server,  # kept as fallback reference
     bootstrap_local_git_mcp_server,
@@ -168,8 +170,7 @@ class RuntimeCapabilityComposer:
                 bootstrap_factory=lambda: bootstrap_local_browser_mcp_server(workspace_root=self.workspace_root),
             )
         if profile.obsidian:
-            import os
-            vault_root = os.environ.get('ORBIT_OBSIDIAN_VAULT_ROOT', '').strip()
+            vault_root = get_obsidian_vault_root()
             if vault_root:
                 self._activate_mcp_family(
                     bundle=bundle,
@@ -203,10 +204,6 @@ class RuntimeCapabilityComposer:
 
         factory = self._bootstrap_factory_for(capability, bundle=bundle)
         if factory is None:
-            import logging
-            logging.getLogger(__name__).warning(
-                "ensure_capability: no bootstrap factory for %r (env gating or unknown capability)", capability
-            )
             return False
 
         self._activate_mcp_family(bundle=bundle, capability=capability, bootstrap_factory=factory)
@@ -221,7 +218,6 @@ class RuntimeCapabilityComposer:
 
     def _bootstrap_factory_for(self, capability: str, *, bundle: RuntimeCapabilityBundle):
         """Return the bootstrap factory callable for a capability name, or None."""
-        import os
         factories = {
             'filesystem': lambda: self._filesystem_bootstrap_with_fallback(bundle),
             'git': lambda: bootstrap_local_git_mcp_server(workspace_root=self.workspace_root),
@@ -233,7 +229,7 @@ class RuntimeCapabilityComposer:
             'browser': lambda: bootstrap_local_browser_mcp_server(workspace_root=self.workspace_root),
         }
         if capability == 'obsidian':
-            vault_root = os.environ.get('ORBIT_OBSIDIAN_VAULT_ROOT', '').strip()
+            vault_root = get_obsidian_vault_root()
             if vault_root:
                 return lambda: self._obsidian_bootstrap_with_fallback(vault_root=vault_root, bundle=bundle)
             return None

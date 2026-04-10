@@ -20,7 +20,8 @@ class OpenAIAuthStore:
     """Persist OpenAI OAuth credentials inside ORBIT's repo-local runtime area."""
 
     def __init__(self, repo_root: Path, relative_path: Path = DEFAULT_OPENAI_AUTH_STORE_PATH):
-        self.repo_root = repo_root
+        shared_repo_root = os.getenv("ORBIT_SHARED_REPO_ROOT", "").strip()
+        self.repo_root = Path(shared_repo_root).resolve() if shared_repo_root else repo_root
         self.relative_path = relative_path
 
     @property
