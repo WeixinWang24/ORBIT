@@ -8,11 +8,6 @@ def test_runtime_adapter_contract_surface_is_declared() -> None:
     config = RuntimeAdapterConfig()
     assert config.model == "gpt-5.4"
     assert config.runtime_profile == "runtime_core_minimal"
-    assert config.enable_tools is True
-    assert config.filesystem is False
-    assert config.bash is False
-    assert config.process is False
-    assert config.git is False
 
 
 def test_runtime_adapter_mcp_default_profile_mounts_filesystem_only() -> None:

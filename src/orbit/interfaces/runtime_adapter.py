@@ -12,7 +12,7 @@ from orbit.interfaces.pty_debug import debug_log
 from orbit.runtime.core.session_manager import SESSION_MANAGER_IMPORT_PROFILE_TIMINGS, SessionManager
 from orbit.runtime.operations.context_usage_service import ContextAccountingService
 from orbit.runtime.capabilities.composer import RuntimeCapabilityBundle, RuntimeCapabilityComposer
-from orbit.interfaces.runtime_profile import RuntimeProfileName, RuntimeProfileSpec, resolve_runtime_profile, spec_from_capability_overrides
+from orbit.interfaces.runtime_profile import RuntimeProfileName, RuntimeProfileSpec, resolve_runtime_profile
 from orbit.runtime.governance.build_state_store import BuildStateStore
 from orbit.runtime.governance.protocol.mode import RuntimeMode, build_policy_profile_for_mode, mode_policy_summary, workspace_root_for_runtime_mode
 from orbit.runtime.auth.storage.openai_store import OpenAIAuthStoreError
@@ -43,71 +43,14 @@ from .contracts import (
 
 @dataclass
 class RuntimeAdapterConfig:
-    """Profile-first runtime adapter config.
-
-    `runtime_profile` is the primary public selection surface.
-    The capability booleans below remain only as deprecated compatibility
-    overrides for transitional callers; new code should prefer named profiles
-    (or an explicit `RuntimeProfileSpec`) instead of mixing direct flags here.
-    """
+    """Profile-only runtime adapter config."""
 
     model: str = "gpt-5.4"
     runtime_mode: RuntimeMode = "dev"
     runtime_profile: RuntimeProfileName = "runtime_core_minimal"
 
-    # Deprecated compatibility overrides; prefer runtime_profile / RuntimeProfileSpec.
-    enable_tools: bool = True
-    filesystem: bool = False
-    git: bool = False
-    bash: bool = False
-    process: bool = False
-    pytest: bool = False
-    ruff: bool = False
-    mypy: bool = False
-    browser: bool = False
-    obsidian_tools: bool = False
-    knowledge_augmentation: bool = False
-    memory: bool = False
-
     def resolve_spec(self) -> RuntimeProfileSpec:
-        """Resolve the canonical runtime profile spec.
-
-        Profile-first resolution is the default path. Deprecated boolean fields
-        are only consulted when a caller explicitly overrides them.
-        """
-        explicit_capability_override = any(
-            (
-                self.filesystem,
-                self.git,
-                self.bash,
-                self.process,
-                self.pytest,
-                self.ruff,
-                self.mypy,
-                self.browser,
-                self.obsidian_tools,
-                self.knowledge_augmentation,
-                self.memory,
-                self.enable_tools is not True,
-            )
-        )
-        if explicit_capability_override:
-            return spec_from_capability_overrides(
-                runtime_mode=self.runtime_mode,
-                model=self.model,
-                enable_tools=self.enable_tools,
-                filesystem=self.filesystem,
-                git=self.git,
-                bash=self.bash,
-                process=self.process,
-                pytest=self.pytest,
-                ruff=self.ruff,
-                mypy=self.mypy,
-                browser=self.browser,
-                obsidian_tools=self.obsidian_tools,
-                knowledge_augmentation=self.knowledge_augmentation,
-                memory=self.memory,
-            )
+        """Resolve the canonical runtime profile spec."""
         return resolve_runtime_profile(
             self.runtime_profile,
             runtime_mode=self.runtime_mode,

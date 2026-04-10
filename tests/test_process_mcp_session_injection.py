@@ -17,11 +17,9 @@ class ProcessMcpSessionInjectionTests(unittest.TestCase):
         adapter = SessionManagerRuntimeAdapter.build(
             config=RuntimeAdapterConfig(
                 runtime_profile="mcp_default",
-                filesystem=True,
-                bash=True,
-                process=True,
             )
         )
+        adapter.background_activate_capabilities(["bash", "process"])
 
         tool_names = {tool.tool_name for tool in adapter.list_available_tools()}
         self.assertIn("start_process", tool_names)

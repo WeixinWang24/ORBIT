@@ -115,11 +115,7 @@ def test_background_activate_via_adapter(workspace_root):
     adapter = SessionManagerRuntimeAdapter.build(
         RuntimeAdapterConfig(
             runtime_mode="dev",
-            filesystem=True,
-            git=False,
-            bash=False,
-            process=False,
-            obsidian_tools=False,
+            runtime_profile="mcp_default",
         )
     )
     baseline_ms = (time.perf_counter() - t0) * 1000
@@ -158,6 +154,35 @@ def test_background_activate_via_adapter(workspace_root):
     assert final_tools > baseline_tools
 
 
+def test_background_activate_obsidian_skip_does_not_fail(workspace_root, monkeypatch):
+    """Optional obsidian background activation should settle as skipped, not failed or stuck."""
+    from orbit.interfaces.runtime_adapter import RuntimeAdapterConfig, SessionManagerRuntimeAdapter
+    from orbit.runtime import project_env
+
+    monkeypatch.setattr(project_env, 'load_env_local', lambda override=True: False)
+    old_val = os.environ.pop('ORBIT_OBSIDIAN_VAULT_ROOT', None)
+    try:
+        adapter = SessionManagerRuntimeAdapter.build(
+            RuntimeAdapterConfig(
+                runtime_mode="dev",
+                runtime_profile="mcp_default",
+            )
+        )
+        activated_caps = []
+        failed_caps = []
+        metrics = adapter.background_activate_capabilities(
+            ['obsidian'],
+            on_capability_activated=lambda cap, elapsed: activated_caps.append(cap),
+            on_capability_failed=lambda cap, exc: failed_caps.append(cap),
+        )
+        assert activated_caps == ['obsidian']
+        assert failed_caps == []
+        assert metrics.get('bg_obsidian_skipped') is True
+    finally:
+        if old_val is not None:
+            os.environ['ORBIT_OBSIDIAN_VAULT_ROOT'] = old_val
+
+
 def test_full_activation_still_works(workspace_root):
     """Full activation path is preserved (not broken by lazy changes)."""
     from orbit.runtime.capabilities.composer import RuntimeCapabilityProfile
@@ -174,18 +199,44 @@ def test_full_activation_still_works(workspace_root):
     print(f"\nFull activation: {sorted(bundle.enabled_capabilities)}, {len(bundle.tool_registry.list_tools())} tools")
 
 
-def test_obsidian_env_gating(workspace_root):
-    """Obsidian ensure_capability respects ORBIT_OBSIDIAN_VAULT_ROOT env gating."""
+def test_obsidian_env_gating(workspace_root, monkeypatch):
+    """Obsidian ensure_capability is skipped when neither env nor project-local config provides a vault root."""
     from orbit.runtime.capabilities.composer import RuntimeCapabilityProfile
+    from orbit.runtime import project_env
 
     composer = _make_composer(workspace_root)
     bundle = composer.activate(RuntimeCapabilityProfile(filesystem=True))
 
-    # Without env var set, obsidian should not activate
     old_val = os.environ.pop('ORBIT_OBSIDIAN_VAULT_ROOT', None)
+    monkeypatch.setattr(project_env, 'load_env_local', lambda override=True: False)
     try:
         activated = composer.ensure_capability(bundle, 'obsidian')
-        assert activated is False, "obsidian should not activate without ORBIT_OBSIDIAN_VAULT_ROOT"
+        assert activated is False, "obsidian should not activate without env or .env.local vault config"
     finally:
         if old_val is not None:
+            os.environ['ORBIT_OBSIDIAN_VAULT_ROOT'] = old_val
+
+
+def test_obsidian_env_local_fallback(workspace_root, monkeypatch):
+    """Obsidian ensure_capability may activate from project-local .env.local-backed config."""
+    from orbit.runtime.capabilities.composer import RuntimeCapabilityProfile
+    from orbit.runtime import project_env
+
+    composer = _make_composer(workspace_root)
+    bundle = composer.activate(RuntimeCapabilityProfile(filesystem=True))
+
+    old_val = os.environ.pop('ORBIT_OBSIDIAN_VAULT_ROOT', None)
+
+    def _fake_load_env_local(*, override=True):
+        os.environ['ORBIT_OBSIDIAN_VAULT_ROOT'] = '/Volumes/2TB/MAS/vio_vault'
+        return True
+
+    monkeypatch.setattr(project_env, 'load_env_local', _fake_load_env_local)
+    try:
+        activated = composer.ensure_capability(bundle, 'obsidian')
+        assert activated is True, 'obsidian should activate when .env.local fallback provides a vault root'
+    finally:
+        if old_val is None:
+            os.environ.pop('ORBIT_OBSIDIAN_VAULT_ROOT', None)
+        else:
             os.environ['ORBIT_OBSIDIAN_VAULT_ROOT'] = old_val
