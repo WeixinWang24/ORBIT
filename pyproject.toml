@@ -28,3 +28,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/orbit", "src/mcp_servers"]
+exclude = [
+  "src/orbit/notebook/**",
+  "src/orbit/runtime/testing/**",
+]

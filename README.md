@@ -30,6 +30,8 @@ It is not currently intended to be:
 
 Use the dedicated Conda environment for ORBIT work.
 
+Project-local machine configuration can be persisted in `.env.local` at the repo root. ORBIT now loads this file as part of CLI/runtime startup, so values such as `ORBIT_OBSIDIAN_VAULT_ROOT` do not need to be re-exported manually every run. The existing helper `./scripts/bootstrap.sh obsidian` is part of this same persistence path and writes the vault setting into `.env.local` for you.
+
 ```bash
 cd /Volumes/2TB/MAS/openclaw-core/ORBIT
 source /Users/visen24/anaconda3/etc/profile.d/conda.sh
@@ -133,17 +135,71 @@ This is a first-slice shared-environment model:
 Recommended operational sequence:
 
 ```bash
+# 0) enter the ORBIT repo with the dedicated Conda env
+source /Users/visen24/anaconda3/etc/profile.d/conda.sh
+conda activate Orbit
+cd /Volumes/2TB/MAS/openclaw-core/ORBIT
+
+# optional but recommended: persist Obsidian vault config once in .env.local
+# either use the interactive bootstrap helper:
+#   ./scripts/bootstrap.sh obsidian
+# or create/edit .env.local manually:
+#   cp .env.local.example .env.local
+#   export ORBIT_OBSIDIAN_VAULT_ROOT="/absolute/path/to/your/obsidian/vault"
+
 # 1) create and materialize a candidate build for evo mode
 python apps/orbit_build_cli.py materialize-candidate --mode evo
 
-# 2) promote that candidate to active
+# 2) inspect current build pointers if desired
+python - <<'PY'
+from orbit.runtime.governance.build_state_store import BuildStateStore
+store = BuildStateStore()
+pointer = store.load_activation_pointer()
+print(pointer.model_dump_json(indent=2))
+PY
+
+# 3) promote that candidate to active
 python apps/orbit_build_cli.py promote-candidate
 
-# 3) inspect what command the active build will launch with
+# 4) inspect what command the active build will launch with
 python apps/orbit_build_cli.py print-active-launch
 
-# 4) launch the current active build
+# 5) launch the current active build
 python apps/orbit_launch_active.py
+```
+
+One-line full flow:
+
+```bash
+source /Users/visen24/anaconda3/etc/profile.d/conda.sh && \
+conda activate Orbit && \
+cd /Volumes/2TB/MAS/openclaw-core/ORBIT && \
+python apps/orbit_build_cli.py materialize-candidate --mode evo && \
+python apps/orbit_build_cli.py promote-candidate && \
+python apps/orbit_build_cli.py print-active-launch && \
+python apps/orbit_launch_active.py
+```
+
+Launch latest candidate without promoting:
+
+```bash
+source /Users/visen24/anaconda3/etc/profile.d/conda.sh
+conda activate Orbit
+cd /Volumes/2TB/MAS/openclaw-core/ORBIT
+
+python - <<'PY'
+from orbit.runtime.governance.build_state_store import BuildStateStore
+import subprocess
+
+store = BuildStateStore()
+pointer = store.load_activation_pointer()
+build_id = pointer.candidate_build_id
+if not build_id:
+    raise SystemExit("no candidate build configured")
+cmd = store.stable_launch_command_for_build(build_id)
+print("Launching:", " ".join(cmd))
+raise SystemExit(subprocess.call(cmd))
+PY
 ```
 
 Notes:
@@ -152,6 +208,8 @@ Notes:
 - build provenance now includes source identity / dirty-state tracking to support later active-baseline understanding
 - they are distinct from the new self-change/build-management runtime records
 - in the current first slice, self-change/build-management is governance/runtime truth, while build CLI commands remain the launcher/runtime-build control surface
+- Obsidian vault persistence path is now unified: `./scripts/bootstrap.sh obsidian` writes `ORBIT_OBSIDIAN_VAULT_ROOT` into `.env.local`, and runtime startup loads `.env.local` automatically
+- if `ORBIT_OBSIDIAN_VAULT_ROOT` is absent in both the live environment and `.env.local`, the runtime now silently skips Obsidian MCP activation instead of blocking startup
 
 ## Environment and persistence direction
 
