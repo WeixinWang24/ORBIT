@@ -42,3 +42,11 @@ def test_profile_first_builder_prefers_named_profile_entry() -> None:
     assert manager.metadata["runtime_profile"] == "mcp_default"
     assert "filesystem" in bundle.enabled_capabilities
     assert "git" not in bundle.enabled_capabilities
+
+
+def test_profile_first_builder_supports_runtime_core_minimal_name() -> None:
+    spec = resolve_runtime_profile("runtime_core_minimal", runtime_mode="evo")
+    manager, _composer, bundle = build_codex_session_manager_for_profile(profile=spec)
+    assert manager.runtime_mode == "evo"
+    assert manager.metadata["runtime_profile"] == "runtime_core_minimal"
+    assert bundle.enabled_capabilities == set()
