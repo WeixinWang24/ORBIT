@@ -110,6 +110,12 @@ class RuntimeAdapterConfig:
 
 
 def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev", runtime_profile: RuntimeProfileName = "runtime_core_minimal", profile_spec: RuntimeProfileSpec | None = None, enable_tools: bool = True, filesystem: bool = False, git: bool = False, bash: bool = False, process: bool = False, pytest: bool = False, ruff: bool = False, mypy: bool = False, browser: bool = False, obsidian_tools: bool = False, knowledge_augmentation: bool = False, memory: bool = False) -> tuple[SessionManager, RuntimeCapabilityComposer, RuntimeCapabilityBundle]:
+    """Legacy compatibility builder.
+
+    Prefer ``build_codex_session_manager_for_profile(profile=...)`` for new code.
+    This function remains as a compatibility bridge while older tests/callers are
+    migrated off the kwargs-based capability surface.
+    """
     resolved_spec = profile_spec or spec_from_capability_overrides(
         runtime_mode=runtime_mode,
         model=model,
@@ -304,11 +310,8 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
         config = config or RuntimeAdapterConfig()
         t0 = time.perf_counter()
         resolved_spec = config.resolve_spec()
-        session_manager, capability_composer, capability_bundle = build_codex_session_manager(
-            model=resolved_spec.model,
-            runtime_mode=resolved_spec.runtime_mode,
-            runtime_profile=resolved_spec.name,
-            profile_spec=resolved_spec,
+        session_manager, capability_composer, capability_bundle = build_codex_session_manager_for_profile(
+            profile=resolved_spec,
         )
         t1 = time.perf_counter()
         build_state_store = BuildStateStore()
