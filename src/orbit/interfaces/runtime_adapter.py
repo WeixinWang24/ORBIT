@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import json
 import sys
 import time
@@ -43,9 +43,19 @@ from .contracts import (
 
 @dataclass
 class RuntimeAdapterConfig:
+    """Profile-first runtime adapter config.
+
+    `runtime_profile` is the primary public selection surface.
+    The capability booleans below remain only as deprecated compatibility
+    overrides for transitional callers; new code should prefer named profiles
+    (or an explicit `RuntimeProfileSpec`) instead of mixing direct flags here.
+    """
+
     model: str = "gpt-5.4"
     runtime_mode: RuntimeMode = "dev"
     runtime_profile: RuntimeProfileName = "runtime_core_minimal"
+
+    # Deprecated compatibility overrides; prefer runtime_profile / RuntimeProfileSpec.
     enable_tools: bool = True
     filesystem: bool = False
     git: bool = False
@@ -60,6 +70,11 @@ class RuntimeAdapterConfig:
     memory: bool = False
 
     def resolve_spec(self) -> RuntimeProfileSpec:
+        """Resolve the canonical runtime profile spec.
+
+        Profile-first resolution is the default path. Deprecated boolean fields
+        are only consulted when a caller explicitly overrides them.
+        """
         explicit_capability_override = any(
             (
                 self.filesystem,
