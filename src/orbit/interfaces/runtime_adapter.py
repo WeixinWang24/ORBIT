@@ -109,31 +109,13 @@ class RuntimeAdapterConfig:
         )
 
 
-def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev", runtime_profile: RuntimeProfileName = "runtime_core_minimal", profile_spec: RuntimeProfileSpec | None = None, enable_tools: bool = True, filesystem: bool = False, git: bool = False, bash: bool = False, process: bool = False, pytest: bool = False, ruff: bool = False, mypy: bool = False, browser: bool = False, obsidian_tools: bool = False, knowledge_augmentation: bool = False, memory: bool = False) -> tuple[SessionManager, RuntimeCapabilityComposer, RuntimeCapabilityBundle]:
-    """Legacy compatibility builder.
+def build_codex_session_manager_for_profile(*, profile: RuntimeProfileSpec) -> tuple[SessionManager, RuntimeCapabilityComposer, RuntimeCapabilityBundle]:
+    """Profile-first builder for the codex-backed session manager.
 
-    Prefer ``build_codex_session_manager_for_profile(profile=...)`` for new code.
-    This function remains as a compatibility bridge while older tests/callers are
-    migrated off the kwargs-based capability surface.
+    This is the canonical runtime-surface entrypoint for codex-backed session
+    manager assembly.
     """
-    resolved_spec = profile_spec or spec_from_capability_overrides(
-        runtime_mode=runtime_mode,
-        model=model,
-        enable_tools=enable_tools,
-        filesystem=filesystem,
-        git=git,
-        bash=bash,
-        process=process,
-        pytest=pytest,
-        ruff=ruff,
-        mypy=mypy,
-        browser=browser,
-        obsidian_tools=obsidian_tools,
-        knowledge_augmentation=knowledge_augmentation,
-        memory=memory,
-    )
-    if profile_spec is None and not any((filesystem, git, bash, process, pytest, ruff, mypy, browser, obsidian_tools, knowledge_augmentation, memory, enable_tools is not True)):
-        resolved_spec = resolve_runtime_profile(runtime_profile, runtime_mode=runtime_mode, model=model)
+    resolved_spec = profile
 
     t0 = time.perf_counter()
     workspace_root = workspace_root_for_runtime_mode(resolved_spec.runtime_mode)
@@ -188,22 +170,6 @@ def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev"
         "capability_activation_metrics": dict(bundle.activation_metrics),
     }
     return manager, composer, bundle
-
-
-def build_codex_session_manager_for_profile(*, profile: RuntimeProfileSpec) -> tuple[SessionManager, RuntimeCapabilityComposer, RuntimeCapabilityBundle]:
-    """Profile-first builder for the codex-backed session manager.
-
-    This is the preferred public entrypoint for new callers. Legacy call sites may
-    still use ``build_codex_session_manager(...)`` with compatibility overrides,
-    but the named profile/spec path is now the canonical runtime-surface entry.
-    """
-    return build_codex_session_manager(
-        model=profile.model,
-        runtime_mode=profile.runtime_mode,
-        runtime_profile=profile.name,
-        profile_spec=profile,
-    )
-
 
 def get_pending_session_approval(session_manager: SessionManager, session_id: str) -> dict | None:
     session = session_manager.get_session(session_id)
@@ -270,8 +236,11 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
                         surface = self.session_manager.capability_surface
                         if hasattr(surface, 'enabled_capabilities'):
                             surface.enabled_capabilities = self.capability_bundle.enabled_capabilities
-                    if callable(on_capability_activated):
-                        on_capability_activated(cap, elapsed)
+                else:
+                    logger.info("background capability skipped: %s (%.1fms)", cap, elapsed)
+                    metrics[f'bg_{cap}_skipped'] = True
+                if callable(on_capability_activated):
+                    on_capability_activated(cap, elapsed)
             except Exception as exc:
                 elapsed = round((time.perf_counter() - t) * 1000, 2)
                 metrics[f'bg_{cap}_activation_ms'] = elapsed
