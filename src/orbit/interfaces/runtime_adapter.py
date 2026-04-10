@@ -11,7 +11,8 @@ from orbit.interfaces.pty_debug import debug_log
 
 from orbit.runtime.core.session_manager import SESSION_MANAGER_IMPORT_PROFILE_TIMINGS, SessionManager
 from orbit.runtime.operations.context_usage_service import ContextAccountingService
-from orbit.runtime.capabilities.composer import RuntimeCapabilityBundle, RuntimeCapabilityComposer, RuntimeCapabilityProfile
+from orbit.runtime.capabilities.composer import RuntimeCapabilityBundle, RuntimeCapabilityComposer
+from orbit.interfaces.runtime_profile import RuntimeProfileName, RuntimeProfileSpec, resolve_runtime_profile, spec_from_capability_overrides
 from orbit.runtime.governance.build_state_store import BuildStateStore
 from orbit.runtime.governance.protocol.mode import RuntimeMode, build_policy_profile_for_mode, mode_policy_summary, workspace_root_for_runtime_mode
 from orbit.runtime.auth.storage.openai_store import OpenAIAuthStoreError
@@ -44,7 +45,7 @@ from .contracts import (
 class RuntimeAdapterConfig:
     model: str = "gpt-5.4"
     runtime_mode: RuntimeMode = "dev"
-    runtime_profile: str = "runtime_core_minimal"
+    runtime_profile: RuntimeProfileName = "runtime_core_minimal"
     enable_tools: bool = True
     filesystem: bool = False
     git: bool = False
@@ -58,34 +59,61 @@ class RuntimeAdapterConfig:
     knowledge_augmentation: bool = False
     memory: bool = False
 
+    def resolve_spec(self) -> RuntimeProfileSpec:
+        explicit_capability_override = any(
+            (
+                self.filesystem,
+                self.git,
+                self.bash,
+                self.process,
+                self.pytest,
+                self.ruff,
+                self.mypy,
+                self.browser,
+                self.obsidian_tools,
+                self.knowledge_augmentation,
+                self.memory,
+                self.enable_tools is not True,
+            )
+        )
+        if explicit_capability_override:
+            return spec_from_capability_overrides(
+                runtime_mode=self.runtime_mode,
+                model=self.model,
+                enable_tools=self.enable_tools,
+                filesystem=self.filesystem,
+                git=self.git,
+                bash=self.bash,
+                process=self.process,
+                pytest=self.pytest,
+                ruff=self.ruff,
+                mypy=self.mypy,
+                browser=self.browser,
+                obsidian_tools=self.obsidian_tools,
+                knowledge_augmentation=self.knowledge_augmentation,
+                memory=self.memory,
+            )
+        return resolve_runtime_profile(
+            self.runtime_profile,
+            runtime_mode=self.runtime_mode,
+            model=self.model,
+        )
+
     @classmethod
     def mcp_default(cls, *, runtime_mode: RuntimeMode = "dev", model: str = "gpt-5.4") -> "RuntimeAdapterConfig":
-        """Default CLI/runtime adapter profile: MCP-first baseline mount.
-
-        Keeps the initial surface minimal and cheap while ensuring the runtime
-        starts with the default MCP-backed filesystem capability mounted.
-        Additional MCP families remain deferred for background activation.
-        """
+        """Default CLI/runtime adapter profile: MCP-first baseline mount."""
         return cls(
             model=model,
             runtime_mode=runtime_mode,
-            filesystem=True,
+            runtime_profile="mcp_default",
         )
 
 
-def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev", runtime_profile: str = "runtime_core_minimal", enable_tools: bool = True, filesystem: bool = False, git: bool = False, bash: bool = False, process: bool = False, pytest: bool = False, ruff: bool = False, mypy: bool = False, browser: bool = False, obsidian_tools: bool = False, knowledge_augmentation: bool = False, memory: bool = False) -> tuple[SessionManager, RuntimeCapabilityComposer, RuntimeCapabilityBundle]:
-    t0 = time.perf_counter()
-    workspace_root = workspace_root_for_runtime_mode(runtime_mode)
-    t1 = time.perf_counter()
-    store = create_default_store()
-    backend = OpenAICodexExecutionBackend(
-        config=OpenAICodexConfig(model=model, enable_tools=enable_tools),
-        repo_root=REPO_ROOT,
-        workspace_root=workspace_root,
-    )
-    setattr(backend, 'store', store)
-    t2 = time.perf_counter()
-    profile = RuntimeCapabilityProfile(
+def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev", runtime_profile: RuntimeProfileName = "runtime_core_minimal", profile_spec: RuntimeProfileSpec | None = None, enable_tools: bool = True, filesystem: bool = False, git: bool = False, bash: bool = False, process: bool = False, pytest: bool = False, ruff: bool = False, mypy: bool = False, browser: bool = False, obsidian_tools: bool = False, knowledge_augmentation: bool = False, memory: bool = False) -> tuple[SessionManager, RuntimeCapabilityComposer, RuntimeCapabilityBundle]:
+    resolved_spec = profile_spec or spec_from_capability_overrides(
+        runtime_mode=runtime_mode,
+        model=model,
+        enable_tools=enable_tools,
         filesystem=filesystem,
         git=git,
         bash=bash,
@@ -94,19 +122,34 @@ def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev"
         ruff=ruff,
         mypy=mypy,
         browser=browser,
-        obsidian=obsidian_tools,
+        obsidian_tools=obsidian_tools,
+        knowledge_augmentation=knowledge_augmentation,
         memory=memory,
     )
+    if profile_spec is None and not any((filesystem, git, bash, process, pytest, ruff, mypy, browser, obsidian_tools, knowledge_augmentation, memory, enable_tools is not True)):
+        resolved_spec = resolve_runtime_profile(runtime_profile, runtime_mode=runtime_mode, model=model)
+
+    t0 = time.perf_counter()
+    workspace_root = workspace_root_for_runtime_mode(resolved_spec.runtime_mode)
+    t1 = time.perf_counter()
+    store = create_default_store()
+    backend = OpenAICodexExecutionBackend(
+        config=OpenAICodexConfig(model=resolved_spec.model, enable_tools=resolved_spec.enable_tools),
+        repo_root=REPO_ROOT,
+        workspace_root=workspace_root,
+    )
+    setattr(backend, 'store', store)
+    t2 = time.perf_counter()
     composer = RuntimeCapabilityComposer(workspace_root=str(workspace_root), backend=backend)
-    bundle = composer.activate(profile)
+    bundle = composer.activate(resolved_spec.capability_profile)
     t3 = time.perf_counter()
     manager = SessionManager(
         store=store,
         backend=backend,
         workspace_root=str(workspace_root),
-        runtime_mode=runtime_mode,
+        runtime_mode=resolved_spec.runtime_mode,
     )
-    manager.minimal_runtime_core = runtime_profile == "runtime_core_minimal"
+    manager.minimal_runtime_core = resolved_spec.name == "runtime_core_minimal"
     manager.capability_surface = RegistryBackedCapabilitySurface(
         tool_registry=bundle.tool_registry,
         capability_tool_registry=bundle.capability_tool_registry,
@@ -114,8 +157,8 @@ def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev"
     )
     manager.post_turn_observer = NoOpPostTurnObserver()
     manager.auxiliary_input_collector = DetachedKnowledgeMemoryCollector(
-        enable_knowledge=knowledge_augmentation,
-        enable_memory=memory,
+        enable_knowledge=resolved_spec.knowledge_augmentation,
+        enable_memory=resolved_spec.memory,
         memory_service=bundle.memory_service,
         session_manager=manager,
     )
@@ -123,12 +166,12 @@ def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev"
         backend.session_manager = manager
     manager.post_turn_observer = CompositePostTurnObserver(
         DetachedKnowledgePostTurnObserver(),
-        DetachedMemoryCaptureObserver(memory_service=bundle.memory_service if memory else None),
+        DetachedMemoryCaptureObserver(memory_service=bundle.memory_service if resolved_spec.memory else None),
     )
     t4 = time.perf_counter()
     manager.metadata = {
         **getattr(manager, 'metadata', {}),
-        "runtime_profile": runtime_profile,
+        "runtime_profile": resolved_spec.name,
         "build_profile_timings": {
             "workspace_select_ms": round((t1 - t0) * 1000, 2),
             "backend_init_ms": round((t2 - t1) * 1000, 2),
@@ -245,22 +288,12 @@ class SessionManagerRuntimeAdapter(RuntimeCliAdapter):
     def build(cls, config: RuntimeAdapterConfig | None = None) -> "SessionManagerRuntimeAdapter":
         config = config or RuntimeAdapterConfig()
         t0 = time.perf_counter()
+        resolved_spec = config.resolve_spec()
         session_manager, capability_composer, capability_bundle = build_codex_session_manager(
-            model=config.model,
-            runtime_mode=config.runtime_mode,
-            runtime_profile=config.runtime_profile,
-            enable_tools=config.enable_tools,
-            filesystem=config.filesystem,
-            git=config.git,
-            bash=config.bash,
-            process=config.process,
-            pytest=config.pytest,
-            ruff=config.ruff,
-            mypy=config.mypy,
-            browser=config.browser,
-            obsidian_tools=config.obsidian_tools,
-            knowledge_augmentation=config.knowledge_augmentation,
-            memory=config.memory,
+            model=resolved_spec.model,
+            runtime_mode=resolved_spec.runtime_mode,
+            runtime_profile=resolved_spec.name,
+            profile_spec=resolved_spec,
         )
         t1 = time.perf_counter()
         build_state_store = BuildStateStore()
