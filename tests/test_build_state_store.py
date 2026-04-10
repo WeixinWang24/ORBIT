@@ -109,6 +109,11 @@ class BuildStateStoreTests(unittest.TestCase):
             self.assertTrue(loaded.launch_command)
             self.assertEqual(loaded.launch_command[-2:], ['--mode', 'evo'])
             self.assertTrue(loaded.launch_command[1].endswith('launch_active.py'))
+            launcher_text = Path(loaded.launcher_path).read_text(encoding='utf-8')
+            self.assertIn('ORBIT_STATE_DIR', launcher_text)
+            self.assertIn(str(store.state_dir), launcher_text)
+            self.assertIn('ORBIT_SHARED_REPO_ROOT', launcher_text)
+            self.assertIn(str(repo_root), launcher_text)
             pointer = store.load_activation_pointer()
             self.assertEqual(pointer.candidate_build_id, loaded.build_id)
 

@@ -269,21 +269,38 @@ def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None, *, runtime_mode
                 def _on_activated(cap: str, elapsed: float) -> None:
                     if cap in state.bg_capabilities_pending:
                         state.bg_capabilities_pending.remove(cap)
-                    state.bg_capabilities_activated.append(cap)
+                    bundle = getattr(runtime_adapter, 'capability_bundle', None)
+                    enabled = getattr(bundle, 'enabled_capabilities', set()) if bundle is not None else set()
+                    if cap in enabled:
+                        if cap not in state.bg_capabilities_activated:
+                            state.bg_capabilities_activated.append(cap)
+                        if cap in state.bg_capabilities_skipped:
+                            state.bg_capabilities_skipped.remove(cap)
+                        debug_log(f"pty_runtime_cli:bg_activated {cap} ({elapsed:.1f}ms)")
+                    else:
+                        if cap not in state.bg_capabilities_skipped:
+                            state.bg_capabilities_skipped.append(cap)
+                        if cap in state.bg_capabilities_activated:
+                            state.bg_capabilities_activated.remove(cap)
+                        debug_log(f"pty_runtime_cli:bg_skipped {cap} ({elapsed:.1f}ms)")
                     if not state.runtime_busy:
                         if state.bg_capabilities_pending:
                             state.banner = (
                                 "Session ready · loading extended tools in background: "
                                 + ", ".join(state.bg_capabilities_pending)
                             )
+                        elif state.bg_capabilities_failed:
+                            state.banner = "Extended tool loading finished with some failures"
+                        elif state.bg_capabilities_skipped:
+                            state.banner = "Extended tool loading finished (some skipped)"
                         else:
                             state.banner = "Extended tools loaded"
-                    debug_log(f"pty_runtime_cli:bg_activated {cap} ({elapsed:.1f}ms)")
 
                 def _on_failed(cap: str, exc: Exception) -> None:
                     if cap in state.bg_capabilities_pending:
                         state.bg_capabilities_pending.remove(cap)
-                    state.bg_capabilities_failed.append(cap)
+                    if cap not in state.bg_capabilities_failed:
+                        state.bg_capabilities_failed.append(cap)
                     if not state.runtime_busy:
                         if state.bg_capabilities_pending:
                             state.banner = (
@@ -346,6 +363,11 @@ def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None, *, runtime_mode
                 state.selected_session = 0
                 state.startup_metrics['initial_session_attach_ms'] = round((time.perf_counter() - attach_started_at) * 1000, 2)
                 state.banner = f"Attached to latest session {initial_session.session_id}"
+                debug_log(
+                    "pty_runtime_cli:startup_attach "
+                    f"session_id={initial_session.session_id} conversation_id={initial_session.conversation_id} "
+                    f"session_count={len(sessions)}"
+                )
             else:
                 create_started_at = time.perf_counter()
                 initial_session = built.create_session()
@@ -353,6 +375,10 @@ def browse_runtime_cli(adapter: RuntimeCliAdapter | None = None, *, runtime_mode
                 state.selected_session = 0
                 state.startup_metrics['initial_session_create_ms'] = round((time.perf_counter() - create_started_at) * 1000, 2)
                 state.banner = f"Created new session {initial_session.session_id}"
+                debug_log(
+                    "pty_runtime_cli:startup_create "
+                    f"session_id={initial_session.session_id} conversation_id={initial_session.conversation_id}"
+                )
             state.startup_metrics['session_ready_ms'] = round((time.perf_counter() - session_ready_started_at) * 1000, 2)
             state.startup_error = None
         except Exception as exc:

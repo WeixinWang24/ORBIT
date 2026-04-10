@@ -77,4 +77,5 @@ class RuntimeCliState(RuntimeShellState):
     bg_capabilities_pending: list[str] = field(default_factory=list)
     bg_capabilities_activated: list[str] = field(default_factory=list)
     bg_capabilities_failed: list[str] = field(default_factory=list)
+    bg_capabilities_skipped: list[str] = field(default_factory=list)
     bg_activation_done: bool = False

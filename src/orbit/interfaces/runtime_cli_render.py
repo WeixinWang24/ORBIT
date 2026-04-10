@@ -220,13 +220,17 @@ def status_body_lines(state: RuntimeCliState, adapter: RuntimeCliAdapter, width:
             else:
                 details.append(f"  {key}={value}")
     # Background capability activation status
-    if state.bg_capabilities_activated or state.bg_capabilities_pending or state.bg_capabilities_failed:
+    if state.bg_capabilities_activated or state.bg_capabilities_pending or state.bg_capabilities_failed or state.bg_capabilities_skipped:
         details.append("")
         details.append("background_capability_activation:")
         if state.bg_capabilities_activated:
             details.append(f"  activated: {', '.join(state.bg_capabilities_activated)}")
         if state.bg_capabilities_pending:
             details.append(f"  pending: {', '.join(state.bg_capabilities_pending)}")
+        if state.bg_capabilities_skipped:
+            details.append(f"  skipped: {', '.join(state.bg_capabilities_skipped)}")
+            if 'obsidian' in state.bg_capabilities_skipped:
+                details.append("  obsidian_reason: no vault configured (.env.local / ORBIT_OBSIDIAN_VAULT_ROOT)")
         if state.bg_capabilities_failed:
             details.append(f"  failed: {', '.join(state.bg_capabilities_failed)}")
         details.append(f"  done: {state.bg_activation_done}")

@@ -16,14 +16,16 @@ from orbit.settings import DEFAULT_STATE_DIR, REPO_ROOT
 
 LAUNCHER_TEMPLATE = '''from __future__ import annotations
 
+import argparse
 import os
-import runpy
 import sys
 from pathlib import Path
 
 BUILD_ID = {build_id!r}
 RUNTIME_ROOT = Path({runtime_root!r}).resolve()
 SOURCE_REF = {source_ref!r}
+SHARED_STATE_DIR = Path({shared_state_dir!r}).resolve()
+SHARED_REPO_ROOT = Path({shared_repo_root!r}).resolve()
 
 
 def _normalize(path: str) -> str:
@@ -31,6 +33,11 @@ def _normalize(path: str) -> str:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="ORBIT active build launcher")
+    parser.add_argument("--mode", choices=["dev", "evo"], default="dev")
+    parser.add_argument("--chat-history-limit", type=int, default=None)
+    args = parser.parse_args()
+
     if not RUNTIME_ROOT.exists():
         raise SystemExit(f"runtime_root missing for build {{BUILD_ID}}: {{RUNTIME_ROOT}}")
 
@@ -48,6 +55,8 @@ def main() -> None:
     os.environ.setdefault("ORBIT_ACTIVE_BUILD_ID", BUILD_ID)
     os.environ.setdefault("ORBIT_ACTIVE_RUNTIME_ROOT", runtime_root_str)
     os.environ.setdefault("ORBIT_ACTIVE_SOURCE_REF", SOURCE_REF or "")
+    os.environ.setdefault("ORBIT_STATE_DIR", str(SHARED_STATE_DIR))
+    os.environ.setdefault("ORBIT_SHARED_REPO_ROOT", str(SHARED_REPO_ROOT))
 
     import orbit  # noqa: PLC0415
 
@@ -60,7 +69,9 @@ def main() -> None:
             f"orbit imported from {{origin}}, expected under {{RUNTIME_ROOT}}"
         ) from exc
 
-    runpy.run_path(str(RUNTIME_ROOT / "apps" / "orbit_cli.py"), run_name="__main__")
+    from orbit.interfaces.pty_runtime_cli import browse_runtime_cli  # noqa: PLC0415
+
+    browse_runtime_cli(runtime_mode=args.mode, chat_history_limit=args.chat_history_limit)
 
 
 if __name__ == "__main__":
@@ -190,11 +201,6 @@ class BuildStateStore:
         orbit_pkg = runtime_root / "orbit"
         if not orbit_pkg.exists():
             raise RuntimeError(f"candidate runtime install missing orbit package in {runtime_root}")
-        apps_dir = runtime_root / "apps"
-        apps_dir.mkdir(parents=True, exist_ok=True)
-        source_cli = REPO_ROOT / "apps" / "orbit_cli.py"
-        target_cli = apps_dir / "orbit_cli.py"
-        target_cli.write_text(source_cli.read_text(encoding="utf-8"), encoding="utf-8")
         return runtime_root
 
     def _write_build_launcher(self, *, launcher_path: Path, build_id: str, runtime_root: Path, source_ref: str | None) -> Path:
@@ -203,6 +209,8 @@ class BuildStateStore:
                 build_id=build_id,
                 runtime_root=str(runtime_root),
                 source_ref=source_ref,
+                shared_state_dir=str(self.state_dir),
+                shared_repo_root=str(REPO_ROOT),
             ),
             encoding="utf-8",
         )
