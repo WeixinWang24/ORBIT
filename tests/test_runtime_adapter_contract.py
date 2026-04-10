@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from orbit.interfaces.runtime_adapter import RuntimeAdapterConfig
+from orbit.interfaces.runtime_adapter import RuntimeAdapterConfig, build_codex_session_manager_for_profile
+from orbit.interfaces.runtime_profile import resolve_runtime_profile
 
 
 def test_runtime_adapter_contract_surface_is_declared() -> None:
@@ -32,3 +33,12 @@ def test_runtime_adapter_mcp_default_profile_mounts_filesystem_only() -> None:
     assert spec.capability_profile.obsidian is False
     assert spec.knowledge_augmentation is False
     assert spec.memory is False
+
+
+def test_profile_first_builder_prefers_named_profile_entry() -> None:
+    spec = resolve_runtime_profile("mcp_default", runtime_mode="evo")
+    manager, _composer, bundle = build_codex_session_manager_for_profile(profile=spec)
+    assert manager.runtime_mode == "evo"
+    assert manager.metadata["runtime_profile"] == "mcp_default"
+    assert "filesystem" in bundle.enabled_capabilities
+    assert "git" not in bundle.enabled_capabilities

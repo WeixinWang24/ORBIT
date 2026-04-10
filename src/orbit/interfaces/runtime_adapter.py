@@ -184,6 +184,21 @@ def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev"
     return manager, composer, bundle
 
 
+def build_codex_session_manager_for_profile(*, profile: RuntimeProfileSpec) -> tuple[SessionManager, RuntimeCapabilityComposer, RuntimeCapabilityBundle]:
+    """Profile-first builder for the codex-backed session manager.
+
+    This is the preferred public entrypoint for new callers. Legacy call sites may
+    still use ``build_codex_session_manager(...)`` with compatibility overrides,
+    but the named profile/spec path is now the canonical runtime-surface entry.
+    """
+    return build_codex_session_manager(
+        model=profile.model,
+        runtime_mode=profile.runtime_mode,
+        runtime_profile=profile.name,
+        profile_spec=profile,
+    )
+
+
 def get_pending_session_approval(session_manager: SessionManager, session_id: str) -> dict | None:
     session = session_manager.get_session(session_id)
     if session is None or not isinstance(session.metadata, dict):
