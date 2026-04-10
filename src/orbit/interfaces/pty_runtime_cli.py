@@ -80,15 +80,7 @@ def _build_default_adapter(*, runtime_mode: str = "dev") -> RuntimeCliAdapter:
     # Minimal baseline: only filesystem is synchronous.
     # git/bash/process/obsidian are activated in background after session-ready.
     adapter = SessionManagerRuntimeAdapter.build(
-        RuntimeAdapterConfig(
-            runtime_mode=runtime_mode,
-            filesystem=True,
-            git=False,
-            bash=False,
-            process=False,
-            obsidian_tools=False,
-            knowledge_augmentation=False,
-        )
+        RuntimeAdapterConfig.mcp_default(runtime_mode=runtime_mode)
     )
     debug_log(f"pty_runtime_cli:session_manager_runtime_adapter_build_ms={round((time.perf_counter() - adapter_build_started_at) * 1000, 2)}")
     if hasattr(adapter, 'startup_metrics') and isinstance(adapter.startup_metrics, dict):

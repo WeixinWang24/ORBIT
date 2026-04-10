@@ -58,6 +58,20 @@ class RuntimeAdapterConfig:
     knowledge_augmentation: bool = False
     memory: bool = False
 
+    @classmethod
+    def mcp_default(cls, *, runtime_mode: RuntimeMode = "dev", model: str = "gpt-5.4") -> "RuntimeAdapterConfig":
+        """Default CLI/runtime adapter profile: MCP-first baseline mount.
+
+        Keeps the initial surface minimal and cheap while ensuring the runtime
+        starts with the default MCP-backed filesystem capability mounted.
+        Additional MCP families remain deferred for background activation.
+        """
+        return cls(
+            model=model,
+            runtime_mode=runtime_mode,
+            filesystem=True,
+        )
+
 
 def build_codex_session_manager(*, model: str, runtime_mode: RuntimeMode = "dev", runtime_profile: str = "runtime_core_minimal", enable_tools: bool = True, filesystem: bool = False, git: bool = False, bash: bool = False, process: bool = False, pytest: bool = False, ruff: bool = False, mypy: bool = False, browser: bool = False, obsidian_tools: bool = False, knowledge_augmentation: bool = False, memory: bool = False) -> tuple[SessionManager, RuntimeCapabilityComposer, RuntimeCapabilityBundle]:
     t0 = time.perf_counter()
