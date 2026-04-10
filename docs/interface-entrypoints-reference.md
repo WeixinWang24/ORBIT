@@ -506,7 +506,8 @@ It now lives in:
 - `src/orbit/interfaces/runtime_adapter.py`
 
 Key helpers:
-- `build_codex_session_manager(...)`
+- `build_codex_session_manager_for_profile(...)`  ← preferred for new code
+- `build_codex_session_manager(...)`  ← legacy compatibility bridge during migration
 - `get_pending_session_approval(...)`
 - `resolve_pending_session_approval(...)`
 
